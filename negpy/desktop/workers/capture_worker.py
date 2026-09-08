@@ -86,6 +86,7 @@ class CaptureWorker(QObject):
     #: One set_camera_setting call ran to completion: verified, rejected, or skipped without a
     #: session. Always fires, so the sidebar's pending-write gate on Scan cannot stick.
     camera_setting_applied = pyqtSignal(str)
+    autofocus_finished = pyqtSignal(bool, str)  # (drive completed, operator message)
     finished = pyqtSignal(list)  # [red_path, green_path, blue_path]
     cancelled = pyqtSignal()
     error = pyqtSignal(str)
@@ -471,6 +472,29 @@ class CaptureWorker(QObject):
                 self._camera.set_focus_magnifier_at(x, y)
         except Exception as exc:  # noqa: BLE001 — exceptions cannot cross a Qt slot
             self._camera_control_failed("set_focus_magnifier_pos", exc)
+
+    @pyqtSlot()
+    def autofocus(self) -> None:
+        """Drive the body's autofocus once and report the outcome. A refused lock is a status,
+        not a fault: the session stays open and the operator retries or focuses by hand."""
+        if not self._holds_camera():
+            self.autofocus_finished.emit(False, "The camera is not connected.")
+            return
+        try:
+            if not self._camera.has_autofocus():
+                self.autofocus_finished.emit(False, "This camera offers no autofocus control over USB.")
+                return
+            ok = self._camera.autofocus()
+        except Exception as exc:  # noqa: BLE001 — exceptions cannot cross a Qt slot
+            self._camera_control_failed("autofocus", exc)
+            self.autofocus_finished.emit(False, "Autofocus failed and the camera session was dropped.")
+            return
+        self.autofocus_finished.emit(
+            ok,
+            "Autofocus done."
+            if ok
+            else "Autofocus did not complete. Check that the lens and the body are set to AF, and that the live-view focus mode is AF-S.",
+        )
 
     @pyqtSlot(str, int)
     def set_camera_setting(self, which: str, raw: int) -> None:

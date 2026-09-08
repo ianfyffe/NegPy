@@ -46,6 +46,12 @@ class FailingControlCamera:
     def set_focus_magnifier_at(self, _x: int, _y: int) -> None:
         raise RuntimeError("USB disconnected")
 
+    def has_autofocus(self) -> bool:
+        return True
+
+    def autofocus(self) -> bool:
+        raise RuntimeError("USB disconnected")
+
     def set_iso(self, _raw: int) -> None:
         raise RuntimeError("USB disconnected")
 
@@ -62,6 +68,7 @@ class FailingControlCamera:
         ("set_focus_magnifier", (True,)),
         ("set_focus_magnifier_pos", (320, 240)),
         ("set_camera_setting", ("iso", 1)),
+        ("autofocus", ()),
     ],
 )
 def test_camera_control_slot_failure_is_recoverable(slot, args, caplog):
@@ -77,6 +84,39 @@ def test_camera_control_slot_failure_is_recoverable(slot, args, caplog):
     assert errors and "USB disconnected" in errors[-1]
     assert "Reconnect" in errors[-1]
     assert f"{slot} failed" in caplog.text
+
+
+def test_autofocus_outcome_is_reported_without_touching_the_session():
+    class Camera(FailingControlCamera):
+        def __init__(self, locks: bool) -> None:
+            super().__init__()
+            self.locks = locks
+
+        def autofocus(self) -> bool:
+            return self.locks
+
+    for locks in (True, False):
+        worker = CaptureWorker()
+        camera = Camera(locks)
+        worker._camera = camera
+        results = []
+        worker.autofocus_finished.connect(lambda ok, msg: results.append((ok, msg)))
+        worker.autofocus()
+        assert results[0][0] is locks
+        assert ("done" if locks else "did not complete") in results[0][1]
+        assert not camera.closed
+
+
+def test_autofocus_on_a_body_without_a_drive_is_a_status_not_a_fault():
+    worker = CaptureWorker()
+    camera = FailingControlCamera()
+    camera.has_autofocus = lambda: False
+    worker._camera = camera
+    results = []
+    worker.autofocus_finished.connect(lambda ok, msg: results.append((ok, msg)))
+    worker.autofocus()
+    assert results == [(False, "This camera offers no autofocus control over USB.")]
+    assert not camera.closed
 
 
 def test_normal_capture_cancel_before_promotion_preserves_retake(tmp_path, monkeypatch):
