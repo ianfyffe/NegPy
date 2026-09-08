@@ -107,7 +107,7 @@ def test_update_settings_from_ui_reads_every_widget():
 
 def test_live_view_popup_has_capture_toolbar():
     w = _sidebar()
-    for attr in ("scan_btn", "retake_btn", "status"):
+    for attr in ("scan_btn", "focus_btn", "retake_btn", "status"):
         assert hasattr(w.lv_window, attr), attr
     assert not hasattr(w.lv_window, "zoom_btn")  # digital zoom removed
     assert not hasattr(w.lv_window, "mag_btn")  # magnifier button removed (click-to-magnify)
@@ -141,6 +141,52 @@ def test_magnifier_click_ignored_when_not_streaming():
     w = _sidebar()
     w._on_magnifier_click(0.5, 0.5)  # live view off → no-op
     assert not w.controller.set_focus_magnifier_pos.called
+
+
+def _streaming(w):
+    w.lv_btn.blockSignals(True)
+    w.lv_btn.setChecked(True)  # pretend live view is streaming
+    w.lv_btn.blockSignals(False)
+
+
+def test_focus_button_drives_autofocus_once_and_reports_the_outcome():
+    w = _sidebar()
+    _streaming(w)
+    w._on_focus()
+    w.controller.autofocus.assert_called_once_with()
+    assert w._focusing
+    assert not w.lv_window.focus_btn.isEnabled()
+    assert "Focusing" in w.lv_window.focus_btn.text()
+    w._on_focus()  # a second press while one is in flight is dropped
+    w.controller.autofocus.assert_called_once_with()
+
+    w._on_autofocus_finished(True, "Autofocus done.")
+    assert not w._focusing
+    assert w.lv_window.focus_btn.text().strip() == "Focus"
+    assert w.status_label.text() == "Autofocus done."
+
+    w._on_autofocus_finished(False, "The camera could not focus.")
+    assert w.status_label.text().startswith("⚠")
+
+
+def test_focus_button_is_ignored_when_not_streaming_or_mid_scan():
+    w = _sidebar()
+    w._on_focus()  # live view off
+    _streaming(w)
+    w._scanning = True
+    w._on_focus()  # a drive queued behind a triplet would refocus after the shots
+    assert not w.controller.autofocus.called
+
+
+def test_focus_button_enables_only_once_the_body_reports_a_drive():
+    w = _sidebar()
+    w._camera_verified = True
+    w._apply_gating()
+    assert not w.lv_window.focus_btn.isEnabled()
+    w._autofocus_available = True
+    w._apply_gating()
+    assert w.lv_window.focus_btn.isEnabled()
+    assert "shortcut: F" in w.lv_window.focus_btn.toolTip()
 
 
 def test_builtin_white_preset_sets_white_mode():

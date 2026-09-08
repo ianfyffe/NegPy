@@ -1,6 +1,6 @@
 """Large pop-out window for the Scanlight live view.
 
-Hosts a `RoiImageLabel` plus an inline toolbar (Scan / Retake), a capture progress bar and a status line,
+Hosts a `RoiImageLabel` plus an inline toolbar (Scan / Focus / Retake), a capture progress bar and a status line,
 so a whole roll can be framed, focused, and scanned without switching back to the
 side panel. The live image carries a magnifier cursor: a click aims the camera
 focus magnifier at that spot, a double-click returns to full frame. The buttons
@@ -128,6 +128,7 @@ class LiveViewWindow(QDialog):
 
     closed = pyqtSignal()
     scanRequested = pyqtSignal()
+    focusRequested = pyqtSignal()
     retakeRequested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
@@ -142,9 +143,15 @@ class LiveViewWindow(QDialog):
         bar = QHBoxLayout()
         self.scan_btn = QPushButton(qta.icon("fa5s.camera-retro", color=THEME.text_primary), " Scan")
         self.scan_btn.setFixedHeight(36)
+        # The body's own shutter button is dead while it is tethered, so this is the one way to
+        # drive its autofocus without unplugging. Enabled once the stream reports a drive.
+        self.focus_btn = QPushButton(qta.icon("fa5s.crosshairs", color=THEME.text_primary), " Focus")
+        self.focus_btn.setFixedHeight(36)
+        self.focus_btn.setEnabled(False)
         self.retake_btn = QPushButton(qta.icon("fa5s.redo", color=THEME.text_primary), " Retake")
         self.retake_btn.setToolTip("Re-capture the current frame without advancing the counter")
         bar.addWidget(self.scan_btn, 2)
+        bar.addWidget(self.focus_btn, 1)
         bar.addWidget(self.retake_btn, 1)
         layout.addLayout(bar)
 
@@ -212,19 +219,34 @@ class LiveViewWindow(QDialog):
         layout.addWidget(self.status)
 
         self.scan_btn.clicked.connect(lambda: self.scanRequested.emit())
+        self.focus_btn.clicked.connect(lambda: self.focusRequested.emit())
         self.retake_btn.clicked.connect(lambda: self.retakeRequested.emit())
 
         # Pin Scan as the dialog's permanent default button. Without this, Qt hands "default"
         # status to whichever autoDefault button was clicked most recently, so pressing Retake
         # once made Enter keep retaking until Scan was clicked again to reclaim it (issue #997).
-        pin_dialog_default(self.scan_btn, self.retake_btn)
+        pin_dialog_default(self.scan_btn, self.retake_btn, self.focus_btn)
 
         # Keyboard shortcuts while the pop-up is focused. There are no text fields here, so
         # letter keys are safe. The buttons respect their gated state.
-        for key, btn in (("S", self.scan_btn), ("R", self.retake_btn)):
+        for key, btn in (("S", self.scan_btn), ("F", self.focus_btn), ("R", self.retake_btn)):
             QShortcut(QKeySequence(key), self, btn.click)
         self.scan_btn.setToolTip("Scan / Stop  (shortcut: S)")
         self.retake_btn.setToolTip("Re-capture the current frame without advancing the counter  (shortcut: R)")
+        self.set_autofocus_available(False)
+
+    def set_autofocus_available(self, available: bool) -> None:
+        """Enable Focus once the stream reports that this body has an autofocus drive."""
+        self.focus_btn.setEnabled(available)
+        self.focus_btn.setToolTip(
+            "Drive the camera's autofocus once  (shortcut: F)" if available else "This camera offers no autofocus control over USB"
+        )
+
+    def set_focusing(self, active: bool) -> None:
+        """Hold the button down while a drive is in flight; it can take a few seconds."""
+        self.focus_btn.setText(" Focusing…" if active else " Focus")
+        if active:
+            self.focus_btn.setEnabled(False)
 
     def set_preview_available(self, available: bool, reason: str = "") -> None:
         """Swap the preview pane for an explanation on bodies that cannot stream.

@@ -378,6 +378,8 @@ class AppController(QObject):
     camera_session_close_requested = pyqtSignal()
     live_view_focus_magnifier_requested = pyqtSignal(bool)
     live_view_focus_magnifier_pos_requested = pyqtSignal(int, int)
+    live_view_autofocus_requested = pyqtSignal()
+    capture_autofocus_finished = pyqtSignal(bool, str)  # an autofocus drive ended: (completed, message)
     live_view_camera_setting_requested = pyqtSignal(str, int)
     capture_live_view_started = pyqtSignal(str)
     calibration_requested = pyqtSignal(CalibrationRequest)
@@ -741,6 +743,8 @@ class AppController(QObject):
         self.camera_session_close_requested.connect(self.capture_worker.close_camera_session)
         self.live_view_focus_magnifier_requested.connect(self.capture_worker.set_focus_magnifier)
         self.live_view_focus_magnifier_pos_requested.connect(self.capture_worker.set_focus_magnifier_pos)
+        self.live_view_autofocus_requested.connect(self.capture_worker.autofocus)
+        self.capture_worker.autofocus_finished.connect(self.capture_autofocus_finished.emit)
         self.live_view_camera_setting_requested.connect(self.capture_worker.set_camera_setting)
         self.capture_worker.live_view_started.connect(self.capture_live_view_started.emit)
         self.calibration_requested.connect(self.capture_worker.run_calibration)
@@ -3670,6 +3674,10 @@ class AppController(QObject):
 
     def set_focus_magnifier_pos(self, x: int, y: int) -> None:
         self.live_view_focus_magnifier_pos_requested.emit(x, y)
+
+    def autofocus(self) -> None:
+        self._ensure_capture_thread()
+        self.live_view_autofocus_requested.emit()
 
     def set_camera_setting(self, which: str, raw: int) -> None:
         # Ensure the worker thread runs. The sidebar counts these writes and gates Scan until
