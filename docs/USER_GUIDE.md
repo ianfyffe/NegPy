@@ -1048,7 +1048,7 @@ During a preview, a progress bar shows, **Cancel** reads **Stop Preview** (keeps
 
 Copy-stand capture with a camera in **PC Remote** mode over USB (macOS/Linux). With a NegPy **Scanlight**, it captures narrowband R/G/B triplets from film-stock presets; without, one white-light exposure. Frames go to the hot folder and into Trichrome Mode.
 
-*   **Live View & Scan**: click the image to aim the focus magnifier, click again for the full frame. ISO, shutter and aperture are set from the toolbar, or locked by a calibrated RGB preset.
+*   **Live View & Scan**: click the image to aim the focus magnifier, click again for the full frame. **Focus** (`F`) runs the camera's autofocus over the tether; the body's own shutter button does not work while tethered. ISO, shutter and aperture are set from the toolbar, or locked by a calibrated RGB preset.
 *   **Preset**: shows its RGB levels, ISO, shutter and aperture and forces them each frame. **+** calibrates: place the rectangle on clear film base, name it, run it. It solves a shutter and per-channel LED levels just under clipping, or says which way to adjust and saves nothing. **Create a manual preset…** sets one by hand.
 *   **Scan** and **Retake**: **Scan** shoots into a per-roll subfolder, auto-numbered, and imports; **Retake** shoots again without advancing. **Delay between exposures** pauses between R, G and B for bodies that lock up.
 *   **Narrowband**: RGB-lit scans render more saturated; the Calibration card's **Narrowband** toggle corrects this.
