@@ -71,7 +71,7 @@ class DatabaseDialog(QDialog):
 
         note = QLabel(
             "Clearing only affects this app's database and its thumbnail cache. Source files are "
-            "never touched. If you export .negpy sidecars, those still exist next to your images "
+            "never touched. If you keep .negpy sidecars, those still exist next to your images "
             "and can restore an edit when that image is reloaded."
         )
         note.setWordWrap(True)

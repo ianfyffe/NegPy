@@ -117,6 +117,14 @@ class StorageRepository(IRepository):
             except sqlite3.OperationalError:
                 pass  # already exists
 
+            # Migration: updated_at, the timestamp a sidecar is compared against. Rows from
+            # before the column are stamped now, so a sidecar written later still wins.
+            try:
+                conn.execute("ALTER TABLE file_settings ADD COLUMN updated_at REAL")
+            except sqlite3.OperationalError:
+                pass  # already exists
+            conn.execute("UPDATE file_settings SET updated_at = ? WHERE updated_at IS NULL", (time.time(),))
+
         with self._connect(self.settings_db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
@@ -137,6 +145,11 @@ class StorageRepository(IRepository):
             else:
                 conn.execute("DELETE FROM file_marks WHERE file_hash = ?", (file_hash,))
 
+    def load_file_mark(self, file_hash: str) -> Optional[str]:
+        with self._connect(self.edits_db_path) as conn:
+            row = conn.execute("SELECT mark FROM file_marks WHERE file_hash = ?", (file_hash,)).fetchone()
+        return str(row[0]) if row else None
+
     def load_file_marks(self) -> dict[str, str]:
         """Returns all triage marks as {file_hash: mark}."""
         with self._connect(self.edits_db_path) as conn:
@@ -150,25 +163,31 @@ class StorageRepository(IRepository):
             cursor = conn.execute("SELECT file_path, mark FROM file_marks WHERE file_path IS NOT NULL AND file_path != ''")
             return {str(row[0]): str(row[1]) for row in cursor.fetchall()}
 
-    def save_file_settings(self, file_hash: str, settings: WorkspaceConfig, file_path: str = "") -> None:
+    def save_file_settings(
+        self, file_hash: str, settings: WorkspaceConfig, file_path: str = "", updated_at: Optional[float] = None
+    ) -> None:
+        """``updated_at`` defaults to now; a sidecar promotion passes the sidecar's own time."""
         with self._connect(self.edits_db_path) as conn:
             settings_json = json.dumps(settings.to_dict(), default=str)
             conn.execute(
-                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path) VALUES (?, ?, ?)",
-                (file_hash, settings_json, file_path),
+                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path, updated_at) VALUES (?, ?, ?, ?)",
+                (file_hash, settings_json, file_path, updated_at if updated_at is not None else time.time()),
             )
 
     def load_file_settings(self, file_hash: str) -> Optional[WorkspaceConfig]:
+        record = self.load_file_record(file_hash)
+        return record[0] if record else None
+
+    def load_file_record(self, file_hash: str) -> Optional[tuple[WorkspaceConfig, float]]:
+        """(config, updated_at) for this hash, or None with no saved edit."""
         with self._connect(self.edits_db_path) as conn:
-            cursor = conn.execute(
-                "SELECT settings_json FROM file_settings WHERE file_hash = ?",
+            row = conn.execute(
+                "SELECT settings_json, updated_at FROM file_settings WHERE file_hash = ?",
                 (file_hash,),
-            )
-            row = cursor.fetchone()
-            if row:
-                data = json.loads(row[0])
-                return WorkspaceConfig.from_flat_dict(data)
-        return None
+            ).fetchone()
+        if not row:
+            return None
+        return WorkspaceConfig.from_flat_dict(json.loads(row[0])), float(row[1] or 0.0)
 
     def delete_file_settings(self, file_hash: str) -> None:
         """Delete this hash's saved edit, its undo history and its work prints.
@@ -281,27 +300,36 @@ class StorageRepository(IRepository):
             if conn.execute("SELECT 1 FROM file_settings WHERE file_hash = ?", (new_hash,)).fetchone():
                 return
             row = conn.execute(
-                "SELECT settings_json FROM file_settings WHERE file_hash = ?",
+                "SELECT settings_json, updated_at FROM file_settings WHERE file_hash = ?",
                 (old_hash,),
             ).fetchone()
             if not row:
                 return
             conn.execute(
-                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path) VALUES (?, ?, ?)",
-                (new_hash, row[0], file_path),
+                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path, updated_at) VALUES (?, ?, ?, ?)",
+                (new_hash, row[0], file_path, row[1]),
             )
             conn.execute("DELETE FROM file_settings WHERE file_hash = ?", (old_hash,))
             conn.execute("UPDATE OR REPLACE edit_history SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
             conn.execute("UPDATE OR REPLACE work_prints SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
             conn.execute("UPDATE OR REPLACE file_marks SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
 
-    def save_work_print(self, file_hash: str, name: str, settings: WorkspaceConfig) -> None:
+    def save_work_print(self, file_hash: str, name: str, settings: WorkspaceConfig, created_at: Optional[float] = None) -> None:
         """Store (or replace) a named version of this frame's edit."""
         with self._connect(self.edits_db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO work_prints (file_hash, name, created_at, settings_json) VALUES (?, ?, ?, ?)",
-                (file_hash, name, time.time(), json.dumps(settings.to_dict(), default=str)),
+                (file_hash, name, created_at if created_at is not None else time.time(), json.dumps(settings.to_dict(), default=str)),
             )
+
+    def load_work_prints(self, file_hash: str) -> List[tuple[str, float, WorkspaceConfig]]:
+        """This frame's work prints as (name, created_at, config), newest first."""
+        with self._connect(self.edits_db_path) as conn:
+            rows = conn.execute(
+                "SELECT name, created_at, settings_json FROM work_prints WHERE file_hash = ? ORDER BY created_at DESC, rowid DESC",
+                (file_hash,),
+            ).fetchall()
+        return [(str(name), float(created_at or 0.0), WorkspaceConfig.from_flat_dict(json.loads(js))) for name, created_at, js in rows]
 
     def list_work_prints(self, file_hash: str) -> List[str]:
         """This frame's work-print names, newest first."""

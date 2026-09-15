@@ -713,6 +713,9 @@ class ImageCanvas(QWidget):
         act_paste.setEnabled(self.state.clipboard is not None)
         act_sync_bounds = menu.addAction(label_with_shortcut("Sync Bounds…", "sync_bounds"))
         act_sync_bounds.triggered.connect(lambda: open_sync_bounds_dialog(self, self._controller.session))  # type: ignore[union-attr]
+        act_reload = menu.addAction(label_with_shortcut("Reload from Sidecar", "reload_sidecar"))
+        act_reload.triggered.connect(self._controller.reload_sidecar)  # type: ignore[union-attr]
+        act_reload.setEnabled(self._controller.current_sidecar_exists())  # type: ignore[union-attr]
         menu.addSeparator()
         self._add_reset_actions(menu)
         menu.addSeparator()

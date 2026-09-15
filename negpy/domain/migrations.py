@@ -43,6 +43,8 @@ KEY_RENAMES: Dict[str, str] = {
     "auto_crop_enabled": "crop_from_auto",
     # Lens distortion moved from the rig's flat-field profile to the per-image geometry.
     "k1": "distortion_k1",
+    # Sidecars are mirrored on every edit, not only on export.
+    "export_sidecars_enabled": "sidecars_enabled",
 }
 
 # Fields removed over time. Old saves still carry them, so drop them silently and

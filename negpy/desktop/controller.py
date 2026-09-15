@@ -104,7 +104,17 @@ from negpy.services.assets.half_frame import (
     split_scans,
 )
 from negpy.services.export.templating import path_safe, render_export_filename
-from negpy.services.assets.sidecar import load_or_promote, write_sidecar
+from negpy.services.assets.sidecar import (
+    SidecarMirror,
+    decline_sidecar_offers,
+    load_or_promote,
+    load_sidecar,
+    pending_sidecar_offers,
+    promote_sidecar,
+    sidecar_from_repo,
+    sidecar_path_for,
+    write_sidecar,
+)
 from negpy.features.exposure.analysis import (
     RING_GRID,
     STRIP_GRID,
@@ -167,6 +177,9 @@ from negpy.services.rendering.lens import lens_decode_token, metadata_lens_corre
 from negpy.services.view.coordinate_mapping import CoordinateMapping
 
 logger = get_logger(__name__)
+
+# Sidecar writes trail the last edit by this much, so a slider drag costs one file write.
+SIDECAR_FLUSH_MS = 2000
 
 # Busy toasts are cleared when the frame lands; the timeout is only a backstop for a
 # render that dies without reaching _on_render_finished.
@@ -903,6 +916,17 @@ class AppController(QObject):
         self.session.state_changed.connect(self.config_updated.emit)
         self.session.state_changed.connect(self._render_debounce.start)
         self.session.files_changed.connect(self._render_debounce.start)
+
+        self._sidecar_mirror = SidecarMirror(self.session.repo)
+        self._sidecar_flush_timer = QTimer()
+        self._sidecar_flush_timer.setSingleShot(True)
+        self._sidecar_flush_timer.setInterval(SIDECAR_FLUSH_MS)
+        self._sidecar_flush_timer.timeout.connect(self.flush_sidecars)
+        self.session.settings_saved.connect(self._mirror_current_sidecar)
+        self.session.work_prints_changed.connect(self._mirror_current_sidecar)
+        self.session.marks_changed.connect(self._mirror_sidecars_for)
+        self.session.frames_saved.connect(self._mirror_sidecars_for)
+        self.session.active_file_changing.connect(self.flush_sidecars)
 
     def generate_missing_thumbnails(self) -> None:
         missing = [f for f in self.state.uploaded_files if asset_thumbnail_key(f) not in self.state.thumbnails]
@@ -1657,6 +1681,7 @@ class AppController(QObject):
             self.session.push_external_history(file_hash, saved, updated)
             self.session.repo.save_file_settings(file_hash, updated, file_path=asset["path"])
             changed_hashes.append(file_hash)
+            self._mirror_sidecars_for([asset])
             count += 1
 
         if reload_needed and self.state.current_file_path:
@@ -1813,6 +1838,7 @@ class AppController(QObject):
                 continue
             self.session.push_external_history(h, saved, updated)
             self.session.repo.save_file_settings(h, updated, file_path=path)
+            self._mirror_sidecars_for([{"hash": h, "path": path, "half": half}])
 
     _HALF_FRAME_APPLY_SCOPE_KEY = "half_frame_apply_scope"
 
@@ -2067,6 +2093,7 @@ class AppController(QObject):
             self.session.state.uploaded_files.clear()
             self.session.state.rendered_thumbnails.clear()
             self.session.add_files([], validated_info=valid_assets)
+            self._offer_newer_sidecars(valid_assets)
             self.generate_missing_thumbnails()
             if not self._thumbnail_queue_active:
                 # Nothing queued, so no idle transition will arrive to start the
@@ -2098,6 +2125,7 @@ class AppController(QObject):
         if valid_assets:
             first_new_idx = len(self.session.state.uploaded_files)
             self.session.add_files([], validated_info=valid_assets)
+            self._offer_newer_sidecars(valid_assets)
             self.generate_missing_thumbnails()
             if not self._thumbnail_queue_active:
                 # Nothing queued, so no idle transition will arrive to start the
@@ -3426,6 +3454,7 @@ class AppController(QObject):
                     else:
                         self.session.repo.save_file_settings(asset["hash"], updated, file_path=asset["path"])
                         changed_hashes.append(asset["hash"])
+                        self._mirror_sidecars_for([asset])
                     saved += 1
                 except Exception:
                     failed += 1
@@ -4227,6 +4256,7 @@ class AppController(QObject):
                 self.session.push_external_history(f_info["hash"], p, new_p)
                 changed_hashes.append(f_info["hash"])
             self.session.repo.save_file_settings(f_info["hash"], new_p, file_path=f_info["path"])
+            self._mirror_sidecars_for([f_info])
 
         if changed_hashes:
             self.session.frames_edited_offscreen.emit(changed_hashes)
@@ -6357,7 +6387,7 @@ class AppController(QObject):
         if len(files) > 1 and not self._confirm_bulk_export(f"Export {count_of(len(files), 'frame')}?"):
             return
 
-        if self.state.config.export.export_sidecars_enabled:
+        if self.state.config.export.sidecars_enabled:
             self._write_edit_sidecars(files)
 
         flat = self.state.flat_output
@@ -6490,7 +6520,7 @@ class AppController(QObject):
             ):
                 return
 
-        if self.state.config.export.export_sidecars_enabled:
+        if self.state.config.export.sidecars_enabled:
             self._write_edit_sidecars(files)
 
         tasks = self._build_preset_export_tasks(files, presets)
@@ -6604,20 +6634,100 @@ class AppController(QObject):
         written = 0
         failed = 0
         for f in files:
+            if f.get("hdr_paths") or f.get("stitch_paths"):
+                continue
             half = int(f.get("half") or 0)
-            params = load_or_promote(
-                repo, f["hash"], f["path"], half=half, composite=bool(f.get("hdr_paths") or f.get("stitch_paths"))
-            ) or self.session.config_for_asset(f)
+            load_or_promote(repo, f["hash"], f["path"], half=half)  # rehome or promote, so the row exists
+            sidecar = sidecar_from_repo(repo, f["hash"])
+            if sidecar is None:
+                continue  # never edited: nothing to carry
             try:
-                write_sidecar(f["path"], params, half=half)
+                write_sidecar(f["path"], sidecar, half=half)
                 written += 1
             except Exception as exc:
                 failed += 1
                 logger.warning("Sidecar write failed for %s: %s", f.get("path"), exc)
         return written, failed
 
+    # ---- Sidecar mirror -------------------------------------------------------
+
+    def _current_asset(self) -> Optional[dict]:
+        idx = self.state.selected_file_idx
+        if 0 <= idx < len(self.state.uploaded_files):
+            return self.state.uploaded_files[idx]
+        return None
+
+    def _mirror_current_sidecar(self) -> None:
+        asset = self._current_asset()
+        if asset is not None and asset.get("hash") == self.state.current_file_hash:
+            self._mirror_sidecars_for([asset])
+
+    def _mirror_sidecars_for(self, assets: list) -> None:
+        """Queue these frames' sidecars for the next flush, when the mirror is on."""
+        if not self.state.config.export.sidecars_enabled:
+            return
+        for asset in assets:
+            if asset.get("hdr_paths") or asset.get("stitch_paths"):
+                continue
+            self._sidecar_mirror.mark_dirty(asset["hash"], asset["path"], int(asset.get("half") or 0))
+        if self._sidecar_mirror.pending():
+            self._sidecar_flush_timer.start()
+
+    def flush_sidecars(self) -> None:
+        """Write every queued sidecar now. Safe with nothing queued."""
+        self._sidecar_flush_timer.stop()
+        self._sidecar_mirror.flush()
+
+    def current_sidecar_exists(self) -> bool:
+        asset = self._current_asset()
+        if asset is None or asset.get("hdr_paths") or asset.get("stitch_paths"):
+            return False
+        return os.path.exists(sidecar_path_for(asset["path"], int(asset.get("half") or 0)))
+
+    def reload_sidecar(self) -> None:
+        """Load the current frame's sidecar over its saved edit, whatever its age."""
+        asset = self._current_asset()
+        if asset is None or asset.get("hdr_paths") or asset.get("stitch_paths"):
+            return
+        sidecar = load_sidecar(asset["path"], int(asset.get("half") or 0))
+        if sidecar is None:
+            self.set_status("No sidecar next to this frame", 3000, kind="warning")
+            return
+        promote_sidecar(self.session.repo, asset["hash"], asset["path"], sidecar)
+        self.session.refresh_marks()
+        self.session.reload_current_file()
+        self.set_status("Loaded edit from sidecar", 3000)
+
+    def _offer_newer_sidecars(self, assets: List[Dict]) -> None:
+        """Once per folder open: frames whose sidecar was saved after their edit here get one
+        dialog. A declined version is not offered again; a closed dialog asks next time."""
+        offers = pending_sidecar_offers(self.session.repo, assets)
+        if offers:
+            QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))
+
+    def _show_sidecar_offers(self, offers: list) -> None:
+        from negpy.desktop.view.widgets.sidecar_reload_dialog import SidecarReloadDialog
+
+        dlg = SidecarReloadDialog(offers)
+        dlg.exec()
+        if dlg.decision is None:
+            return
+        load = dlg.selected_offers() if dlg.decision == "load" else []
+        self.apply_sidecar_offers(load, [o for o in offers if not any(o is chosen for chosen in load)])
+
+    def apply_sidecar_offers(self, load: list, keep: list) -> None:
+        for offer in load:
+            promote_sidecar(self.session.repo, offer.asset["hash"], offer.asset["path"], offer.sidecar)
+        decline_sidecar_offers(self.session.repo, keep)
+        if not load:
+            return
+        self.session.refresh_marks()
+        if any(o.asset.get("hash") == self.state.current_file_hash for o in load):
+            self.session.reload_current_file()
+        self.set_status(f"Loaded {count_of(len(load), 'edit')} from sidecars", 4000)
+
     def export_edit_sidecars(self) -> None:
-        """Explicit batch sidecar export for all visible files (ignores the on-export toggle)."""
+        """Write a sidecar for every visible frame with a saved edit (ignores the mirror toggle)."""
         visible_files = [
             self.state.uploaded_files[i]
             for i in self.session.asset_model.visible_actual_indices_ordered()

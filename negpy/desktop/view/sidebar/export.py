@@ -1158,7 +1158,7 @@ class ExportSidebar(BaseSidebar):
     # --- Edit sidecars -------------------------------------------------------
 
     def _add_sidecars_section(self) -> None:
-        """Collapsible EXPORT EDITS SIDECARS section: on-export toggle + manual export, side by side."""
+        """Collapsible SIDECARS section: the mirror toggle + a write-all-now action, side by side."""
         conf = self.state.config.export
 
         content = QWidget()
@@ -1170,14 +1170,15 @@ class ExportSidebar(BaseSidebar):
 
         self.sidecars_enabled_btn = self._small_toggle(
             "fa5s.file-export",
-            "Save on export",
-            conf.export_sidecars_enabled,
-            "When on, every export also writes a .negpy edit sidecar next to each source frame. Edits stay in the database too.",
+            "Keep Current",
+            conf.sidecars_enabled,
+            "When on, each edit, mark and work print is mirrored to a .negpy sidecar next to its source frame. "
+            "Edits stay in the database too.",
         )
         btn_row.addWidget(self.sidecars_enabled_btn)
 
         self.export_sidecars_btn = labeled_action(
-            "fa5s.file-code", " Export Sidecars", "Write edit sidecars for all visible frames now", primary=True
+            "fa5s.file-code", " Export Sidecars", "Write a sidecar now for every visible frame with a saved edit", primary=True
         )
         self.export_sidecars_btn.setObjectName("export_sidecars_btn")
         btn_row.addWidget(self.export_sidecars_btn)
@@ -1434,7 +1435,7 @@ class ExportSidebar(BaseSidebar):
             export_path=vals["output_path"],
             filename_pattern=vals["filename_pattern"],
             overwrite=vals["overwrite"],
-            export_sidecars_enabled=self.sidecars_enabled_btn.isChecked(),
+            sidecars_enabled=self.sidecars_enabled_btn.isChecked(),
             **cs_kwargs,
         )
 
@@ -1516,7 +1517,7 @@ class ExportSidebar(BaseSidebar):
             # user is actively editing the field, same as ExportSettingsForm._set_text_preserving_edit.
             if not self.cs_output_path_edit.hasFocus():
                 self.cs_output_path_edit.setText(conf.contact_sheet_output_path)
-            self.sidecars_enabled_btn.setChecked(conf.export_sidecars_enabled)
+            self.sidecars_enabled_btn.setChecked(conf.sidecars_enabled)
             self.printing_notes_preview_btn.setChecked(self.state.printing_notes)
             self._refresh_contact_sheet_templates()
             saved_template = conf.contact_sheet_template.strip()
