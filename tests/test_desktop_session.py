@@ -469,6 +469,23 @@ class TestDesktopSessionSync(unittest.TestCase):
         self.assertEqual(seeded.geometry.distortion_k1, -0.05)
         self.assertEqual(kept.geometry.distortion_k1, 0.012)
 
+    def test_flatfield_keeps_saved_id_when_no_rig_is_active(self):
+        """A saved profile id from another machine survives a load here, so copying the
+        profile over restores the correction; an active rig still overrides it."""
+        self.mock_repo.get_global_setting.side_effect = lambda key, default=None: default
+        theirs = WorkspaceConfig(flatfield=replace(WorkspaceConfig().flatfield, apply=True, profile_id="rig-b"))
+        kept = self.session._apply_sticky_settings(theirs, only_global=True)
+        self.assertEqual(kept.flatfield.profile_id, "rig-b")
+        self.assertTrue(kept.flatfield.apply)
+
+        prof = SimpleNamespace(id="rig-a", k1=0.0)
+        self.mock_repo.get_global_setting.side_effect = lambda key, default=None: (
+            "rig-a" if key == "flatfield_active_profile" else default
+        )
+        with patch("negpy.desktop.session.FlatFieldProfiles.get", return_value=prof):
+            overridden = self.session._apply_sticky_settings(theirs, only_global=True)
+        self.assertEqual(overridden.flatfield.profile_id, "rig-a")
+
     def test_paper_black_carries_to_new_files(self):
         """Sticky must carry an explicit value over the file's base."""
         sticky = {"sticky_config": {"paper_black": False}}
@@ -1335,6 +1352,18 @@ class TestDesktopSessionSync(unittest.TestCase):
         self.assertEqual(saved["hash1"], DEFAULT_WORKSPACE_CONFIG)
         self.assertEqual(saved["hash2"], DEFAULT_WORKSPACE_CONFIG)
         self.assertEqual(saved["hash3"], DEFAULT_WORKSPACE_CONFIG)
+
+    def test_reset_roll_settings_reports_offscreen_frames_as_saved(self):
+        self._seed_roll()
+        self.session.asset_model.refresh()
+        saved_batches: list = []
+        self.session.frames_saved.connect(saved_batches.append)
+
+        self.session.reset_roll_settings(scope="roll")
+
+        active = self.session.state.selected_file_idx
+        expected = [f["hash"] for i, f in enumerate(self.session.state.uploaded_files) if i != active]
+        self.assertEqual([[f["hash"] for f in batch] for batch in saved_batches], [expected])
 
     def test_reset_roll_settings_selection_scope_resets_only_selected_frames(self):
         self._seed_roll()

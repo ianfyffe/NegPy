@@ -294,7 +294,7 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
         _row("Filename Pattern", "export", "filename_pattern", sticky=True),
         _row("Overwrite Existing Files", "export", "overwrite", sticky=True),
         _row("Output Intent", "export", "output_mode", sticky=True),
-        _row("Save Sidecars on Export", "export", "export_sidecars_enabled", sticky=True),
+        _row("Keep Sidecars Current", "export", "sidecars_enabled", sticky=True),
     )),
 ]
 # fmt: on

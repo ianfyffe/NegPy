@@ -680,29 +680,68 @@ class TestAppController(unittest.TestCase):
         self.assertTrue(saved["hash2"].process.use_luma_average)
         self.mock_session_manager.config_for_asset.assert_any_call(state.uploaded_files[1])
 
-    def test_write_edit_sidecars_uses_hydrated_base_not_active_edit(self):
-        """A frame with no saved edit must get its own hydrated config written to its
-        sidecar, never the active frame's edit (which load_or_promote would later promote
-        into that file's persistent DB row)."""
-        from negpy.domain.models import GeometryConfig
+    def test_write_edit_sidecars_writes_saved_rows_only(self):
+        """A frame with no saved edit gets no sidecar: the active frame's edit must never
+        land beside another file, and a defaults sidecar would read as a newer edit on
+        another machine. A saved frame's sidecar comes from its own DB row."""
+        from negpy.services.assets.sidecar import Sidecar
 
-        state = self.mock_session_manager.state
-        state.config = replace(state.config, geometry=GeometryConfig(crop_rect=(0.1, 0.1, 0.9, 0.9)))
-        hydrated = WorkspaceConfig()
-        self.mock_session_manager.config_for_asset.return_value = hydrated
-        frame = {"name": "b.dng", "path": "/tmp/b.dng", "hash": "hash2"}
+        unsaved = {"name": "b.dng", "path": "/tmp/b.dng", "hash": "hash2"}
+        saved = {"name": "c.dng", "path": "/tmp/c.dng", "hash": "hash3", "half": 2}
+        composite = {"name": "s.dng", "path": "/tmp/s.dng", "hash": "hash4", "stitch_paths": ["/tmp/a.dng"]}
+        row = Sidecar(config=WorkspaceConfig(), saved_at=5.0, source_hash="hash3")
 
         with (
             patch("negpy.desktop.controller.load_or_promote", return_value=None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
             patch("negpy.desktop.controller.write_sidecar") as mock_write,
         ):
-            written, failed = self.controller._write_edit_sidecars([frame])
+            written, failed = self.controller._write_edit_sidecars([unsaved, saved, composite])
 
         self.assertEqual((written, failed), (1, 0))
-        self.mock_session_manager.config_for_asset.assert_called_once_with(frame)
-        params = mock_write.call_args.args[1]
-        self.assertIs(params, hydrated)
-        self.assertIsNone(params.geometry.crop_rect)
+        self.mock_session_manager.config_for_asset.assert_not_called()
+        mock_write.assert_called_once_with("/tmp/c.dng", row, half=2)
+
+    def test_mirror_queues_current_frame_only_when_enabled(self):
+        from negpy.domain.models import ExportConfig
+
+        state = self.mock_session_manager.state
+        state.uploaded_files = [{"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}]
+        state.selected_file_idx = 0
+        state.current_file_hash = "hash1"
+
+        state.config = replace(state.config, export=ExportConfig(sidecars_enabled=False))
+        self.controller._mirror_current_sidecar()
+        self.assertEqual(self.controller._sidecar_mirror.pending(), 0)
+
+        state.config = replace(state.config, export=ExportConfig(sidecars_enabled=True))
+        self.controller._mirror_current_sidecar()
+        self.assertEqual(self.controller._sidecar_mirror.pending(), 1)
+        self.assertTrue(self.controller._sidecar_flush_timer.isActive())
+
+        with patch.object(self.controller._sidecar_mirror, "flush", return_value=(1, 0)) as flush:
+            self.controller.flush_sidecars()
+        flush.assert_called_once()
+        self.assertFalse(self.controller._sidecar_flush_timer.isActive())
+
+    def test_apply_sidecar_offers_promotes_declines_and_reloads(self):
+        from negpy.services.assets.sidecar import Sidecar, SidecarOffer
+
+        state = self.mock_session_manager.state
+        state.current_file_hash = "hash1"
+        a = SidecarOffer({"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}, Sidecar(WorkspaceConfig(), saved_at=9.0))
+        b = SidecarOffer({"name": "b.dng", "path": "/tmp/b.dng", "hash": "hash2"}, Sidecar(WorkspaceConfig(), saved_at=8.0))
+
+        with (
+            patch("negpy.desktop.controller.promote_sidecar") as promote,
+            patch("negpy.desktop.controller.decline_sidecar_offers") as decline,
+        ):
+            self.controller.apply_sidecar_offers([a], [b])
+
+        promote.assert_called_once_with(self.mock_session_manager.repo, "hash1", "/tmp/a.dng", a.sidecar)
+        decline.assert_called_once_with(self.mock_session_manager.repo, [b])
+        self.mock_session_manager.refresh_marks.assert_called_once()
+        self.mock_session_manager.reload_current_file.assert_called_once()
 
     def _wire_repo_store(self) -> dict:
         """Backs the mocked repo's global settings with a real dict, so a roll write

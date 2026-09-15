@@ -749,6 +749,8 @@ class DesktopSessionManager(QObject):
     history_changed = pyqtSignal()  # Emitted when undo/redo/persist happens
     work_prints_changed = pyqtSignal()  # A named version was saved, renamed or deleted
     settings_saved = pyqtSignal()
+    marks_changed = pyqtSignal(list)  # The assets whose triage mark was just written
+    frames_saved = pyqtSignal(list)  # Non-active assets whose edit was just written by a roll action
     active_file_changing = pyqtSignal()  # Outgoing file about to be replaced — last chance to snapshot it
     settings_copied = pyqtSignal()
     settings_pasted = pyqtSignal()
@@ -1050,13 +1052,13 @@ class DesktopSessionManager(QObject):
             if remainder:
                 config = replace(config, export=replace(config.export, **remainder))
 
-        # The flat-field profile is rig-global, so the active one always overrides the
-        # per-file id. New files default to enabled when a profile is active, and saved
-        # files keep their toggle.
+        # The flat-field profile is rig-global, so the active one overrides the per-file id.
+        # With no rig active here, a saved id stays: it names a profile on another machine,
+        # resolves to no gain here, and blanking it would drop that edit's correction for good.
         active_ff = self.repo.get_global_setting("flatfield_active_profile")
         ff_prof = FlatFieldProfiles.get(active_ff) if active_ff else None
-        ff_id = ff_prof.id if ff_prof else ""
-        config = replace(config, flatfield=replace(config.flatfield, profile_id=ff_id))
+        if ff_prof is not None:
+            config = replace(config, flatfield=replace(config.flatfield, profile_id=ff_prof.id))
         # Distortion left the profile for the per-image geometry; adopt a legacy rig value
         # once, on frames that carry none of their own.
         if config.geometry.distortion_k1 == 0.0 and ff_prof is not None and ff_prof.k1 != 0.0:
@@ -1107,7 +1109,7 @@ class DesktopSessionManager(QObject):
         if only_global:
             return config
 
-        config = replace(config, flatfield=replace(config.flatfield, apply=bool(ff_id)))
+        config = replace(config, flatfield=replace(config.flatfield, apply=ff_prof is not None))
 
         return self._with_scan_setup(config)
 
@@ -1317,6 +1319,7 @@ class DesktopSessionManager(QObject):
             self.repo.save_file_mark(unforked_hash(f["hash"]), mark if set_all else None, file_path=f.get("path", ""))
         self.asset_model.refresh()
         self.files_changed.emit()
+        self.marks_changed.emit([state.uploaded_files[i] for i in targets])
 
     def _stamp_scenes(self) -> None:
         by_hash = rolls.scene_by_hash(self.repo, self.state.active_roll_id)
@@ -1363,6 +1366,7 @@ class DesktopSessionManager(QObject):
 
         count = 0
         changed_hashes: list[str] = []
+        saved_assets: list = []
         for idx in target_indices:
             if idx == self.state.selected_file_idx or not (0 <= idx < len(self.state.uploaded_files)):
                 continue
@@ -1381,8 +1385,11 @@ class DesktopSessionManager(QObject):
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=target_path)
             changed_hashes.append(target_hash)
+            saved_assets.append(self.state.uploaded_files[idx])
             count += 1
 
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             n = len(rows) + int(luma) + int(color)
             noun = "setting" if n == 1 else "settings"
@@ -1412,6 +1419,7 @@ class DesktopSessionManager(QObject):
 
         count = 0
         changed_hashes: list[str] = []
+        saved_assets: list = []
         for idx in target_indices:
             if not (0 <= idx < len(self.state.uploaded_files)):
                 continue
@@ -1425,8 +1433,11 @@ class DesktopSessionManager(QObject):
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=self.state.uploaded_files[idx]["path"])
             changed_hashes.append(target_hash)
+            saved_assets.append(self.state.uploaded_files[idx])
             count += 1
 
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             n = len(rows)
             noun = "setting" if n == 1 else "settings"
@@ -1445,6 +1456,7 @@ class DesktopSessionManager(QObject):
         target_indices = self.asset_model.visible_actual_indices_ordered() if scope == "roll" else self.state.selected_indices
         count = 0
         changed_hashes: list[str] = []
+        saved_assets: list = []
         for idx in target_indices:
             if not (0 <= idx < len(self.state.uploaded_files)):
                 continue
@@ -1458,7 +1470,10 @@ class DesktopSessionManager(QObject):
                 self.push_external_history(target_hash, target_config, defaults)
                 self.repo.save_file_settings(target_hash, defaults, file_path=asset["path"])
                 changed_hashes.append(target_hash)
+                saved_assets.append(asset)
             count += 1
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             self.settings_synced.emit(f"Reset {count} frame{'s' if count != 1 else ''} to defaults")
             self.settings_saved.emit()
@@ -1776,6 +1791,7 @@ class DesktopSessionManager(QObject):
         step, the same split `_on_normalization_finished` uses for a roll-wide write.
         """
         changed_hashes: list[str] = []
+        saved_assets: list = []
         for f_info in assets:
             new_p = self._reset_frame(f_info)
             if f_info["hash"] == self.state.current_file_hash:
@@ -1785,6 +1801,9 @@ class DesktopSessionManager(QObject):
             self.push_external_history(f_info["hash"], old_p, new_p)
             self.repo.save_file_settings(f_info["hash"], new_p, file_path=f_info["path"])
             changed_hashes.append(f_info["hash"])
+            saved_assets.append(f_info)
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if changed_hashes:
             self.frames_edited_offscreen.emit(changed_hashes)
 
@@ -1966,8 +1985,16 @@ class DesktopSessionManager(QObject):
                     logger.error(f"Failed to add {path}: {e}")
 
         # Marks: the DB is the source of truth and toggles write through, so the unconditional
-        # overlay cannot lose one. Keyed on the base hash, not a roll-forked variant: a
-        # keep/reject is a judgement on the physical scan, shared by every roll it's in.
+        # overlay cannot lose one.
+        self._overlay_marks()
+
+        self.asset_model.refresh()
+        self.files_changed.emit()
+        self._persist_session()
+
+    def _overlay_marks(self) -> None:
+        # Keyed on the base hash, not a roll-forked variant: a keep/reject is a judgement
+        # on the physical scan, shared by every roll it's in.
         marks = self.repo.load_file_marks()
         for f in self.state.uploaded_files:
             m = marks.get(unforked_hash(f["hash"]))
@@ -1975,9 +2002,18 @@ class DesktopSessionManager(QObject):
             f["excluded"] = m == "excluded"
         self._stamp_scenes()
 
+    def refresh_marks(self) -> None:
+        """Re-read every frame's triage mark from the repository."""
+        self._overlay_marks()
         self.asset_model.refresh()
         self.files_changed.emit()
-        self._persist_session()
+
+    def reload_current_file(self) -> None:
+        """Re-hydrate the active frame from the repository; an unsaved in-memory edit is dropped."""
+        idx = self.state.selected_file_idx
+        if 0 <= idx < len(self.state.uploaded_files):
+            self._config_dirty = False
+            self.select_file(idx, selection_override=list(self.state.selected_indices or [idx]))
 
     def apply_composite(self, indices: List[int], composite: dict) -> None:
         """Replace the source assets with the composite built from them (inserted at the
