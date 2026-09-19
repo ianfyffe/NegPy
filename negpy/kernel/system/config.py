@@ -42,6 +42,7 @@ APP_CONFIG = AppConfig(
     adobe_rgb_profile=get_resource_path("icc/AdobeCompat-v4.icc"),
     use_gpu=True,
     override_toml_path=os.path.join(BASE_USER_DIR, "override.toml"),
+    hash_cache_db_path=os.path.join(BASE_USER_DIR, "hash_cache.db"),
     preview_cache_max_entries=8,
     preview_cache_max_bytes=1_200_000_000,
     canvas_zoom_min=0.25,
