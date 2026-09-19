@@ -1225,6 +1225,18 @@ class TestDesktopSessionSync(unittest.TestCase):
         self.assertEqual(args[1].geometry.rotation, 0)
         self.assertEqual(kwargs["file_path"], "path2")
 
+    def test_batch_rotate_and_flip_report_the_other_frames_as_saved(self):
+        self.session.state.selected_file_idx = 0
+        self.mock_repo.load_file_settings.return_value = WorkspaceConfig()
+        self.session.update_selection([0, 1])
+        saved_batches: list = []
+        self.session.frames_saved.connect(saved_batches.append)
+
+        self.session.rotate_selected_frames(1)
+        self.session.flip_selected_frames(True)
+
+        self.assertEqual([[f["hash"] for f in batch] for batch in saved_batches], [["hash2"], ["hash2"]])
+
     def test_rotate_selected_frames_message_excludes_active_when_deselected(self):
         self.session.state.uploaded_files.append({"name": "file3.dng", "path": "path3", "hash": "hash3"})
         self.session.state.selected_file_idx = 0
