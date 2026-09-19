@@ -1492,6 +1492,7 @@ class DesktopSessionManager(QObject):
             return []
 
         touched_keys = []
+        saved_assets: list = []
         # Two open paths sharing a content hash share an edit row; applying a relative
         # turn to both would read-modify-write it twice and turn it 180 in one click.
         seen_hashes = {self.state.current_file_hash}
@@ -1512,8 +1513,11 @@ class DesktopSessionManager(QObject):
             self.push_external_history(target_hash, target_config, new_config)
             self.repo.save_file_settings(target_hash, new_config, file_path=asset["path"])
             touched_keys.append(asset_thumbnail_key(asset))
+            saved_assets.append(asset)
             count += 1
 
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             total = count + int(active_included)
             self.settings_synced.emit(f"Rotated {total} frame{'s' if total != 1 else ''}")
@@ -1527,6 +1531,7 @@ class DesktopSessionManager(QObject):
             return []
 
         touched_keys = []
+        saved_assets: list = []
         seen_hashes = {self.state.current_file_hash}
         count = 0
         for idx in self.state.selected_indices:
@@ -1545,8 +1550,11 @@ class DesktopSessionManager(QObject):
             self.push_external_history(target_hash, target_config, new_config)
             self.repo.save_file_settings(target_hash, new_config, file_path=asset["path"])
             touched_keys.append(asset_thumbnail_key(asset))
+            saved_assets.append(asset)
             count += 1
 
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             total = count + int(active_included)
             self.settings_synced.emit(f"Flipped {total} frame{'s' if total != 1 else ''}")
