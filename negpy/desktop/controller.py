@@ -107,6 +107,7 @@ from negpy.services.assets.sidecar import (
     SidecarMirror,
     decline_sidecar_offers,
     load_or_promote,
+    promote_unedited,
     load_sidecar,
     pending_sidecar_offers,
     promote_sidecar,
@@ -2087,9 +2088,11 @@ class AppController(QObject):
             # so dedup-by-hash doesn't drop a regrouped red, then reselect the active frame.
             self.session.state.uploaded_files.clear()
             self.session.state.rendered_thumbnails.clear()
+            sidecar_filled = self._load_sidecars_of_unedited(valid_assets)
             self.session.add_files([], validated_info=valid_assets)
             self._offer_newer_sidecars(valid_assets)
             self.generate_missing_thumbnails()
+            self.refresh_thumbnails_for(sidecar_filled)
             if not self._thumbnail_queue_active:
                 # Nothing queued, so no idle transition will arrive to start the
                 # embeddings pass (already-cached thumbnails are exactly what a
@@ -2119,9 +2122,11 @@ class AppController(QObject):
         selected_pending_scan = False
         if valid_assets:
             first_new_idx = len(self.session.state.uploaded_files)
+            sidecar_filled = self._load_sidecars_of_unedited(valid_assets)
             self.session.add_files([], validated_info=valid_assets)
             self._offer_newer_sidecars(valid_assets)
             self.generate_missing_thumbnails()
+            self.refresh_thumbnails_for(sidecar_filled)
             if not self._thumbnail_queue_active:
                 # Nothing queued, so no idle transition will arrive to start the
                 # embeddings pass (already-cached thumbnails are exactly what a
@@ -6676,6 +6681,14 @@ class AppController(QObject):
         self.session.reload_current_file()
         self.set_status("Loaded edit from sidecar", 3000)
 
+    def _load_sidecars_of_unedited(self, assets: List[Dict]) -> list[str]:
+        """Fill frames that have no edit here from their sidecars, before the session hydrates
+        them. Returns the hashes filled; their filmstrip thumbnails predate the edit."""
+        filled = promote_unedited(self.session.repo, assets)
+        if filled:
+            self.set_status(f"Loaded {count_of(len(filled), 'edit')} from sidecars", 4000)
+        return filled
+
     def _offer_newer_sidecars(self, assets: List[Dict]) -> None:
         """Once per folder open: frames whose sidecar was saved after their edit here get one
         dialog. A declined version is not offered again; a closed dialog asks next time."""
@@ -6702,6 +6715,7 @@ class AppController(QObject):
         self.session.refresh_marks()
         if any(o.asset.get("hash") == self.state.current_file_hash for o in load):
             self.session.reload_current_file()
+        self.refresh_thumbnails_for([o.asset["hash"] for o in load])
         self.set_status(f"Loaded {count_of(len(load), 'edit')} from sidecars", 4000)
 
     def export_edit_sidecars(self) -> None:

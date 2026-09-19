@@ -191,6 +191,30 @@ def decline_sidecar_offers(repo, offers) -> None:
     repo.save_global_setting(DECLINED_KEY, declined)
 
 
+def promote_unedited(repo, assets) -> list[str]:
+    """Load the sidecar of every frame with no edit here. Returns the hashes filled.
+
+    Skips what ``load_or_promote`` resolves without a sidecar: a saved row, a path match,
+    a composite.
+    """
+    filled = []
+    for asset in assets:
+        file_hash, path = asset.get("hash") or "", asset.get("path") or ""
+        if not file_hash or not path or _is_composite(asset) or unforked_hash(file_hash) != file_hash:
+            continue
+        half = int(asset.get("half") or 0)
+        if repo.load_file_record(file_hash) is not None:
+            continue
+        if not half and repo.load_file_settings_by_path(path) is not None:
+            continue
+        sidecar = load_sidecar(path, half)
+        if sidecar is None:
+            continue
+        promote_sidecar(repo, file_hash, path, sidecar)
+        filled.append(file_hash)
+    return filled
+
+
 def load_or_promote(
     repo, file_hash: str, source_path: str, half: int = 0, composite: bool = False, forked: bool = False
 ) -> Optional[WorkspaceConfig]:
