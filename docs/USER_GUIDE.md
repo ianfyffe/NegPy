@@ -983,7 +983,7 @@ The printer's record for this frame: the numbered dodge/burn masks and a card wi
 
 A `.negpy` sidecar is a plain-file copy of one frame's edit, mark and work prints, next to the source. **Keep Current** mirrors every change to it. **Export Sidecars** writes one now for every visible frame with a saved edit and reports failures in read-only folders. Edits always stay in the database too. Undo history, stitches, HDR merges, a roll's own copy of a frame, flat-field profiles and presets do not travel in a sidecar.
 
-Sidecars carry an edit between computers. A frame with no edit here loads its sidecar on open. When a folder holds sidecars saved after the edits here, one dialog lists them: **Load Selected** replaces those edits, **Keep Mine** leaves them and does not ask again for those versions. **Reload from Sidecar** (right-click the canvas) loads the frame's sidecar whatever its age. The newer copy wins by its saved time, so keep both computers' clocks close.
+Sidecars carry an edit between computers. A frame with no edit here loads its sidecar on open, and the status bar reports how many did. When a folder holds sidecars saved after the edits here, one dialog lists them: **Load Selected** replaces those edits, **Keep Mine** leaves them and does not ask again for those versions. **Reload from Sidecar** (right-click the canvas) loads the frame's sidecar whatever its age. The newer copy wins by its saved time, so keep both computers' clocks close.
 
 <!-- panel:contact_sheet -->
 #### Contact Sheet

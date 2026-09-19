@@ -783,6 +783,7 @@ class TestAppController(unittest.TestCase):
         with (
             patch("negpy.desktop.controller.promote_sidecar") as promote,
             patch("negpy.desktop.controller.decline_sidecar_offers") as decline,
+            patch.object(self.controller, "refresh_thumbnails_for") as refresh,
         ):
             self.controller.apply_sidecar_offers([a], [b])
 
@@ -790,6 +791,23 @@ class TestAppController(unittest.TestCase):
         decline.assert_called_once_with(self.mock_session_manager.repo, [b])
         self.mock_session_manager.refresh_marks.assert_called_once()
         self.mock_session_manager.reload_current_file.assert_called_once()
+        refresh.assert_called_once_with(["hash1"])
+
+    def test_sidecars_of_unedited_frames_load_with_a_status_line(self):
+        assets = [{"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}]
+        with (
+            patch("negpy.desktop.controller.promote_unedited", return_value=["hash1"]) as promote,
+            patch.object(self.controller, "set_status") as status,
+        ):
+            filled = self.controller._load_sidecars_of_unedited(assets)
+
+        promote.assert_called_once_with(self.mock_session_manager.repo, assets)
+        self.assertEqual(filled, ["hash1"])
+        status.assert_called_once_with("Loaded 1 edit from sidecars", 4000)
+
+        with patch("negpy.desktop.controller.promote_unedited", return_value=[]), patch.object(self.controller, "set_status") as status:
+            self.assertEqual(self.controller._load_sidecars_of_unedited(assets), [])
+        status.assert_not_called()
 
     def _wire_repo_store(self) -> dict:
         """Backs the mocked repo's global settings with a real dict, so a roll write
@@ -3854,6 +3872,21 @@ class TestDiscoveryProgressPopup(unittest.TestCase):
         self.controller._on_discovery_finished([{"name": "r", "path": "/r.dng", "hash": "h1"}])
 
         self.assertEqual(order, ["finished", "thumbs"])
+
+    def test_discovery_loads_sidecars_before_hydration_and_refreshes_their_thumbnails(self):
+        order = []
+        asset = {"name": "r", "path": "/r.dng", "hash": "h1"}
+        self.controller.generate_missing_thumbnails = MagicMock()
+        self.controller.refresh_thumbnails_for = MagicMock()
+        self.controller._replace_after_discovery = True
+        self.mock_session_manager.add_files.side_effect = lambda _p, validated_info=None: order.append("add_files")
+        self.mock_session_manager.state.uploaded_files = [asset]
+
+        with patch("negpy.desktop.controller.promote_unedited", side_effect=lambda _r, _a: order.append("promote") or ["h1"]):
+            self.controller._on_discovery_finished([asset])
+
+        self.assertEqual(order, ["promote", "add_files"])
+        self.controller.refresh_thumbnails_for.assert_called_once_with(["h1"])
 
     def test_thumbnail_queue_does_not_delay_a_new_folder_discovery(self):
         state = self.mock_session_manager.state

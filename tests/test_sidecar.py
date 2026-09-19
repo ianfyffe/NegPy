@@ -20,6 +20,7 @@ from negpy.services.assets.sidecar import (
     newer_sidecar,
     pending_sidecar_offers,
     promote_sidecar,
+    promote_unedited,
     sidecar_from_repo,
     sidecar_path_for,
     write_sidecar,
@@ -250,6 +251,35 @@ def test_pending_offers_skip_composites_misses_and_declined(tmp_path, repo):
     # A later save to the file asks again.
     _write(newer, _rich_config(), saved_at=300.0)
     assert [o.sidecar.saved_at for o in pending_sidecar_offers(repo, assets)] == [300.0]
+
+
+def test_promote_unedited_fills_only_frames_with_no_edit_here(tmp_path, repo):
+    fresh = str(tmp_path / "fresh.NEF")
+    edited = str(tmp_path / "edited.NEF")
+    moved = str(tmp_path / "moved.NEF")
+    bare = str(tmp_path / "bare.NEF")
+    stitched = str(tmp_path / "stitched.NEF")
+    repo.save_file_settings("h_edit", WorkspaceConfig(), file_path=edited, updated_at=100.0)
+    repo.save_file_settings("h_moved_old", WorkspaceConfig(), file_path=moved, updated_at=100.0)
+    for path in (fresh, edited, moved, stitched):
+        _write(path, _rich_config(), saved_at=200.0)
+    _write(fresh, _rich_config(), half=2, saved_at=200.0)
+    assets = [
+        {"name": "fresh", "path": fresh, "hash": "h_fresh"},
+        {"name": "fresh [2]", "path": fresh, "hash": "h_fresh#2", "half": 2},
+        {"name": "edited", "path": edited, "hash": "h_edit"},
+        {"name": "moved", "path": moved, "hash": "h_moved_new"},
+        {"name": "bare", "path": bare, "hash": "h_bare"},
+        {"name": "stitched", "path": stitched, "hash": "h_st", "stitch_paths": [fresh]},
+    ]
+
+    assert promote_unedited(repo, assets) == ["h_fresh", "h_fresh#2"]
+
+    assert repo.load_file_record("h_fresh") == (_rich_config(), 200.0)
+    assert repo.load_file_settings("h_edit") == WorkspaceConfig()
+    assert repo.load_file_settings("h_moved_new") is None
+    assert repo.load_file_settings("h_st") is None
+    assert promote_unedited(repo, assets) == []
 
 
 def test_pending_offers_use_half_naming(tmp_path, repo):
