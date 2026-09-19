@@ -762,7 +762,7 @@ class AssetDiscoveryWorker(QObject):
         import os
 
         from negpy.infrastructure.loaders.constants import is_hidden_path, is_ir_sidecar_path
-        from negpy.kernel.image.logic import file_hashes
+        from negpy.infrastructure.storage.hash_cache import FileHashCache
         from negpy.services.assets.migrations.hash import blank_ambiguous_legacy_hashes
 
         discovered_paths = []
@@ -785,7 +785,9 @@ class AssetDiscoveryWorker(QObject):
         discovered_paths = [p for p in discovered_paths if not is_ir_sidecar_path(p)]
 
         valid_assets = []
-        digests = self._map_files(discovered_paths, file_hashes, os.path.basename, _HASH_WORKERS)
+        digests = FileHashCache(APP_CONFIG.hash_cache_db_path).file_hashes(
+            discovered_paths, lambda fn: self._map_files(discovered_paths, fn, os.path.basename, _HASH_WORKERS)
+        )
 
         for path, digest in zip(discovered_paths, digests):
             if digest is None:
@@ -898,18 +900,26 @@ class AssetDiscoveryWorker(QObject):
         """
         import os
 
-        from negpy.kernel.image.logic import calculate_file_hash
+        from negpy.infrastructure.storage.hash_cache import FileHashCache
 
         hashes = {a["path"]: a["hash"] for a in assets}
+        unhashed = [
+            path
+            for a in assets
+            if (gb := triplets.get(a["path"])) and len(gb) > 3
+            for path, want in zip(gb[:2], list(gb[3])[1:])
+            if want and path and path not in hashes and os.path.exists(path)
+        ]
+        unhashed = list(dict.fromkeys(unhashed))
+        digests = FileHashCache(APP_CONFIG.hash_cache_db_path).file_hashes(
+            unhashed, lambda fn: self._map_files(unhashed, fn, os.path.basename, _HASH_WORKERS)
+        )
+        hashes.update({path: digest[0] if digest else "" for path, digest in zip(unhashed, digests)})
         out = []
         parts: set = set()
         for a in assets:
             gb = triplets.get(a["path"])
             stored = list(gb[3]) if gb and len(gb) > 3 else ["", "", ""]
-            if gb:
-                for path, want in zip(gb[:2], stored[1:]):
-                    if want and path and path not in hashes and os.path.exists(path):
-                        hashes[path] = calculate_file_hash(path)
             # A stated member hash re-attaches only while the file still has it.
             changed = gb and any(want and path in hashes and hashes[path] != want for path, want in zip((a["path"], gb[0], gb[1]), stored))
             if gb and not changed and gb[0] and gb[1] and os.path.exists(gb[0]) and os.path.exists(gb[1]):
