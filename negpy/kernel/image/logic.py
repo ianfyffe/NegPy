@@ -640,6 +640,8 @@ def get_luminance(img: np.ndarray) -> np.ndarray:
 _HEAD_TAIL = 1024 * 1024
 _INTERIOR_CHUNKS = 16
 _INTERIOR_CHUNK = 256 * 1024
+# Stamped on every hash-cache row. A change to either digest needs a new value.
+FINGERPRINT_VERSION = 1
 
 
 def file_hashes(file_path: str) -> tuple[str, str]:
