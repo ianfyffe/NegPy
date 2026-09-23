@@ -22,6 +22,8 @@ logger = get_logger(__name__)
 _SEP = "#"
 
 SPLIT_SCANS_KEY = "half_frame_scans"
+PROFILE_KEY = "half_frame_profile"
+PROFILE_BY_ROLL_KEY = "half_frame_profile_by_roll"
 
 # The inter-frame gap in a joined diptych, in output space. Black is what the gap between
 # two exposures looks like once rendered; swap for the finish border colour if wanted.
@@ -65,6 +67,26 @@ def forget_split_scan(repo: Any, file_hash: Optional[str]) -> None:
     known = split_scans(repo)
     if file_hash in known:
         repo.save_global_setting(SPLIT_SCANS_KEY, sorted(known - {file_hash}))
+
+
+def half_frame_profile(repo: Any, roll_id: Optional[str]) -> Optional[dict]:
+    """The ``{crop_rect, split_x, gutter_thickness}`` profile for *roll_id*: the roll's own,
+    else the one profile an ad hoc session saves, which every roll without its own shares."""
+    if roll_id:
+        by_roll = repo.get_global_setting(PROFILE_BY_ROLL_KEY, default=None) or {}
+        if by_roll.get(roll_id):
+            return by_roll[roll_id]
+    return repo.get_global_setting(PROFILE_KEY, default=None)
+
+
+def save_half_frame_profile(repo: Any, roll_id: Optional[str], profile: dict) -> None:
+    """Save *profile* for *roll_id* only; with no roll, as the shared fallback."""
+    if roll_id:
+        by_roll = dict(repo.get_global_setting(PROFILE_BY_ROLL_KEY, default=None) or {})
+        by_roll[roll_id] = profile
+        repo.save_global_setting(PROFILE_BY_ROLL_KEY, by_roll)
+    else:
+        repo.save_global_setting(PROFILE_KEY, profile)
 
 
 def half_hash(file_hash: str, half: int) -> str:
