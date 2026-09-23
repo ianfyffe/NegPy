@@ -706,7 +706,7 @@ class AssetDiscoveryWorker(QObject):
         """
         import os
 
-        from negpy.infrastructure.loaders.constants import is_ir_sidecar_path
+        from negpy.infrastructure.loaders.constants import is_hidden_path, is_ir_sidecar_path
         from negpy.infrastructure.storage.hash_cache import FileHashCache
         from negpy.services.assets.migrations.hash import blank_ambiguous_legacy_hashes
 
@@ -724,8 +724,8 @@ class AssetDiscoveryWorker(QObject):
                 logger.error(f"Discovery error for {path}: {e}")
         # Half-frame re-discovery passes both halves' identical paths, so hash once.
         discovered_paths = list(dict.fromkeys(discovered_paths))
-        # IR companions ride along with their main TIFF; they are never assets of their own.
-        discovered_paths = [p for p in discovered_paths if not is_ir_sidecar_path(p)]
+        # AppleDouble files and IR companions (which ride along with their main TIFF) are never assets.
+        discovered_paths = [p for p in discovered_paths if not is_hidden_path(p) and not is_ir_sidecar_path(p)]
 
         valid_assets = []
         digests = FileHashCache(APP_CONFIG.hash_cache_db_path).file_hashes(
