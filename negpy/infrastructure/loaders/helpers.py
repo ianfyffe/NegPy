@@ -76,6 +76,36 @@ def _read_exif_uncached(file_path: str) -> Optional[dict]:
     return None
 
 
+def read_capture_datetime(file_path: str) -> Optional[str]:
+    """EXIF DateTimeOriginal, else IFD0 DateTime, read from the tag directories only; "" when a
+    TIFF-structured file states neither. None when the file is not a TIFF or cannot be parsed,
+    so the caller falls back to :func:`read_exif_from_file`, which reads the whole of a TIFF raw."""
+    try:
+        with open(file_path, "rb") as source:
+            return _tiff_capture_datetime(source)
+    except OSError:
+        return None
+
+
+def _tiff_capture_datetime(source: Any) -> Optional[str]:
+    if source.read(4) not in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"):
+        return None
+    import tifffile
+
+    source.seek(0)
+    try:
+        with tifffile.TiffFile(source) as tif:
+            tags = tif.pages[0].tags
+            exif = tags.get("ExifTag")
+            value = exif.value.get("DateTimeOriginal") if exif is not None and isinstance(exif.value, dict) else None
+            if not value:
+                zeroth = tags.get("DateTime")
+                value = zeroth.value if zeroth is not None else ""
+    except Exception:
+        return None
+    return value.decode("ascii", "replace") if isinstance(value, bytes) else str(value)
+
+
 def read_orientation(file_path: str) -> int:
     """Read the EXIF orientation tag (1-8) from a file. Returns 1 (normal) when absent."""
     import piexif
