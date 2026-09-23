@@ -1,8 +1,8 @@
 """Regression test for the capture→import seam (AppController._on_capture_finished).
 
-A finished capture must set the `rgbscan_mode` global correctly — on for an R/G/B
+A finished capture must set Trichrome Mode correctly — on for an R/G/B
 triplet (so NegPy merges it), off for a single frame — and hand the paths to asset
-discovery. This guards that seam against an upstream rename of `rgbscan_mode` /
+discovery. This guards that seam against an upstream rename of `_save_trichrome_mode` /
 `request_asset_discovery`: it fails in a fast unit test instead of only showing up
 as a gray frame at a real hardware scan.
 
@@ -53,7 +53,7 @@ def _hydrate_and_load(controller, path, process_mode, *, autodetect=True):
 
 def test_rgb_triplet_enables_merge_and_discovers():
     c = _run(["r.ARW", "g.ARW", "b.ARW"], rgb_mode=True, white_mode=False)
-    c.session.repo.save_global_setting.assert_any_call("rgbscan_mode", True)  # triplet → merge ON
+    c._save_trichrome_mode.assert_called_once_with(True)  # triplet → merge ON
     # The capture knows its own triplet, so discovery is handed it rather than asked to
     # re-derive it from the pixels -- which can only ever refuse a frame it should keep.
     c.request_asset_discovery.assert_called_once_with(["r.ARW", "g.ARW", "b.ARW"], restore_triplets={"r.ARW": ["g.ARW", "b.ARW"]})
@@ -71,13 +71,13 @@ def test_rgb_triplet_import_defaults_to_c41_without_autodetect():
 
 def test_normal_single_scan_leaves_merge_off():
     c = _run(["frame.ARW"], rgb_mode=False)
-    c.session.repo.save_global_setting.assert_any_call("rgbscan_mode", False)  # single RAW → no merge
+    c._save_trichrome_mode.assert_called_once_with(False)  # single RAW → no merge
     c.request_asset_discovery.assert_called_once_with(["frame.ARW"], restore_triplets=None)
 
 
 def test_white_slide_leaves_merge_off():
     c = _run(["slide.ARW"], rgb_mode=True, white_mode=True, white_process_mode="auto")
-    c.session.repo.save_global_setting.assert_any_call("rgbscan_mode", False)  # one white exposure → no merge
+    c._save_trichrome_mode.assert_called_once_with(False)  # one white exposure → no merge
     c.request_asset_discovery.assert_called_once_with(["slide.ARW"], restore_triplets=None)
 
 

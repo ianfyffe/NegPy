@@ -676,10 +676,10 @@ How the files become frames. Neither toggle has a scope pair.
 
 #### Trichrome
 
-*   **Trichrome Mode** (three-exposure narrowband capture, also called trichromatic capture): assembles each frame from a red, green and blue exposure. Shots are grouped by the capture time in the files, so shoot each frame's three exposures back to back; filenames need no convention. With no capture time, filename order is used. Three shots are assembled only if they are one of each color *and* show the same frame; otherwise they stay separate for pairing by hand. Assembled frames are remembered, so a roll opened again checks only its loose files. An assembled frame has the three-dot badge (see [Triage](#triage-culling-the-roll)).
+*   **Trichrome Mode** (three-exposure narrowband capture, also called trichromatic capture): assembles each frame from a red, green and blue exposure. Each roll remembers its own setting, off until you turn it on. Shots are grouped by the capture time in the files, so shoot each frame's three exposures back to back; filenames need no convention. With no capture time, filename order is used. Three shots are assembled only if they are one of each color *and* show the same frame; otherwise they stay separate for pairing by hand. Assembled frames are remembered, so a roll opened again checks only its loose files. An assembled frame has the three-dot badge (see [Triage](#triage-culling-the-roll)).
 *   **Edit Triplet…**: the film strip's right-click **Edit RGB Triplet…** dialog, for the current frame. Its **Align channels (sub-pixel)** registers green and blue to red, which removes color fringing from capture drift.
 
-The line under the buttons names the two exposures the frame is assembled from. The toggle is one rig-wide flag, so it has no scope pair and applies to every roll.
+The line under the buttons names the two exposures the frame is assembled from.
 
 #### Half Frame
 

@@ -386,7 +386,7 @@ class AppController(QObject):
     strip_requested = pyqtSignal(TestStripTask)
     test_strip_changed = pyqtSignal(bool)  # True = mosaic is up, False = cleared or building
     zone_pins_changed = pyqtSignal()
-    rgb_scan_mode_changed = pyqtSignal(bool)  # the mode changed from somewhere other than its button
+    rgb_scan_mode_changed = pyqtSignal(bool)  # a roll became active, or the mode changed from somewhere other than its button
     half_frame_mode_changed = pyqtSignal(bool)  # a roll became active; each remembers its own toggle
     zone_arm_changed = pyqtSignal(object)  # armed zone, or None
     asset_discovery_requested = pyqtSignal(AssetDiscoveryTask)
@@ -1167,7 +1167,7 @@ class AppController(QObject):
             return
         self.set_status(f"{len(paths)} frame{'s' if len(paths) != 1 else ''} found", 3000)
         self.state.active_roll_id = None
-        self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(None))
+        self._emit_roll_modes(None)
         # These paths are the filtered result. Re-running the outlier check over this
         # small, mutually-similar set has no background to stand out from and can exclude
         # every frame, and a stale text filter can empty the batch just as easily.
@@ -1367,7 +1367,7 @@ class AppController(QObject):
         self._pending_scanned_file = active if active in paths else paths[0]
         triplets = self.session.repo.get_global_setting("session_triplets", {}) or {}
         self.state.active_roll_id = self._roll_id_for_restored_paths(paths)
-        self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(self.state.active_roll_id))
+        self._emit_roll_modes(self.state.active_roll_id)
         self.request_asset_discovery(paths, auto_open=True, restore_triplets=triplets)
 
     def _roll_id_for_restored_paths(self, paths: List[str]) -> Optional[str]:
@@ -1423,7 +1423,7 @@ class AppController(QObject):
             restore_triplets=restore_triplets,
             replace_existing=replace_existing,
             reselect_path=reselect_path,
-            rgb_scan=bool(self.session.repo.get_global_setting("rgbscan_mode", False)),
+            rgb_scan=self.trichrome_mode_for_roll(active_roll_id),
             # A batch spanning several rolls has no roll-wide toggle to apply, and a
             # "confirmed diptych" hash records whichever roll's toggle was on at the
             # time rather than a per-file fact. Splitting waits for a roll that says so.
@@ -1538,7 +1538,7 @@ class AppController(QObject):
             # becomes the active roll -- that only makes sense for a single one.
             recognized = [self._recognize_roll_folder(repo, f) or rolls.recognize_folder(repo, f) for f in present]
             self.state.active_roll_id = recognized[0] if len(recognized) == 1 else None
-            self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(self.state.active_roll_id))
+            self._emit_roll_modes(self.state.active_roll_id)
             self._register_library_roots(present)
         self.request_asset_discovery(
             present,
@@ -1567,7 +1567,7 @@ class AppController(QObject):
             self.set_status("This roll has no frames", 3000)
             return
         self.state.active_roll_id = roll_id
-        self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(roll_id))
+        self._emit_roll_modes(roll_id)
         self.request_asset_discovery(paths, auto_open=True, replace_existing=True)
 
     def create_roll_from_session(self, name: str) -> Optional[str]:
@@ -1578,11 +1578,15 @@ class AppController(QObject):
             self.set_status("Nothing loaded to save as a roll", 3000)
             return None
         roll_id = rolls.create_virtual_roll(self.session.repo, name, paths)
-        # Seed the new roll's own half-frame toggle from the ad hoc session's, so saving as
-        # a roll doesn't silently reset it to off the next time this roll is opened.
-        by_roll = dict(self.session.repo.get_global_setting(self._HALF_FRAME_MODE_BY_ROLL_KEY, default=None) or {})
-        by_roll[roll_id] = self.half_frame_mode_for_roll(None)
-        self.session.repo.save_global_setting(self._HALF_FRAME_MODE_BY_ROLL_KEY, by_roll)
+        # Seed the new roll's own toggles from the ad hoc session's, so saving as a roll
+        # doesn't silently reset them to off the next time this roll is opened.
+        for key, enabled in (
+            (self._HALF_FRAME_MODE_BY_ROLL_KEY, self.half_frame_mode_for_roll(None)),
+            (self._TRICHROME_MODE_BY_ROLL_KEY, self.trichrome_mode_for_roll(None)),
+        ):
+            by_roll = dict(self.session.repo.get_global_setting(key, default=None) or {})
+            by_roll[roll_id] = enabled
+            self.session.repo.save_global_setting(key, by_roll)
         self.state.active_roll_id = roll_id
         self.set_status(f"Saved as roll “{name}”", 3000)
         return roll_id
@@ -1682,17 +1686,41 @@ class AppController(QObject):
         # An ad hoc result, not (yet) any roll -- Save as Roll in the Film Strip turns it
         # into one.
         self.state.active_roll_id = None
-        self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(None))
+        self._emit_roll_modes(None)
         # The hand-off already is the filtered result -- a semantic query left over from
         # an earlier, unrelated search would otherwise re-rank this batch by an embedding
         # that has nothing to do with it, dropping every file with no cached vector yet.
         self.session.asset_model.clear_filters()
         self.request_asset_discovery(paths, auto_open=True, replace_existing=True)
 
+    _TRICHROME_MODE_BY_ROLL_KEY = "rgbscan_mode_by_roll"
+
+    def trichrome_mode_for_roll(self, roll_id: Optional[str]) -> bool:
+        """The Trichrome toggle's state for *roll_id*. Each roll remembers its own, off until
+        set; an ad hoc session (no recognized roll) reads the one sticky flag."""
+        if roll_id:
+            by_roll = self.session.repo.get_global_setting(self._TRICHROME_MODE_BY_ROLL_KEY, default=None) or {}
+            return bool(by_roll.get(roll_id, False))
+        return bool(self.session.repo.get_global_setting("rgbscan_mode", False))
+
+    def _save_trichrome_mode(self, enabled: bool) -> None:
+        roll_id = self.state.active_roll_id
+        if roll_id:
+            by_roll = dict(self.session.repo.get_global_setting(self._TRICHROME_MODE_BY_ROLL_KEY, default=None) or {})
+            by_roll[roll_id] = bool(enabled)
+            self.session.repo.save_global_setting(self._TRICHROME_MODE_BY_ROLL_KEY, by_roll)
+        else:
+            self.session.repo.save_global_setting("rgbscan_mode", bool(enabled))
+
+    def _emit_roll_modes(self, roll_id: Optional[str]) -> None:
+        """A roll became active: the per-roll toggles follow it."""
+        self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(roll_id))
+        self.rgb_scan_mode_changed.emit(self.trichrome_mode_for_roll(roll_id))
+
     def set_rgb_scan_mode(self, enabled: bool) -> None:
-        """Persist the RGB-scan toggle and re-discover already-loaded assets so the
-        mode regroups/ungroups triplets in place (not only on the next folder load)."""
-        self.session.repo.save_global_setting("rgbscan_mode", bool(enabled))
+        """Persist the Trichrome toggle for the active roll and re-discover already-loaded
+        assets so the mode regroups/ungroups triplets in place (not only on the next load)."""
+        self._save_trichrome_mode(enabled)
         if enabled:
             # RGB-scan triplets are captured with narrowband LEDs, and correcting for them
             # is the point of the toggle, so switch it on together.
@@ -5408,7 +5436,7 @@ class AppController(QObject):
         rgb = bool(req is not None and getattr(req, "rgb_mode", True))
         # RGB-Scan (triplet merge) is on only for an actual RGB triplet. Off for a single
         # white-light slide and for a normal camera scan.
-        self.session.repo.save_global_setting("rgbscan_mode", rgb and not white)
+        self._save_trichrome_mode(rgb and not white)
         capture_roll = getattr(req, "roll_name", "") if req is not None else ""
         capture_frame = getattr(req, "frame_number", None) if req is not None else None
         if white:  # slides / B&W negatives force a positive process

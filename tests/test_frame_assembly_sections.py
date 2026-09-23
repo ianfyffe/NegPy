@@ -16,6 +16,7 @@ def _controller():
     controller.state = AppState()
     controller.session.repo.get_global_setting.return_value = False
     controller.half_frame_mode_for_roll.return_value = False
+    controller.trichrome_mode_for_roll.return_value = False
     controller.active_diptych.return_value = None
     controller.current_base_file.return_value = ("/tmp/scan.tif", "h1")
     controller.selected_base_hashes.return_value = ["h1"]
