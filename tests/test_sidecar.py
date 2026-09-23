@@ -321,6 +321,20 @@ def test_mirror_skips_unsaved_and_half_naming(tmp_path, repo):
     assert not os.path.exists(sidecar_path_for(src))
 
 
+def test_roll_fork_never_reads_or_writes_the_sidecar(tmp_path, repo):
+    src = str(tmp_path / "IMG_f.NEF")
+    repo.save_file_settings("h_f#roll:r1", _rich_config(), file_path=src, updated_at=100.0)
+    mirror = SidecarMirror(repo)
+    mirror.mark_dirty("h_f#roll:r1", src)
+    assert mirror.pending() == 0
+
+    _write(src, _rich_config(), saved_at=200.0)
+    fork = {"name": "f", "path": src, "hash": "h_f#roll:r1"}
+    assert pending_sidecar_offers(repo, [fork]) == []
+    repo.delete_file_settings("h_f#roll:r1")
+    assert promote_unedited(repo, [fork]) == []
+
+
 def test_mirror_gives_up_on_unwritable_folder(tmp_path, repo, monkeypatch):
     src = str(tmp_path / "ro" / "IMG_r.NEF")
     repo.save_file_settings("h_r", _rich_config(), file_path=src)
@@ -477,7 +491,7 @@ def test_load_or_promote_forked_skips_sidecar(tmp_path, repo):
     """A fork's `.negpy` (if any) describes the shared frame, not the fork, so it is
     never promoted onto the forked hash."""
     src = str(tmp_path / "IMG_010.NEF")
-    write_sidecar(src, _rich_config())
+    _write(src, _rich_config())
 
     assert load_or_promote(repo, "h10#roll:r1", src, forked=True) is None
     assert repo.load_file_settings("h10#roll:r1") is None
