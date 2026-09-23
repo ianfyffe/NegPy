@@ -1451,7 +1451,7 @@ class AppController(QObject):
         # the view reads this to decide whether to suppress the popup for it.
         previous_hot_folder_sequence = self._hot_folder_sequence_active
         self._hot_folder_sequence_active = request.hot_folder
-        if self._begin_batch("discovery", "Hashing files", abortable=False) is None:
+        if self._begin_batch("discovery", "Loading files", abortable=False) is None:
             self._hot_folder_sequence_active = previous_hot_folder_sequence
             self._pending_asset_discoveries.insert(0, request)
             return
@@ -2056,7 +2056,7 @@ class AppController(QObject):
         )
 
     def _on_discovery_progress(self, current: int, total: int, name: str) -> None:
-        self.set_status(f"Hashing {current}/{total}: {name}")
+        self.set_status(f"{name} ({current}/{total})")
         self.status_progress_requested.emit(current, total)
         self.batch_progress.emit(current, total, name)
 

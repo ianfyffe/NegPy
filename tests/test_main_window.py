@@ -122,16 +122,16 @@ class TestBatchStartedPopupSuppression(unittest.TestCase):
 
         stub = self._stub(hot_folder_sequence_active=False, hot_folder_checked=True)
 
-        MainWindow._on_batch_started(stub, "Hashing files", False)
+        MainWindow._on_batch_started(stub, "Loading files", False)
 
-        stub.progress_dialog.start.assert_called_once_with("Hashing files", False)
+        stub.progress_dialog.start.assert_called_once_with("Loading files", False)
 
     def test_hot_folder_sequence_silent_for_discovery_and_thumbnails(self):
         from negpy.desktop.view.main_window import MainWindow
 
         stub = self._stub(hot_folder_sequence_active=True, hot_folder_checked=True)
 
-        MainWindow._on_batch_started(stub, "Hashing files", False)
+        MainWindow._on_batch_started(stub, "Loading files", False)
         MainWindow._on_batch_started(stub, "Generating thumbnails", False)
 
         stub.progress_dialog.start.assert_not_called()
