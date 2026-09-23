@@ -146,9 +146,12 @@ def looks_narrowband(all_means: Sequence[Sequence[float]]) -> bool:
 
 def capture_timestamp(path: str) -> str:
     """The file's stated capture time, or empty when it states none."""
-    from negpy.features.metadata.exif_read import extract_scan_from_exif
-    from negpy.infrastructure.loaders.helpers import read_exif_from_file
+    from negpy.features.metadata.exif_read import extract_scan_from_exif, format_exif_datetime
+    from negpy.infrastructure.loaders.helpers import read_capture_datetime, read_exif_from_file
 
+    stated = read_capture_datetime(path)
+    if stated is not None:
+        return format_exif_datetime(stated)
     exif = read_exif_from_file(path)
     return extract_scan_from_exif(exif).datetime_original if exif else ""
 
