@@ -696,7 +696,9 @@ class AssetDiscoveryWorker(QObject):
 
         from negpy.services.assets.half_frame import detect_split_and_crop_for_file
 
-        detected = self._map_files(task.paths, detect_split_and_crop_for_file, lambda p: f"Split {os.path.basename(p)}", _DECODE_WORKERS)
+        detected = self._map_files(
+            task.paths, detect_split_and_crop_for_file, lambda p: f"Finding split in {os.path.basename(p)}", _DECODE_WORKERS
+        )
         self.splits_detected.emit(dict(zip(task.paths, detected)))
 
     @pyqtSlot(AssetDiscoveryTask)
@@ -729,7 +731,7 @@ class AssetDiscoveryWorker(QObject):
 
         valid_assets = []
         digests = FileHashCache(APP_CONFIG.hash_cache_db_path).file_hashes(
-            discovered_paths, lambda fn: self._map_files(discovered_paths, fn, os.path.basename, _HASH_WORKERS)
+            discovered_paths, lambda fn: self._map_files(discovered_paths, fn, lambda p: f"Hashing {os.path.basename(p)}", _HASH_WORKERS)
         )
 
         for path, digest in zip(discovered_paths, digests):
@@ -804,7 +806,7 @@ class AssetDiscoveryWorker(QObject):
         auto_split = profile is None
         if auto_split:
             paths = [a["path"] for a in assets if _splittable(a) and base_hash(a["hash"]) not in overrides]
-            detected = self._map_files(paths, detect_split_x_for_file, lambda p: f"Split {os.path.basename(p)}", _DECODE_WORKERS)
+            detected = self._map_files(paths, detect_split_x_for_file, lambda p: f"Finding split in {os.path.basename(p)}", _DECODE_WORKERS)
             splits = dict(zip(paths, detected))
         else:
             splits = {}
@@ -963,12 +965,12 @@ class AssetDiscoveryWorker(QObject):
         by_path = {a["path"]: a for a in assets}
         ordered = sorted(by_path, key=lambda p: os.path.basename(p).lower())
 
-        stamps = self._map_files(ordered, capture_timestamp, lambda p: f"Time {os.path.basename(p)}", _HASH_WORKERS)
+        stamps = self._map_files(ordered, capture_timestamp, lambda p: f"Reading capture time of {os.path.basename(p)}", _HASH_WORKERS)
         times = {p: t for p, t in zip(ordered, stamps) if t}
         by_time = len(times) == len(ordered)
         ordered = capture_ordered(ordered, times)
 
-        probes = self._map_files(ordered, probe_frame, lambda p: f"RGB {os.path.basename(p)}", _DECODE_WORKERS)
+        probes = self._map_files(ordered, probe_frame, lambda p: f"Checking RGB channel of {os.path.basename(p)}", _DECODE_WORKERS)
         items = [(p, classify_channel(pr.means)) for p, pr in zip(ordered, probes) if pr is not None]
         signatures = {p: pr.signature for p, pr in zip(ordered, probes) if pr is not None}
 

@@ -3763,7 +3763,7 @@ class TestDiscoveryProgressPopup(unittest.TestCase):
         started = []
         self.controller.batch_started.connect(lambda title, ab: started.append((title, ab)))
         self.controller.request_asset_discovery(["/a.dng"])
-        self.assertEqual(started, [("Hashing files", False)])
+        self.assertEqual(started, [("Loading files", False)])
 
     def _captured_task(self, **discovery_kwargs):
         self.controller.asset_discovery_requested.disconnect(self.controller.discovery_worker.process)
