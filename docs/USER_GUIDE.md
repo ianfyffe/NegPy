@@ -691,7 +691,7 @@ The line under the buttons names the two exposures the frame is assembled from. 
 
 **Half Frame Mode** splits each scan into two frames, for half-frame cameras; each half is edited and metered on its own. Turning it on detects the gutter, its direction and the film crop on every loaded scan. Each roll remembers its own state; it is disabled for a batch that is not one roll.
 
-*   **Adjust…**: drag the green box to crop and the orange line to set the split; pick **Split direction** (*Vertical* cuts left/right, *Horizontal* top/bottom) and **Cut thickness** (the separator band to discard). **Auto-detect** re-finds all three. **Apply**'s ▾ applies to the current, selected or all frames (all sets the roll default).
+*   **Adjust…**: drag the green box to crop and the orange line to set the split; pick **Split direction** (*Vertical* cuts left/right, *Horizontal* top/bottom) and **Cut thickness** (the separator band to discard). **Auto-detect** re-finds all three. **Apply**'s ▾ applies to the current, selected or all frames (all sets the roll default; each roll keeps its own).
 *   **Detect All**: re-runs the batch detection.
 *   **Unsplit** (enabled on a split frame): reverts it, as does its right-click item.
 
