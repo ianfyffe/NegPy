@@ -151,3 +151,20 @@ def test_capture_without_as_roll_records_on_its_folders_own_roll():
     AppController._on_capture_finished(c, ["/hot/R1/w.ARW"])
 
     assert c._store["rgbscan_mode_by_roll"] == {roll_id: False}
+
+
+def test_a_scan_into_another_roll_reads_that_rolls_split_profile():
+    from negpy.services.assets.half_frame import save_half_frame_profile
+
+    c = _controller(as_roll=True)
+    c.half_frame_profile = MethodType(AppController.half_frame_profile, c)
+    roll_id = recognize_folder(c.session.repo, "/out/Roll002")
+    save_half_frame_profile(c.session.repo, None, {"split_x": 0.5, "split_axis": "x"})
+    save_half_frame_profile(c.session.repo, roll_id, {"split_x": 0.4, "split_axis": "y"})
+    c.state.active_roll_id = recognize_folder(c.session.repo, "/out/Roll001")
+    seen = []
+    c.request_asset_discovery.side_effect = lambda *_a, **_k: seen.append(c.half_frame_profile())
+
+    AppController._on_scan_finished(c, "/out/Roll002/a.tif")
+
+    assert seen == [{"split_x": 0.4, "split_axis": "y"}]
