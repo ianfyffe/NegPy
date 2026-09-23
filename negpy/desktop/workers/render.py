@@ -841,20 +841,31 @@ class AssetDiscoveryWorker(QObject):
     def _attach_restored_triplets(self, assets: list, triplets: dict) -> list:
         """Re-attach known green/blue exposures to their red asset (no reclassification).
 
-        A session manifest holds the red path alone, but a capture hands over all three,
-        so the two exposures that became part of a frame are dropped from the roll.
+        A session manifest holds the red path alone, but a folder walk or a capture hands
+        over all three, so the two exposures that became part of a frame are dropped from
+        the roll. A file goes to the first triplet that claims it.
         """
         import os
 
         out = []
         parts: set = set()
+        reds: set = set()
         for a in assets:
             gb = triplets.get(a["path"])
-            if gb and gb[0] and gb[1] and os.path.exists(gb[0]) and os.path.exists(gb[1]):
+            if (
+                gb
+                and gb[0]
+                and gb[1]
+                and a["path"] not in parts
+                and not {gb[0], gb[1]} & (parts | reds)
+                and os.path.exists(gb[0])
+                and os.path.exists(gb[1])
+            ):
                 base = os.path.splitext(a["name"])[0]
                 align = bool(gb[2]) if len(gb) > 2 else True
                 out.append({**a, "name": f"{base} (RGB)", "green_path": gb[0], "blue_path": gb[1], "align": align})
                 parts.update({gb[0], gb[1]})
+                reds.add(a["path"])
             else:
                 out.append(a)
         return _without_parts(out, parts)
@@ -989,7 +1000,7 @@ class AssetDiscoveryWorker(QObject):
         loose = len(ordered) - len(grouped)
         if loose:
             summary = {
-                "made": len(grouped) // 3,
+                "made": len(assembled) + len(grouped) // 3,
                 "loose": loose,
                 "incomplete": incomplete,
                 "mismatched": mismatched,

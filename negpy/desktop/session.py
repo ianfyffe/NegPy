@@ -38,6 +38,7 @@ from negpy.infrastructure.storage.repository import StorageRepository
 from negpy.kernel.system.config import APP_CONFIG, DEFAULT_WORKSPACE_CONFIG
 from negpy.kernel.system.text import count_of
 from negpy.services.assets.composites import remember_composites
+from negpy.services.assets.rgb_triplets import remember_triplets
 from negpy.services.assets.flatfield import FlatFieldProfiles
 from negpy.services.assets import rolls
 from negpy.services.assets import semantic_model
@@ -1970,6 +1971,7 @@ class DesktopSessionManager(QObject):
             if f.get("green_path") and f.get("blue_path")
         }
         self.repo.save_global_setting("session_triplets", triplets)
+        remember_triplets(self.repo, self.state.uploaded_files)
         # Stitch and HDR membership is not part of the manifest: a composite outlives the
         # file list it was made in, so it is upserted into its own store instead.
         remember_composites(self.repo, self.state.uploaded_files)
@@ -2100,6 +2102,7 @@ class DesktopSessionManager(QObject):
         }
         self.asset_model.refresh()
         self.files_changed.emit()
+        self._persist_session()
         self.select_file(index)
 
     def _reset_active_image_state(self) -> None:

@@ -90,6 +90,7 @@ from negpy.domain.models import (
     resolve_preset_export,
 )
 from negpy.services.assets.composites import forget_composite, restore_maps
+from negpy.services.assets.rgb_triplets import saved_triplets
 from negpy.services.assets import repoint, rolls
 from negpy.services.assets.half_frame import (
     HalfGeometry,
@@ -1462,11 +1463,14 @@ class AppController(QObject):
         self._active_discovery_keys = frozenset(_capture_import_key(path) for path in request.paths)
         self.set_status("Scanning for assets…")
         stitches, merges = restore_maps(self.session.repo)
+        restore_triplets = request.restore_triplets
+        if request.rgb_scan:
+            restore_triplets = {**saved_triplets(self.session.repo), **(restore_triplets or {})}
         task = AssetDiscoveryTask(
             paths=list(request.paths),
             supported_extensions=tuple(SUPPORTED_RAW_EXTENSIONS),
             rgb_scan=request.rgb_scan,
-            restore_triplets=request.restore_triplets,
+            restore_triplets=restore_triplets,
             half_frame=request.half_frame,
             # Read as the request starts, not as it was queued: a composite made while
             # a discovery waits its turn must still be re-attached when the queue gets to it.
