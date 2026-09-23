@@ -132,8 +132,7 @@ class TestDiscoveryReadsTheStore(unittest.TestCase):
         gc.collect()
 
     def _open(self):
-        with patch("negpy.desktop.controller.os.path.isdir", return_value=True):
-            self.controller.open_library_folder("/roll_a")
+        self.controller.request_asset_discovery(["/roll_a"])
         self.assertEqual(len(self.tasks), 1)
         return self.tasks[0]
 
