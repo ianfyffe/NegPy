@@ -69,6 +69,12 @@ SUPPORTED_RAW_EXTENSIONS: Set[str] = (
 IR_SIDECAR_SUFFIXES: tuple[str, ...] = ("_ir_valid", "_ir")
 
 
+def is_hidden_path(path: str) -> bool:
+    """True for a dot-file. macOS writes an AppleDouble `._<name>` beside every file on SMB, exFAT
+    and FAT volumes; it keeps the image's extension but holds no image."""
+    return os.path.basename(path).startswith(".")
+
+
 def is_ir_sidecar_path(path: str) -> bool:
     """True for an `_IR`/`_IR_VALID` TIFF whose main TIFF sits next to it. Asset discovery hides
     these; TiffLoader reads them off the main file instead. Case-insensitive name compare (not
