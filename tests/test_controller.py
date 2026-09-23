@@ -97,6 +97,18 @@ class TestAppController(unittest.TestCase):
         self.assertEqual(args[0], "half_frame_profile")
         self.assertEqual(args[1], {"crop_rect": [0.0, 0.0, 1.0, 1.0], "split_x": 0.6, "gutter_thickness": 0.02})
 
+    def test_half_frame_profile_is_saved_per_active_roll(self):
+        store: dict = {}
+        self.controller.session.repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        self.controller.session.repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+        self.controller.state.active_roll_id = "roll-a"
+        self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
+
+        self.assertNotIn("half_frame_profile", store)
+        self.assertEqual(self.controller.half_frame_profile()["split_x"], 0.6)
+        self.controller.state.active_roll_id = "roll-b"
+        self.assertIsNone(self.controller.half_frame_profile())
+
     def test_half_frame_override_round_trip(self):
         self.controller.session.repo.get_global_setting.return_value = None
         self.assertEqual(self.controller.half_frame_overrides(), {})

@@ -2,6 +2,8 @@
 
 import os
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from unittest.mock import MagicMock
@@ -719,6 +721,7 @@ class TestDiptychAsset:
         profile = {"crop_rect": [0.1, 0.0, 0.9, 1.0], "split_x": 0.4, "gutter_thickness": 0.05}
         ctrl.session.repo.get_global_setting.side_effect = lambda key, default=None: list(split) if key == SPLIT_SCANS_KEY else profile
         ctrl._active_diptych_memo = ("", None)
+        ctrl.state = SimpleNamespace(active_roll_id=None)
         return ctrl
 
     def test_mark_diptychs_flags_only_scans_with_half_edits(self):
@@ -816,6 +819,7 @@ class TestDiptychAsset:
         }
         ctrl.session.repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
         ctrl._active_diptych_memo = ("", None)
+        ctrl.state = SimpleNamespace(active_roll_id=None)
 
         info, pair = AppController._diptych_task(ctrl, {"path": "/p/a.tif", "hash": "ha", "diptych": True})
         assert pair == (cfg, cfg)
@@ -875,3 +879,36 @@ class TestDiptychAsset:
         assert "Diptych" in composite_summary(asset)
         # A half still reads as a half while the mode is on.
         assert composite_kind({"hash": "ha#1", "half": 1, "diptych": True}) == "half"
+
+
+def _dict_repo():
+    from unittest.mock import MagicMock
+
+    from negpy.infrastructure.storage.repository import StorageRepository
+
+    repo = MagicMock(spec=StorageRepository)
+    store: dict = {}
+    repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+    repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+    return repo, store
+
+
+class TestProfilePerRoll:
+    def test_a_roll_profile_is_its_own(self):
+        from negpy.services.assets.half_frame import half_frame_profile, save_half_frame_profile
+
+        repo, store = _dict_repo()
+        save_half_frame_profile(repo, "roll-a", {"split_x": 0.4})
+        assert half_frame_profile(repo, "roll-a") == {"split_x": 0.4}
+        assert half_frame_profile(repo, "roll-b") is None
+        assert "half_frame_profile" not in store
+
+    def test_a_roll_without_a_profile_reads_the_shared_one(self):
+        from negpy.services.assets.half_frame import half_frame_profile, save_half_frame_profile
+
+        repo, _store = _dict_repo()
+        save_half_frame_profile(repo, None, {"split_x": 0.55})
+        save_half_frame_profile(repo, "roll-a", {"split_x": 0.4})
+        assert half_frame_profile(repo, "roll-b") == {"split_x": 0.55}
+        assert half_frame_profile(repo, None) == {"split_x": 0.55}
+        assert half_frame_profile(repo, "roll-a") == {"split_x": 0.4}

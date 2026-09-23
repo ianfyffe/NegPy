@@ -89,6 +89,7 @@ from negpy.domain.models import (
     resolve_preset_export,
 )
 from negpy.services.assets.composites import forget_composite, restore_maps
+from negpy.services.assets import half_frame as half_frame_store
 from negpy.services.assets import rolls
 from negpy.services.assets.half_frame import (
     HalfGeometry,
@@ -1698,19 +1699,19 @@ class AppController(QObject):
 
     # ── half-frame split & crop profile ─────────────────────────────────
 
-    _HALF_FRAME_PROFILE_KEY = "half_frame_profile"
     _HALF_FRAME_OVERRIDES_KEY = "half_frame_overrides"
 
     def half_frame_profile(self) -> dict | None:
-        """Saved ``(crop_rect, split_x, gutter_thickness)`` profile, shared across
-        every half-frame split that has no override of its own. Scanner-independent —
-        the same crop/split applies whether the scans came from a SANE scanner, a
-        camera copy-stand, or a folder import."""
-        return self.session.repo.get_global_setting(self._HALF_FRAME_PROFILE_KEY, default=None)
+        """The active roll's ``(crop_rect, split_x, gutter_thickness)`` profile, shared by
+        every half-frame split with no override of its own. Scanner-independent — the same
+        crop/split applies whether the scans came from a SANE scanner, a camera copy-stand,
+        or a folder import."""
+        return half_frame_store.half_frame_profile(self.session.repo, self.state.active_roll_id)
 
     def save_half_frame_profile(self, crop_rect, split_x: float, gutter_thickness: float) -> None:
-        self.session.repo.save_global_setting(
-            self._HALF_FRAME_PROFILE_KEY,
+        half_frame_store.save_half_frame_profile(
+            self.session.repo,
+            self.state.active_roll_id,
             {"crop_rect": [float(v) for v in crop_rect], "split_x": float(split_x), "gutter_thickness": float(gutter_thickness)},
         )
 
