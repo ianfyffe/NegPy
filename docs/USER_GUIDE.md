@@ -701,7 +701,7 @@ A new roll, or a batch that is not one roll, takes the Trichrome Mode last chose
 
 **Half Frame Mode** splits each scan into two frames, for half-frame cameras; each half is edited and metered on its own. Turning it on detects the gutter, its direction and the film crop on every loaded scan. A batch that is not one roll cannot use it.
 
-*   **Adjust…**: drag the green box to crop and the orange line to set the split; pick **Split direction** (*Vertical* or *Horizontal*) and **Cut thickness** (the separator band to discard). **Auto-detect** finds all three again. **Apply** applies to the current, selected or all frames (all sets the roll default).
+*   **Adjust…**: drag the green box to crop and the orange line to set the split; pick **Split direction** (*Vertical* or *Horizontal*) and **Cut thickness** (the separator band to discard). **Auto-detect** finds all three again. **Apply** applies to the current, selected or all frames (all sets the roll default; each roll keeps its own).
 *   **Detect All**: reruns the batch detection.
 *   **Unsplit** (on a split frame): makes it one plain frame and deletes both halves' edits.
 
