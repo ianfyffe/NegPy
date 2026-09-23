@@ -105,6 +105,12 @@ class FakeController:
             return bool(by_roll.get(roll_id, False))
         return bool(self.session.repo.get_global_setting("half_frame_mode", False))
 
+    def trichrome_mode_for_roll(self, roll_id):
+        if roll_id:
+            by_roll = self.session.repo.get_global_setting("rgbscan_mode_by_roll", default=None) or {}
+            return bool(by_roll.get(roll_id, False))
+        return bool(self.session.repo.get_global_setting("rgbscan_mode", False))
+
     def __getattr__(self, name):
         return getattr(self._mock, name)
 

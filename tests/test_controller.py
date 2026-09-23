@@ -389,6 +389,47 @@ class TestAppController(unittest.TestCase):
         self.assertEqual(roll_id, "new-roll")
         self.assertEqual(store["half_frame_mode_by_roll"], {"new-roll": True})
 
+    def test_trichrome_mode_is_per_roll_and_off_for_an_unseen_roll(self):
+        store = self._fake_settings_store()
+        store["rgbscan_mode"] = True
+        store["rgbscan_mode_by_roll"] = {"rgb": True, "bw": False}
+        self.assertTrue(self.controller.trichrome_mode_for_roll("rgb"))
+        self.assertFalse(self.controller.trichrome_mode_for_roll("bw"))
+        self.assertFalse(self.controller.trichrome_mode_for_roll("new-roll"))
+        self.assertTrue(self.controller.trichrome_mode_for_roll(None))
+
+    def test_set_rgb_scan_mode_writes_the_active_rolls_own_entry(self):
+        store = self._fake_settings_store()
+        self.controller.state.active_roll_id = "r1"
+        self.controller.session.state.uploaded_files = []
+        self.controller.set_rgb_scan_mode(True)
+        self.assertEqual(store["rgbscan_mode_by_roll"], {"r1": True})
+        self.assertNotIn("rgbscan_mode", store)
+
+    def test_open_roll_emits_and_discovers_with_that_rolls_own_trichrome_state(self):
+        store = self._fake_settings_store()
+        store["rgbscan_mode"] = True
+        store["rgbscan_mode_by_roll"] = {"rgb": True}
+        tasks, seen = [], []
+        self.controller.asset_discovery_requested.connect(tasks.append)
+        self.controller.rgb_scan_mode_changed.connect(seen.append)
+        with patch("negpy.desktop.controller.rolls") as mock_rolls:
+            for roll_id in ("rgb", "bw"):
+                mock_rolls.roll_for_id.return_value = {"kind": "folder", "folder_path": f"/{roll_id}", "extra_paths": []}
+                self.controller.open_roll(roll_id)
+                self.controller._on_discovery_finished([])
+        self.assertEqual(seen, [True, False])
+        self.assertEqual([t.rgb_scan for t in tasks], [True, False])
+
+    def test_create_roll_from_session_seeds_the_new_rolls_trichrome_state(self):
+        store = self._fake_settings_store()
+        store["rgbscan_mode"] = True
+        self.controller.state.uploaded_files = [{"path": "/p/a.tif"}]
+        with patch("negpy.desktop.controller.rolls") as mock_rolls:
+            mock_rolls.create_virtual_roll.return_value = "new-roll"
+            self.controller.create_roll_from_session("My Roll")
+        self.assertEqual(store["rgbscan_mode_by_roll"], {"new-roll": True})
+
     def test_busy_toast_is_taken_down_when_the_frame_lands(self):
         """A slow render step holds its toast open; the finished frame clears it, and a
         toast nobody claimed is left alone."""

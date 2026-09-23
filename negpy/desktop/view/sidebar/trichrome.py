@@ -21,10 +21,10 @@ class TrichromeSidebar(BaseSidebar):
         self.enable_btn = self._small_toggle(
             "mdi.google-circles-communities",
             "Trichrome Mode",
-            bool(self.controller.session.repo.get_global_setting("rgbscan_mode", False)),
+            self.controller.trichrome_mode_for_roll(self.state.active_roll_id),
             wrap_tooltip(
                 "Assemble each frame from its red, green and blue exposures. A folder is grouped into "
-                "triplets in capture order on load; the mode applies to every roll you open."
+                "triplets in capture order on load. Each roll remembers its own setting."
             ),
             align_left=True,
         )
@@ -67,7 +67,7 @@ class TrichromeSidebar(BaseSidebar):
         conf = self.state.config.rgbscan
         self.block_signals(True)
         try:
-            self.enable_btn.setChecked(bool(self.controller.session.repo.get_global_setting("rgbscan_mode", False)))
+            self.enable_btn.setChecked(self.controller.trichrome_mode_for_roll(self.state.active_roll_id))
             self.edit_btn.setEnabled(bool(self.state.uploaded_files))
             if is_rgb_triplet(conf):
                 green, blue = os.path.basename(conf.green_path), os.path.basename(conf.blue_path)
