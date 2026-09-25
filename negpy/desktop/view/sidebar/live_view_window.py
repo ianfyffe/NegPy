@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 import qtawesome as qta
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCursor, QKeyEvent, QKeySequence, QShortcut
+from PyQt6.QtGui import QCursor, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QProgressBar, QToolButton, QVBoxLayout, QWidget
 
 from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
@@ -147,7 +147,7 @@ class LiveViewWindow(QDialog):
         self.scan_btn.setFixedHeight(SCAN_BUTTON_HEIGHT)
         # The body's own shutter button is dead while it is tethered, so this is the one way to
         # drive its autofocus without unplugging. Enabled once the stream reports a drive.
-        self.focus_btn = labeled_action("fa5s.crosshairs", " Focus", "Drive the camera's autofocus")
+        self.focus_btn = labeled_action("fa5s.crosshairs", " Focus", "Drive the camera's autofocus once")
         self.focus_btn.setFixedHeight(SCAN_BUTTON_HEIGHT)
         self.focus_btn.setEnabled(False)
         self.retake_btn = labeled_action("fa5s.redo", " Retake", "Re-capture the current frame without advancing the counter")
@@ -227,7 +227,7 @@ class LiveViewWindow(QDialog):
 
         # There are no text fields here, so letter keys are safe. The buttons respect their gated state.
         self._key_actions: dict[str, Callable[[], None]] = {}
-        QShortcut(QKeySequence("F"), self, self.focus_btn.click)
+        self._autofocus_available = False
         self.apply_shortcut_tooltips()
         self.set_autofocus_available(False)
 
@@ -262,13 +262,20 @@ class LiveViewWindow(QDialog):
         whenever the shortcut editor writes a new one."""
         for btn, action_id in ((self.scan_btn, "live_view_scan"), (self.retake_btn, "live_view_retake")):
             btn.setToolTip(wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, action_id)))
+        self._apply_focus_tooltip()
+
+    def _apply_focus_tooltip(self) -> None:
+        if self._autofocus_available:
+            tip = tooltip_with_shortcut(self.focus_btn.plain_tooltip, "live_view_focus")
+        else:
+            tip = "This camera offers no autofocus control over USB"
+        self.focus_btn.setToolTip(wrap_tooltip(tip))
 
     def set_autofocus_available(self, available: bool) -> None:
         """Enable Focus once the stream reports that this body has an autofocus drive."""
+        self._autofocus_available = available
         self.focus_btn.setEnabled(available)
-        self.focus_btn.setToolTip(
-            "Drive the camera's autofocus once  (shortcut: F)" if available else "This camera offers no autofocus control over USB"
-        )
+        self._apply_focus_tooltip()
 
     def set_focusing(self, active: bool) -> None:
         """Hold the button down while a drive is in flight; it can take a few seconds."""

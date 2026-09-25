@@ -166,6 +166,7 @@ Actions with no default key are not listed; every one of them can still be bound
 | Key | Action |
 |-----|--------|
 | `S` | Scan this frame, or stop the scan |
+| `F` | Run the camera's autofocus once |
 | `R` | Retake the current frame |
 
 ## Help

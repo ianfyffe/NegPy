@@ -45,3 +45,11 @@ def test_tooltips_read_the_bound_key(qapp):
     window = LiveViewWindow()
     assert window.scan_btn.toolTip() == wrap_tooltip(tooltip_with_shortcut(window.scan_btn.plain_tooltip, "live_view_scan"))
     assert window.retake_btn.toolTip() == wrap_tooltip(tooltip_with_shortcut(window.retake_btn.plain_tooltip, "live_view_retake"))
+
+
+def test_focus_tooltip_names_its_key_only_while_a_drive_is_available(qapp):
+    window = LiveViewWindow()
+    bound = wrap_tooltip(tooltip_with_shortcut(window.focus_btn.plain_tooltip, "live_view_focus"))
+    assert window.focus_btn.toolTip() != bound
+    window.set_autofocus_available(True)
+    assert window.focus_btn.toolTip() == bound
