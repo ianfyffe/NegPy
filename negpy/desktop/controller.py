@@ -1407,7 +1407,7 @@ class AppController(QObject):
         self._supersede_sidecar_scan()
         for path in paths:
             moved = repoint.roll_moved_to(self.session.repo, path) if os.path.isdir(path) else None
-            if moved is not None and moved[1]:
+            if moved is not None and moved[1] == repoint.MOVED:
                 self._on_folder_followed(repoint.follow_folder(self.session.repo, moved[0], path), path)
         self._read_roll_sidecars(rolls.folder_rolls_holding(self.session.repo, paths))
         active_roll_id = self.state.active_roll_id
@@ -1527,7 +1527,7 @@ class AppController(QObject):
         if not add_to_session:
             # Recognizing every opened folder is independent of which one, if any,
             # becomes the active roll -- that only makes sense for a single one.
-            recognized = [self._recognize_roll_folder(repo, f) for f in present]
+            recognized = [self._recognize_roll_folder(repo, f) or rolls.recognize_folder(repo, f) for f in present]
             self.state.active_roll_id = recognized[0] if len(recognized) == 1 else None
             self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(self.state.active_roll_id))
             self._register_library_roots(present)
@@ -1597,11 +1597,11 @@ class AppController(QObject):
         self.flush_sidecars()
         return True
 
-    def _recognize_roll_folder(self, repo, path: str, name: str = "") -> str:
-        """Recognize *path* as a folder roll, following a folder another computer moved.
-        A copy's new uid is written to its roll file when Keep Current is on."""
+    def _recognize_roll_folder(self, repo, path: str, name: str = "") -> Optional[str]:
+        """``repoint.recognize_roll_folder``; a copy's new uid is written to its roll file when
+        Keep Current is on."""
         roll_id = repoint.recognize_roll_folder(repo, path, name, on_moved=self._on_folder_followed)
-        if rolls.roll_uid_unwritten(repo, roll_id):
+        if roll_id and rolls.roll_uid_unwritten(repo, roll_id):
             self._mirror_roll(roll_id)
         return roll_id
 

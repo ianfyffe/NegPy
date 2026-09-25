@@ -79,11 +79,13 @@ def roll_uid(repo: Any, roll_id: str) -> str:
 
 
 def set_roll_uid(repo: Any, roll_id: str, uid: str, unwritten: bool = False) -> None:
-    """Set the roll's uid. *unwritten* marks one its roll file does not hold yet, a copied
-    folder's own: until it is written it wins over the uid the file holds."""
+    """Set the roll's uid, unless another folder roll here holds it. *unwritten* marks one its
+    roll file does not hold yet, a copied folder's own: until written it wins over the file's."""
     store = _read(repo)
     entry = store.get(roll_id)
     if entry is None or (entry.get("roll_uid") == uid and bool(entry.get("roll_uid_unwritten")) == unwritten):
+        return
+    if any(rid != roll_id and e.get("kind") == "folder" and e.get("roll_uid") == uid for rid, e in store.items()):
         return
     entry["roll_uid"] = uid
     if unwritten:
@@ -270,14 +272,18 @@ def discover_roll_folders(parent_path: str, filters: Sequence[str]) -> List[str]
 
 
 def import_subfolders_as_rolls(
-    repo: Any, parent_path: str, *, skip_dismissed: bool = False, recognize: Callable[[Any, str, str], str] = recognize_folder
+    repo: Any,
+    parent_path: str,
+    *,
+    skip_dismissed: bool = False,
+    recognize: Callable[[Any, str, str], Optional[str]] = recognize_folder,
 ) -> List[str]:
     """Recognize every roll folder under *parent_path* and remember it as an import source.
 
     Idempotent per folder, so a re-run only creates the missing rolls. A roll is named by
     its path from the folder that holds *parent_path* ("20260901/kentmere_400_1").
     *skip_dismissed* leaves out folders whose roll was deleted. *recognize* takes
-    ``(repo, path, name)`` and returns the roll id.
+    ``(repo, path, name)`` and returns the roll id, or None to leave the folder for now.
     """
     parent_path = os.path.normpath(parent_path)
     paths = discover_roll_folders(parent_path, discovery_filters(repo))
@@ -289,7 +295,7 @@ def import_subfolders_as_rolls(
     if skip_dismissed:
         dismissed = {_folder_key(p) for p in _dismissed_folders(repo)}
         paths = [p for p in paths if _folder_key(p) not in dismissed]
-    return [recognize(repo, path, imported_roll_name(path, parent_path)) for path in paths]
+    return [rid for path in paths if (rid := recognize(repo, path, imported_roll_name(path, parent_path)))]
 
 
 def imported_roll_name(path: str, parent_path: str) -> str:

@@ -778,3 +778,60 @@ def test_with_keep_current_off_nothing_is_written(tmp_path):
     assert new_on_d not in (None, d.roll_id)
     assert not os.path.isdir(rolls.roll_for_id(d.repo, d.roll_id)["folder_path"])
     assert find_moved_folder(d.repo, d.roll_id, []) is None
+
+
+def test_a_copy_of_a_renamed_roll_keeps_its_own_name_on_both_computers(tmp_path):
+    a, b = _nas(tmp_path)
+    _share_roll_uid(a, b)
+    rolls.rename_roll(a.repo, a.roll_id, "photos/Portra")
+    _mirror_roll(a)
+    shutil.copytree(a.folder, a.folder + "_copy")
+
+    _refresh_library(a)
+    copy_on_a = rolls.folder_roll_id_for_path(a.repo, a.folder + "_copy")
+    read_roll_sidecar(a.repo, copy_on_a)
+    _mirror_roll(SimpleNamespace(repo=a.repo, roll_id=copy_on_a))
+    _refresh_library(b)
+    copy_on_b = rolls.folder_roll_id_for_path(b.repo, b.folder + "_copy")
+    read_roll_sidecar(b.repo, copy_on_b)
+
+    copy_file = _file(SimpleNamespace(folder=a.folder + "_copy"))
+    assert copy_file["name"].endswith("roll_copy")
+    assert rolls.roll_for_id(a.repo, copy_on_a)["name"] == "photos/roll_copy"
+    assert rolls.roll_for_id(b.repo, copy_on_b)["name"] == "photos/roll_copy"
+    assert _name(a).endswith("Portra") and _file(a)["name"].endswith("Portra")
+
+
+def test_one_folder_reached_by_a_second_path_is_neither_a_copy_nor_a_move(tmp_path):
+    """Z:\\roll and \\\\nas\\share\\roll, or a symlink: one folder, one roll file, one uid."""
+    a, b = _nas(tmp_path)
+    _share_roll_uid(a, b)
+    uid = _file(a)["roll_uid"]
+    second_path = str(tmp_path / "b_mount" / "photos" / "roll")
+
+    assert recognize_roll_folder(a.repo, second_path) is None
+    assert len(rolls.saved_rolls(a.repo)) == 1
+
+    plain = rolls.recognize_folder(a.repo, second_path)
+    read_roll_sidecar(a.repo, plain)
+    rolls.set_roll_uid(a.repo, plain, uid)
+    _mirror_roll(SimpleNamespace(repo=a.repo, roll_id=plain))
+    assert rolls.roll_uid(a.repo, plain) == ""
+    assert _file(a)["roll_uid"] == uid == rolls.roll_uid(a.repo, a.roll_id)
+
+
+def test_a_folder_that_still_seems_to_be_there_waits_for_the_next_refresh(tmp_path):
+    """Just after a rename a network share can still list the old folder, without its files."""
+    a, b = _nas(tmp_path)
+    _share_roll_uid(a, b)
+    _rename_folder_on(a, "roll_best")
+    stale = tmp_path / "nas" / "photos" / "roll"
+    stale.mkdir()
+
+    _refresh_library(b)
+    assert len(rolls.saved_rolls(b.repo)) == 1
+    assert rolls.roll_for_id(b.repo, b.roll_id)["folder_path"] == b.folder
+
+    stale.rmdir()
+    _refresh_library(b)
+    assert rolls.folder_roll_id_for_path(b.repo, os.path.join(os.path.dirname(b.folder), "roll_best")) == b.roll_id
