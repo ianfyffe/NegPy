@@ -317,24 +317,31 @@ def load_roll_sidecar(folder: str) -> Optional[RollSidecar]:
 
 
 def roll_sidecar_from_repo(repo, roll_id: str) -> Optional[tuple[str, RollSidecar]]:
-    """(folder, file) for a folder roll this machine has changed. None for a virtual roll."""
+    """(folder, file) to write for a folder roll this machine has changed. None for a virtual
+    roll, or when the folder's file was saved after the state here: writing it would hide
+    that newer state from every machine."""
     entry = rolls.roll_for_id(repo, roll_id)
     saved_at = rolls.roll_updated_at(repo, roll_id)
     if not entry or entry.get("kind") != "folder" or not entry.get("folder_path") or saved_at is None:
+        return None
+    on_disk = load_roll_sidecar(entry["folder_path"])
+    if on_disk is not None and on_disk.saved_at > saved_at:
         return None
     state = {key: entry[key] for key in rolls.PORTABLE_FIELDS if entry.get(key)}
     return entry["folder_path"], RollSidecar(saved_at, entry.get("name") or "", rolls.roll_half_frame_mode(repo, roll_id), state)
 
 
 def export_roll_sidecar(repo, roll_id: str) -> Optional[str]:
-    """Write a folder roll's file, dating state no change here has dated yet. Returns the
-    path, or None when the roll is virtual or holds nothing to carry."""
-    if rolls.roll_updated_at(repo, roll_id) is None and rolls.has_portable_state(repo, roll_id):
+    """Write a folder roll's file, dating state no change here has dated yet unless the
+    folder already has a file. Returns the path, or None when nothing was written."""
+    entry = rolls.roll_for_id(repo, roll_id) or {}
+    folder = entry.get("folder_path") or ""
+    if entry.get("kind") != "folder" or not os.path.isdir(folder):
+        return None
+    if rolls.roll_updated_at(repo, roll_id) is None and rolls.has_portable_state(repo, roll_id) and load_roll_sidecar(folder) is None:
         rolls.touch_roll(repo, roll_id)
     found = roll_sidecar_from_repo(repo, roll_id)
-    if found is None or not os.path.isdir(found[0]):
-        return None
-    return write_roll_sidecar(*found)
+    return write_roll_sidecar(*found) if found is not None else None
 
 
 def adopt_roll_sidecar(repo, roll_id: str, sidecar: RollSidecar) -> None:
