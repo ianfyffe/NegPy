@@ -707,7 +707,7 @@ class AssetDiscoveryWorker(QObject):
         import os
 
         from negpy.infrastructure.loaders.constants import is_ir_sidecar_path
-        from negpy.kernel.image.logic import file_hashes
+        from negpy.infrastructure.storage.hash_cache import FileHashCache
         from negpy.services.assets.migrations.hash import blank_ambiguous_legacy_hashes
 
         discovered_paths = []
@@ -728,7 +728,9 @@ class AssetDiscoveryWorker(QObject):
         discovered_paths = [p for p in discovered_paths if not is_ir_sidecar_path(p)]
 
         valid_assets = []
-        digests = self._map_files(discovered_paths, file_hashes, os.path.basename, _HASH_WORKERS)
+        digests = FileHashCache(APP_CONFIG.hash_cache_db_path).file_hashes(
+            discovered_paths, lambda fn: self._map_files(discovered_paths, fn, os.path.basename, _HASH_WORKERS)
+        )
 
         for path, digest in zip(discovered_paths, digests):
             if digest is None:

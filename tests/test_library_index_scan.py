@@ -1,13 +1,20 @@
 """LibrarySearchWorker.scan_for_indexing: the walk+hash pass a whole-library index
 needs, sharing the same LibraryWalkCache a keyword search already pays for. Real tiny
-files on disk, since calculate_file_hash genuinely reads bytes -- no RAW decode
+files on disk, since the fingerprint genuinely reads bytes -- no RAW decode
 involved, so nothing here needs mocking to stay fast."""
 
+import builtins
+import os
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from negpy.desktop.workers.library import LibrarySearchWorker
+from negpy.kernel.image.logic import file_hashes
+from negpy.kernel.system.config import APP_CONFIG
+
+_OLD = time.time() - 3600
 
 
 @pytest.fixture
@@ -78,7 +85,50 @@ def test_scan_error_emits_error_not_a_crash(library):
     error = MagicMock()
     worker.error.connect(error)
 
-    with patch("negpy.desktop.workers.library.calculate_file_hash", side_effect=RuntimeError("disk unplugged")):
+    with patch("negpy.infrastructure.storage.hash_cache.file_hashes", side_effect=RuntimeError("disk unplugged")):
         worker.scan_for_indexing([str(library)])
 
     error.assert_called_once()
+
+
+def _scan_hashes(worker: LibrarySearchWorker, roots: list[str], monkeypatch) -> tuple[dict[str, str], set[str]]:
+    """({path: hash}, paths opened during the scan)."""
+    scanned = MagicMock()
+    worker.indexing_scanned.connect(scanned)
+    opened: set[str] = set()
+    real_open = builtins.open
+
+    def _tracking(file, *args, **kwargs):
+        opened.add(str(file))
+        return real_open(file, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(builtins, "open", _tracking)
+        worker.scan_for_indexing(roots)
+    worker.indexing_scanned.disconnect(scanned)
+    (files,) = scanned.call_args[0]
+    return {f["path"]: f["hash"] for f in files}, opened
+
+
+def test_a_second_scan_reads_only_the_changed_file(library, tmp_path, monkeypatch):
+    monkeypatch.setattr(APP_CONFIG, "hash_cache_db_path", str(tmp_path / "hash_cache.db"))
+    paths = sorted(str(p) for p in (library / "roll_a").iterdir())
+    for p in paths:
+        os.utime(p, (_OLD, _OLD))
+    worker = LibrarySearchWorker()
+
+    first, _ = _scan_hashes(worker, [str(library)], monkeypatch)
+    second, opened = _scan_hashes(worker, [str(library)], monkeypatch)
+
+    assert second == first
+    assert opened.isdisjoint(paths)
+
+    changed, unchanged = paths
+    with open(changed, "wb") as f:
+        f.write(b"c" * 10)
+    os.utime(changed, (_OLD + 60, _OLD + 60))
+    third, opened = _scan_hashes(worker, [str(library)], monkeypatch)
+
+    assert opened & set(paths) == {changed}
+    assert third[changed] == file_hashes(changed)[0] != first[changed]
+    assert third[unchanged] == first[unchanged]

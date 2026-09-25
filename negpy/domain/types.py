@@ -42,6 +42,8 @@ class AppConfig:
     adobe_rgb_profile: str
     use_gpu: bool = True
     override_toml_path: str = ""
+    # File-fingerprint cache, keyed on local paths. Empty disables it.
+    hash_cache_db_path: str = ""
     max_texture_size: int | None = None
     force_hq_preview: bool | None = None
     # Multi-core Numba kernels on the CPU pipeline. None = the platform default, on
