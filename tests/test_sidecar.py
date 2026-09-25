@@ -174,7 +174,7 @@ def test_sidecar_from_repo_matches_row(repo):
     assert sc.saved_at == 77.0
     assert sc.source_hash == "h_repo"
     assert sc.mark == "keeper"
-    assert sc.work_prints["v1"] == SidecarWorkPrint(5.0, repo.load_work_print("h_repo", "v1"))
+    assert sc.work_prints["v1"] == SidecarWorkPrint(5.0, repo.load_work_print("h_repo", "v1"), 5.0)
     assert sidecar_from_repo(repo, "nope") is None
 
 
@@ -743,3 +743,105 @@ def test_a_null_mark_in_a_file_without_mark_at_leaves_the_mark_here(tmp_path, re
     assert loaded is not None and (loaded.mark, loaded.mark_at) == (None, None)
     read_frame_sidecars(repo, [{"name": "n", "path": src, "hash": "h_n"}])
     assert repo.load_file_mark("h_n") == "keeper"
+
+
+# --- Work-print tombstones -------------------------------------------------------------
+
+
+def _frame(tmp_path, name: str = "IMG_wp.NEF") -> tuple[str, dict]:
+    src = str(tmp_path / name)
+    return src, {"name": name, "path": src, "hash": "h_wp"}
+
+
+def test_a_deleted_work_print_stays_deleted_when_the_file_still_holds_it(tmp_path, repo):
+    src, asset = _frame(tmp_path)
+    repo.save_file_settings("h_wp", WorkspaceConfig(), file_path=src)
+    repo.save_work_print("h_wp", "v1", WorkspaceConfig(), created_at=5.0)
+    write_sidecar(src, sidecar_from_repo(repo, "h_wp", src))
+    repo.delete_work_print("h_wp", "v1")
+
+    assert read_frame_sidecars(repo, [asset]) == ([], [])
+    assert repo.list_work_prints("h_wp") == []
+
+
+def test_a_renamed_work_print_is_not_duplicated_by_the_file(tmp_path, repo):
+    src, asset = _frame(tmp_path)
+    repo.save_file_settings("h_wp", WorkspaceConfig(), file_path=src)
+    repo.save_work_print("h_wp", "v1", WorkspaceConfig(), created_at=5.0)
+    write_sidecar(src, sidecar_from_repo(repo, "h_wp", src))
+    repo.rename_work_print("h_wp", "v1", "final")
+
+    read_frame_sidecars(repo, [asset])
+    assert repo.list_work_prints("h_wp") == ["final"]
+    assert set(repo.load_work_print_tombstones("h_wp")) == {"v1"}
+
+
+def test_a_deletion_and_a_rename_travel_to_a_machine_that_holds_the_print(tmp_path, repo):
+    src, asset = _frame(tmp_path)
+    other = StorageRepository(str(tmp_path / "o_edits.db"), str(tmp_path / "o_settings.db"))
+    other.initialize()
+    for r in (repo, other):
+        r.save_work_print("h_wp", "gone", WorkspaceConfig(), created_at=5.0)
+        r.save_work_print("h_wp", "v1", WorkspaceConfig(), created_at=6.0)
+    repo.delete_work_print("h_wp", "gone")
+    repo.rename_work_print("h_wp", "v1", "final")
+    write_sidecar(src, sidecar_from_repo(repo, "h_wp", src))
+
+    assert read_frame_sidecars(other, [asset]) == ([], ["h_wp"])
+    assert other.list_work_prints("h_wp") == ["final"]
+    assert set(other.load_work_print_tombstones("h_wp")) == {"gone", "v1"}
+
+
+def test_a_print_saved_after_its_names_tombstone_comes_back(tmp_path, repo):
+    src, asset = _frame(tmp_path)
+    repo.save_work_print("h_wp", "v1", WorkspaceConfig(), created_at=5.0)
+    repo.delete_work_print("h_wp", "v1", deleted_at=10.0)
+    assert repo.load_work_print_tombstones("h_wp") == {"v1": 10.0}
+    write_sidecar(src, Sidecar(config=None, work_prints={"v1": SidecarWorkPrint(20.0, _rich_config())}))
+
+    assert read_frame_sidecars(repo, [asset]) == ([], ["h_wp"])
+    assert repo.list_work_prints("h_wp") == ["v1"]
+    assert repo.load_work_print_tombstones("h_wp") == {}
+
+    # Saving the name here again also clears its tombstone.
+    repo.delete_work_print("h_wp", "v1", deleted_at=30.0)
+    repo.save_work_print("h_wp", "v1", WorkspaceConfig())
+    assert repo.load_work_print_tombstones("h_wp") == {}
+
+
+def test_an_older_tombstone_in_the_file_leaves_a_newer_print(tmp_path, repo):
+    src, asset = _frame(tmp_path)
+    repo.save_work_print("h_wp", "v1", WorkspaceConfig(), created_at=50.0)
+    write_sidecar(src, Sidecar(config=None, deleted_work_prints={"v1": 10.0}))
+    assert read_frame_sidecars(repo, [asset]) == ([], [])
+    assert repo.list_work_prints("h_wp") == ["v1"]
+
+
+def test_a_file_without_tombstones_reads_as_none(tmp_path):
+    src = str(tmp_path / "IMG_nt.NEF")
+    with open(sidecar_path_for(src), "w", encoding="utf-8") as f:
+        json.dump({"sidecar_format": 3, "saved_at": 1.0, "edit": _rich_config().to_dict()}, f, default=str)
+    loaded = load_sidecar(src)
+    assert loaded is not None and loaded.deleted_work_prints == {}
+
+
+def test_a_tombstone_alone_writes_a_sidecar(tmp_path, repo):
+    src = str(tmp_path / "IMG_t1.NEF")
+    repo.save_work_print("h_t1", "v1", WorkspaceConfig(), created_at=5.0)
+    repo.delete_work_print("h_t1", "v1", deleted_at=9.0)
+    sc = sidecar_from_repo(repo, "h_t1", src)
+    assert sc is not None and (sc.config, sc.work_prints, sc.deleted_work_prints) == (None, {}, {"v1": 9.0})
+
+
+def test_work_print_updated_at_backfilled_from_created_at(tmp_path):
+    import sqlite3
+
+    edits = str(tmp_path / "edits.db")
+    with sqlite3.connect(edits) as conn:
+        conn.execute(
+            "CREATE TABLE work_prints (file_hash TEXT, name TEXT, created_at REAL, settings_json TEXT, PRIMARY KEY (file_hash, name))"
+        )
+        conn.execute("INSERT INTO work_prints VALUES ('h', 'v1', 7.0, ?)", (json.dumps(_rich_config().to_dict(), default=str),))
+    repo = StorageRepository(edits, str(tmp_path / "settings.db"))
+    repo.initialize()
+    assert repo.load_work_print_stamps("h") == {"v1": 7.0}
