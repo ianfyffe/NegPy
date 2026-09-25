@@ -746,6 +746,19 @@ class TestAppController(unittest.TestCase):
 
         mock_write.assert_called_once_with("/tmp/c.dng", row, half=0)
 
+    def test_marks_and_work_prints_refresh_when_the_mirror_takes_them_from_a_file(self):
+        state = self.mock_session_manager.state
+        state.current_file_hash = "hash1#roll:r1"
+        emitted = []
+        self.mock_session_manager.work_prints_changed.emit.side_effect = lambda: emitted.append(True)
+
+        self.controller._on_sidecar_extras_merged(["hash2"])
+        self.mock_session_manager.refresh_marks.assert_called_once()
+        self.assertEqual(emitted, [])
+
+        self.controller._on_sidecar_extras_merged(["hash1"])
+        self.assertEqual(emitted, [True])
+
     def test_mirror_queues_current_frame_only_when_enabled(self):
         from negpy.domain.models import ExportConfig
 
