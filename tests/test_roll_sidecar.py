@@ -24,7 +24,7 @@ from negpy.services.assets.sidecar import (
     load_sidecar,
     pending_sidecar_offers,
     promote_sidecar,
-    promote_unedited,
+    read_frame_sidecars,
     read_roll_sidecar,
     roll_sidecar_path,
     sidecar_from_repo,
@@ -71,7 +71,7 @@ def _copy_sidecars(src, dst) -> None:
 def _open_on(m) -> list:
     """What a folder open does: read the roll file, fill unedited frames, list newer ones."""
     roll_offer = read_roll_sidecar(m.repo, m.roll_id)
-    promote_unedited(m.repo, m.assets)
+    read_frame_sidecars(m.repo, m.assets)
     return [o for o in [roll_offer] if o is not None] + pending_sidecar_offers(m.repo, m.assets)
 
 
@@ -122,7 +122,7 @@ def test_a_format_2_sidecar_locks_only_where_the_edit_differs_from_the_roll(tmp_
         with open(sidecar_path_for(asset["path"]), "w", encoding="utf-8") as f:
             json.dump(payload, f, default=str)
 
-    promote_unedited(b.repo, b.assets)
+    read_frame_sidecars(b.repo, b.assets)
 
     assert rolls.frame_override_cards(b.repo, b.roll_id, "h1") == set()
     assert rolls.frame_override_cards(b.repo, b.roll_id, "h2") == {"sensor"}
@@ -364,10 +364,9 @@ def test_marking_a_forked_frame_mirrors_the_shared_sidecar(tmp_path):
     a.session.toggle_mark("keeper")
     mirror.flush()
 
-    stamp = a.repo.load_file_record("h2")[1]
-    assert stamp > 5.0
+    mark, marked_at = a.repo.load_mark_record("h2")
     sidecar = load_sidecar(asset["path"])
-    assert (sidecar.mark, sidecar.saved_at) == ("keeper", stamp)
+    assert (sidecar.mark, sidecar.mark_at, sidecar.saved_at) == ("keeper", marked_at, 5.0)
 
 
 def test_a_forks_work_print_stays_with_the_fork(tmp_path):
@@ -412,3 +411,34 @@ def test_a_fork_hash_neither_writes_nor_restores_roll_locks(pair):
     promote_sidecar(a.repo, fork, a.assets[1]["path"], sidecar_from_repo(a.repo, "h1", a.assets[0]["path"]))
 
     assert rolls.roll_for_id(a.repo, a.roll_id).get("frame_overrides") == before
+
+
+def test_a_mark_and_work_print_on_an_unedited_frame_reach_the_other_machine(tmp_path):
+    a, b = _machine(tmp_path, "a"), _machine(tmp_path, "b")
+    asset = a.assets[0]
+    a.session.state.uploaded_files = [dict(asset)]
+    a.session.state.selected_file_idx = 0
+    a.session.asset_model = SimpleNamespace(refresh=lambda: None)
+    a.session.toggle_mark("excluded")
+    a.repo.save_work_print("h1", "Print 1", _cfg(hue_trim=4.0), created_at=3.0)
+    _mirror(a)
+    assert a.repo.load_file_record("h1") is None
+    _copy_sidecars(a, b)
+
+    assert _open_on(b) == []
+    assert b.repo.load_file_record("h1") is None
+    assert b.repo.load_file_mark("h1") == "excluded"
+    assert b.repo.list_work_prints("h1") == ["Print 1"]
+
+
+def test_export_sidecars_writes_a_frame_that_has_only_a_mark(tmp_path):
+    from negpy.desktop.controller import AppController
+
+    a = _machine(tmp_path, "a")
+    a.repo.save_file_mark("h2", "keeper", file_path=a.assets[1]["path"])
+    written, failed = AppController._write_edit_sidecars(SimpleNamespace(session=a.session), a.assets)
+
+    assert (written, failed) == (1, 0)
+    sidecar = load_sidecar(a.assets[1]["path"])
+    assert sidecar is not None and (sidecar.config, sidecar.mark) == (None, "keeper")
+    assert not os.path.exists(sidecar_path_for(a.assets[0]["path"]))

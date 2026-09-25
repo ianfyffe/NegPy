@@ -54,30 +54,29 @@ class TestDesktopSessionSync(unittest.TestCase):
         self.assertEqual(self.session.state.selected_file_idx, 1)
         self.assertEqual(self.session.state.selected_indices, [1])
 
-    def test_toggle_mark_bumps_the_edit_timestamp(self):
+    def test_toggle_mark_dates_the_mark_not_the_edit(self):
         self.session.state.selected_indices = [0]
         self.session.toggle_mark("excluded")
         self.mock_repo.save_file_mark.assert_called_once_with("hash1", "excluded", file_path="path1")
-        self.mock_repo.touch_file_settings.assert_called_once_with("hash1")
+        self.mock_repo.touch_file_settings.assert_not_called()
 
-    def test_toggle_mark_touches_the_unforked_hash(self):
+    def test_toggle_mark_writes_the_unforked_hash(self):
         self.session.state.uploaded_files[0]["hash"] = "hash1#roll:r1"
         self.session.state.selected_indices = [0]
         self.session.toggle_mark("keeper")
         self.mock_repo.save_file_mark.assert_called_once_with("hash1", "keeper", file_path="path1")
-        self.mock_repo.touch_file_settings.assert_called_once_with("hash1")
 
-    def test_save_work_print_bumps_the_edit_timestamp(self):
+    def test_save_work_print_leaves_the_edit_timestamp(self):
         self.session.state.current_file_hash = "hash1"
         self.session.save_work_print("Version A")
         self.mock_repo.save_work_print.assert_called_once()
-        self.mock_repo.touch_file_settings.assert_called_once_with("hash1")
+        self.mock_repo.touch_file_settings.assert_not_called()
 
-    def test_delete_work_print_bumps_the_edit_timestamp(self):
+    def test_delete_work_print_leaves_the_edit_timestamp(self):
         self.session.state.current_file_hash = "hash1"
         self.session.delete_work_print("Version A")
         self.mock_repo.delete_work_print.assert_called_once_with("hash1", "Version A")
-        self.mock_repo.touch_file_settings.assert_called_once_with("hash1")
+        self.mock_repo.touch_file_settings.assert_not_called()
 
     def test_rediscovery_refreshes_same_path_in_place(self):
         refreshed = {

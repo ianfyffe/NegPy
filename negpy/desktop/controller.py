@@ -111,10 +111,11 @@ from negpy.services.assets.sidecar import (
     decline_sidecar_offers,
     export_roll_sidecar,
     load_or_promote,
-    promote_unedited,
     load_sidecar,
+    merge_sidecar_extras,
     pending_sidecar_offers,
     promote_sidecar,
+    read_frame_sidecars,
     read_roll_sidecar,
     sidecar_from_repo,
     sidecar_path_for,
@@ -6676,7 +6677,7 @@ class AppController(QObject):
             load_or_promote(repo, f["hash"], f["path"], half=half)  # rehome or promote, so the row exists
             sidecar = sidecar_from_repo(repo, f["hash"], f["path"])
             if sidecar is None:
-                continue  # never edited: nothing to carry
+                continue  # no edit, mark or work print: nothing to carry
             try:
                 write_sidecar(f["path"], sidecar, half=half)
                 written += 1
@@ -6762,17 +6763,29 @@ class AppController(QObject):
         if sidecar is None:
             self.set_status("No sidecar next to this frame", 3000, kind="warning")
             return
+        if sidecar.config is None:
+            if merge_sidecar_extras(self.session.repo, asset["hash"], asset["path"], sidecar):
+                self.session.refresh_marks()
+                self.session.work_prints_changed.emit()
+                self.set_status("Loaded the mark and work prints from sidecar; it holds no edit", 4000)
+            else:
+                self.set_status("The sidecar holds no edit, and no mark or work print newer than here", 4000)
+            return
         promote_sidecar(self.session.repo, asset["hash"], asset["path"], sidecar)
         self.session.refresh_marks()
         self.session.reload_current_file()
         self.set_status("Loaded edit from sidecar", 3000)
 
     def _load_sidecars_of_unedited(self, assets: List[Dict]) -> list[str]:
-        """Fill frames that have no edit here from their sidecars, before the session hydrates
-        them. Returns the hashes filled; their filmstrip thumbnails predate the edit."""
-        filled = promote_unedited(self.session.repo, assets)
-        if filled:
-            self.set_status(f"Loaded {count_of(len(filled), 'edit')} from sidecars", 4000)
+        """Fill frames that have no edit here from their sidecars, and take newer marks and
+        work prints, before the session hydrates them. Returns the hashes whose edit was
+        filled; their filmstrip thumbnails predate the edit."""
+        filled, merged = read_frame_sidecars(self.session.repo, assets)
+        loaded = [count_of(len(filled), "edit")] if filled else []
+        if merged:
+            loaded.append(f"the marks or work prints of {count_of(len(merged), 'frame')}")
+        if loaded:
+            self.set_status(f"Loaded {' and '.join(loaded)} from sidecars", 4000)
         return filled
 
     def _read_roll_sidecars(self, roll_ids: List[str]) -> None:
@@ -6841,7 +6854,8 @@ class AppController(QObject):
         return rediscover
 
     def export_edit_sidecars(self) -> None:
-        """Write a sidecar for every visible frame with a saved edit (ignores the mirror toggle)."""
+        """Write a sidecar for every visible frame with a saved edit, mark or work print
+        (ignores the mirror toggle)."""
         visible_files = [
             self.state.uploaded_files[i]
             for i in self.session.asset_model.visible_actual_indices_ordered()

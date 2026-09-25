@@ -125,6 +125,18 @@ class StorageRepository(IRepository):
                 pass  # already exists
             conn.execute("UPDATE file_settings SET updated_at = ? WHERE updated_at IS NULL", (time.time(),))
 
+            # Migration: marked_at, the time a sidecar's mark is compared against. A mark from
+            # before the column takes its edit's updated_at, which dated it until then, else 0.
+            try:
+                conn.execute("ALTER TABLE file_marks ADD COLUMN marked_at REAL")
+            except sqlite3.OperationalError:
+                pass  # already exists
+            conn.execute(
+                "UPDATE file_marks SET marked_at = COALESCE("
+                "(SELECT updated_at FROM file_settings WHERE file_settings.file_hash = file_marks.file_hash), 0) "
+                "WHERE marked_at IS NULL"
+            )
+
         with self._connect(self.settings_db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
@@ -134,33 +146,36 @@ class StorageRepository(IRepository):
                 )
             """)
 
-    def save_file_mark(self, file_hash: str, mark: Optional[str], file_path: str = "") -> None:
-        """Persists a triage mark ('keeper'/'excluded'); None clears it."""
+    def save_file_mark(self, file_hash: str, mark: Optional[str], file_path: str = "", marked_at: Optional[float] = None) -> None:
+        """Persists a triage mark ('keeper'/'excluded'); None clears it. ``marked_at`` defaults
+        to now. A cleared mark keeps its row with an empty mark, so the clear has a time too."""
         with self._connect(self.edits_db_path) as conn:
-            if mark:
-                conn.execute(
-                    "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path) VALUES (?, ?, ?)",
-                    (file_hash, mark, file_path),
-                )
-            else:
-                conn.execute("DELETE FROM file_marks WHERE file_hash = ?", (file_hash,))
+            conn.execute(
+                "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path, marked_at) VALUES (?, ?, ?, ?)",
+                (file_hash, mark or "", file_path, marked_at if marked_at is not None else time.time()),
+            )
 
     def load_file_mark(self, file_hash: str) -> Optional[str]:
+        record = self.load_mark_record(file_hash)
+        return record[0] if record else None
+
+    def load_mark_record(self, file_hash: str) -> Optional[tuple[Optional[str], float]]:
+        """(mark or None when cleared, marked_at), or None when the frame was never marked."""
         with self._connect(self.edits_db_path) as conn:
-            row = conn.execute("SELECT mark FROM file_marks WHERE file_hash = ?", (file_hash,)).fetchone()
-        return str(row[0]) if row else None
+            row = conn.execute("SELECT mark, marked_at FROM file_marks WHERE file_hash = ?", (file_hash,)).fetchone()
+        return (str(row[0]) or None, float(row[1] or 0.0)) if row else None
 
     def load_file_marks(self) -> dict[str, str]:
         """Returns all triage marks as {file_hash: mark}."""
         with self._connect(self.edits_db_path) as conn:
-            cursor = conn.execute("SELECT file_hash, mark FROM file_marks")
+            cursor = conn.execute("SELECT file_hash, mark FROM file_marks WHERE mark != ''")
             return {row[0]: row[1] for row in cursor.fetchall()}
 
     def load_file_marks_by_path(self) -> dict[str, str]:
         """Triage marks as {file_path: mark}, for lookups that have no hash in hand.
         Marks written before the path column exists are absent, not wrong."""
         with self._connect(self.edits_db_path) as conn:
-            cursor = conn.execute("SELECT file_path, mark FROM file_marks WHERE file_path IS NOT NULL AND file_path != ''")
+            cursor = conn.execute("SELECT file_path, mark FROM file_marks WHERE file_path IS NOT NULL AND file_path != '' AND mark != ''")
             return {str(row[0]): str(row[1]) for row in cursor.fetchall()}
 
     def save_file_settings(
@@ -176,8 +191,8 @@ class StorageRepository(IRepository):
 
     def touch_file_settings(self, file_hash: str, updated_at: Optional[float] = None) -> None:
         """Advance a saved edit's ``updated_at`` without changing the edit. A no-op when the
-        hash has no row. A sidecar is dated by this time, so every change it carries from
-        outside the edit advances it."""
+        hash has no row. A sidecar's edit is dated by this time, so a roll-lock change, which
+        lives outside the edit but travels with it, advances it."""
         with self._connect(self.edits_db_path) as conn:
             conn.execute(
                 "UPDATE file_settings SET updated_at = ? WHERE file_hash = ?",
@@ -491,9 +506,9 @@ class StorageRepository(IRepository):
     # Database management (view and clear), behind the DB Management dialog.
 
     @staticmethod
-    def _count(conn: sqlite3.Connection, table: str) -> int:
+    def _count(conn: sqlite3.Connection, table: str, where: str = "1") -> int:
         try:
-            return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            return int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}").fetchone()[0])
         except sqlite3.OperationalError:
             return 0  # table not created yet
 
@@ -519,7 +534,7 @@ class StorageRepository(IRepository):
             file_settings = self._count(conn, "file_settings")
             edit_history = self._count(conn, "edit_history")
             work_prints = self._count(conn, "work_prints")
-            file_marks = self._count(conn, "file_marks")
+            file_marks = self._count(conn, "file_marks", "mark != ''")
 
         with self._connect(self.settings_db_path) as conn:
             global_settings = self._count(conn, "global_settings")

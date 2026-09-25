@@ -1176,7 +1176,10 @@ class ExportSidebar(BaseSidebar):
         btn_row.addWidget(self.sidecars_enabled_btn)
 
         self.export_sidecars_btn = labeled_action(
-            "fa5s.file-code", " Export Sidecars", "Write a sidecar now for every visible frame with a saved edit", primary=True
+            "fa5s.file-code",
+            " Export Sidecars",
+            "Write a sidecar now for every visible frame with a saved edit, mark or work print",
+            primary=True,
         )
         self.export_sidecars_btn.setObjectName("export_sidecars_btn")
         btn_row.addWidget(self.export_sidecars_btn)

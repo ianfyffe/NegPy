@@ -874,6 +874,30 @@ class TestAppController(unittest.TestCase):
         promote, _, _ = self._reload_sidecar_on("hash1", shown=False)
         promote.assert_called_once()
 
+    def test_reload_from_a_sidecar_without_an_edit_keeps_the_edit_here(self):
+        from negpy.services.assets.sidecar import Sidecar
+
+        state = self.mock_session_manager.state
+        state.uploaded_files = [{"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}]
+        state.selected_file_idx = 0
+        for merged, message in (
+            (True, "Loaded the mark and work prints from sidecar; it holds no edit"),
+            (False, "The sidecar holds no edit, and no mark or work print newer than here"),
+        ):
+            self.mock_session_manager.reload_current_file.reset_mock()
+            with (
+                patch("negpy.desktop.controller.rolls.folder_roll_id_for_path", return_value=None),
+                patch("negpy.desktop.controller.load_sidecar", return_value=Sidecar(None, mark="keeper", mark_at=5.0)),
+                patch("negpy.desktop.controller.merge_sidecar_extras", return_value=merged) as merge,
+                patch("negpy.desktop.controller.promote_sidecar") as promote,
+                patch.object(self.controller, "set_status") as status,
+            ):
+                self.controller.reload_sidecar()
+            merge.assert_called_once()
+            promote.assert_not_called()
+            self.mock_session_manager.reload_current_file.assert_not_called()
+            status.assert_called_once_with(message, 4000)
+
     def test_export_sidecars_writes_the_folders_roll_file(self):
         from negpy.services.assets.sidecar import Sidecar
 
@@ -1005,18 +1029,30 @@ class TestAppController(unittest.TestCase):
     def test_sidecars_of_unedited_frames_load_with_a_status_line(self):
         assets = [{"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}]
         with (
-            patch("negpy.desktop.controller.promote_unedited", return_value=["hash1"]) as promote,
+            patch("negpy.desktop.controller.read_frame_sidecars", return_value=(["hash1"], [])) as read,
             patch.object(self.controller, "set_status") as status,
         ):
             filled = self.controller._load_sidecars_of_unedited(assets)
 
-        promote.assert_called_once_with(self.mock_session_manager.repo, assets)
+        read.assert_called_once_with(self.mock_session_manager.repo, assets)
         self.assertEqual(filled, ["hash1"])
         status.assert_called_once_with("Loaded 1 edit from sidecars", 4000)
 
-        with patch("negpy.desktop.controller.promote_unedited", return_value=[]), patch.object(self.controller, "set_status") as status:
+        with (
+            patch("negpy.desktop.controller.read_frame_sidecars", return_value=([], [])),
+            patch.object(self.controller, "set_status") as status,
+        ):
             self.assertEqual(self.controller._load_sidecars_of_unedited(assets), [])
         status.assert_not_called()
+
+    def test_sidecar_marks_and_work_prints_report_without_a_thumbnail_refresh(self):
+        assets = [{"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}]
+        with (
+            patch("negpy.desktop.controller.read_frame_sidecars", return_value=(["hash1"], ["hash2", "hash3"])),
+            patch.object(self.controller, "set_status") as status,
+        ):
+            self.assertEqual(self.controller._load_sidecars_of_unedited(assets), ["hash1"])
+        status.assert_called_once_with("Loaded 1 edit and the marks or work prints of 2 frames from sidecars", 4000)
 
     def _wire_repo_store(self) -> dict:
         """Backs the mocked repo's global settings with a real dict, so a roll write
@@ -4131,7 +4167,7 @@ class TestDiscoveryProgressPopup(unittest.TestCase):
         self.mock_session_manager.add_files.side_effect = lambda _p, validated_info=None: order.append("add_files")
         self.mock_session_manager.state.uploaded_files = [asset]
 
-        with patch("negpy.desktop.controller.promote_unedited", side_effect=lambda _r, _a: order.append("promote") or ["h1"]):
+        with patch("negpy.desktop.controller.read_frame_sidecars", side_effect=lambda _r, _a: order.append("promote") or (["h1"], [])):
             self.controller._on_discovery_finished([asset])
 
         self.assertEqual(order, ["promote", "add_files"])
