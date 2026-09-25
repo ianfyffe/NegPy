@@ -195,6 +195,16 @@ def folder_rolls_holding(repo: Any, paths: List[str]) -> List[str]:
     return list(found)
 
 
+def name_leaf(name: str) -> str:
+    """The roll's own name, without the folder rows above it ("kentmere_400_1")."""
+    return name.rsplit(ROLL_PATH_SEP, 1)[-1]
+
+
+def with_leaf(name: str, leaf: str) -> str:
+    """*name* with its own name replaced by *leaf*; the folder rows above it stay."""
+    return f"{name.rsplit(ROLL_PATH_SEP, 1)[0]}{ROLL_PATH_SEP}{leaf}" if ROLL_PATH_SEP in name else leaf
+
+
 def folder_roll_name(path: str) -> str:
     """The name a folder roll takes from its folder alone."""
     return path.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1] or path
@@ -306,11 +316,6 @@ def imported_roll_name(path: str, parent_path: str) -> str:
     # The name is a label, so it joins with "/" on every OS; ROLL_PATH_SEP splits it back.
     base = os.path.dirname(os.path.normpath(parent_path))
     return ROLL_PATH_SEP.join(os.path.relpath(path, base).split(os.sep))
-
-
-def under_folder(path: str, folder: str) -> bool:
-    """Whether *path* is *folder* or inside it, as ``_folder_key`` compares folders."""
-    return _under(_folder_key(path), _folder_key(folder))
 
 
 def _under(key: str, folder_key: str) -> bool:

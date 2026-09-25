@@ -154,14 +154,10 @@ def _moved_away(old: str) -> bool:
     return bool(old) and not os.path.isdir(old) and os.path.isdir(os.path.dirname(os.path.normpath(old)))
 
 
-def _followed_name(repo: Any, name: str, old: str, new: str) -> Optional[str]:
-    """The name a roll takes at *new* when *name* is the one its folder gave it at *old*."""
-    if name == rolls.folder_roll_name(old):
-        return rolls.folder_roll_name(new)
-    for source in rolls.import_sources(repo):
-        if rolls.under_folder(old, source) and name == rolls.imported_roll_name(old, source):
-            new_source = moved_path(source, old, new)
-            return rolls.imported_roll_name(new, new_source) if rolls.under_folder(new, new_source) else rolls.folder_roll_name(new)
+def _followed_name(name: str, old: str, new: str) -> Optional[str]:
+    """The name a roll takes at *new* when its leaf is the one its folder gave it at *old*."""
+    if rolls.name_leaf(name) == rolls.folder_roll_name(old):
+        return rolls.with_leaf(name, rolls.folder_roll_name(new))
     return None
 
 
@@ -171,7 +167,7 @@ def follow_folder(repo: Any, roll_id: str, folder: str) -> str:
     roll becomes the one *folder* gives it. Returns the old folder path."""
     entry = rolls.roll_for_id(repo, roll_id) or {}
     old = entry.get("folder_path") or ""
-    label = _followed_name(repo, entry.get("name") or "", old, folder)
+    label = _followed_name(entry.get("name") or "", old, folder)
     repoint_folder(repo, old, folder)
     if label:
         rolls.relabel_roll(repo, roll_id, label)

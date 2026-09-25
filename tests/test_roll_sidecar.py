@@ -522,7 +522,7 @@ def test_a_name_only_rename_travels_without_a_settings_offer(tmp_path):
     assert rolls.roll_updated_at(a.repo, a.roll_id) == stamp
     assert _file(a)["saved_at"] == stamp and _file(a)["name"] == "Portra 400"
     assert read_roll_sidecar(b.repo, b.roll_id) is None
-    assert _name(b) == "Portra 400"
+    assert _name(b) == "photos/Portra 400"
 
 
 def test_a_declined_settings_offer_does_not_block_a_newer_name(tmp_path):
@@ -538,7 +538,7 @@ def test_a_declined_settings_offer_does_not_block_a_newer_name(tmp_path):
     _mirror_roll(a)
 
     assert read_roll_sidecar(b.repo, b.roll_id) is None
-    assert _name(b) == "Portra 400"
+    assert _name(b) == "photos/Portra 400"
     assert rolls.roll_defaults(b.repo, b.roll_id) == {"hue_trim": 9.0}
 
 
@@ -568,7 +568,7 @@ def test_a_rename_of_a_roll_without_settings_writes_its_identity_alone(tmp_path)
     assert payload["saved_at"] is None and payload["name"] == "Portra 400" and payload["roll_uid"]
     assert load_roll_sidecar(a.folder).state == {}
     assert read_roll_sidecar(b.repo, b.roll_id) is None
-    assert _name(b) == "Portra 400"
+    assert _name(b) == "photos/Portra 400"
     assert rolls.roll_updated_at(b.repo, b.roll_id) is None and rolls.adopts_roll_file(b.repo, b.roll_id)
 
     rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
@@ -879,3 +879,16 @@ def test_a_roll_without_a_uid_searches_only_its_old_folders_siblings(tmp_path, m
 
     assert find_moved_folder(b.repo, b.roll_id, [str(tmp_path / "b_mount")]) is None
     assert walked == []
+
+
+def test_only_the_leaf_of_a_name_travels(tmp_path):
+    """Each computer keeps the folder rows it shows above a roll; only the roll's own name moves."""
+    a, b = _nas(tmp_path)
+    rolls.rename_roll(a.repo, a.roll_id, "2026/scans/roll", when=1.0)
+
+    rolls.rename_roll(a.repo, a.roll_id, "2026/scans/Portra")
+    _mirror_roll(a)
+    read_roll_sidecar(b.repo, b.roll_id)
+
+    assert _file(a)["name"] == "Portra"
+    assert _name(b) == "photos/Portra"
