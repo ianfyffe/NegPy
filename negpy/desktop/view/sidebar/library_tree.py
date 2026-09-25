@@ -173,11 +173,11 @@ class LibraryTree(QWidget):
             return self.import_subfolders(path)
         if not confirm_load_roll(self, self.repo, images, folder_label(path)):
             return False
-        is_new = rolls.folder_roll_id_for_path(self.repo, path) is None
+        known = set(rolls.saved_rolls(self.repo))
         self.controller.open_library_folder(path)
         self.reload()
         self.rolls_changed.emit()
-        if is_new:
+        if rolls.folder_roll_id_for_path(self.repo, path) not in known:
             self.folder_roll_created.emit(path)
         return True
 

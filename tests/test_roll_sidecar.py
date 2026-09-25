@@ -14,6 +14,8 @@ from negpy.desktop.session import DesktopSessionManager
 from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
 from negpy.infrastructure.storage.repository import StorageRepository
 from negpy.services.assets import rolls
+from negpy.services.assets.composites import remember_composites, restore_maps
+from negpy.services.assets.repoint import find_moved_folder, follow_folder, recognize_roll_folder, repoint_folder
 from negpy.services.assets.sidecar import (
     ROLL_SIDECAR_NAME,
     RollSidecarOffer,
@@ -463,12 +465,14 @@ def _nas(tmp_path):
 
 
 def _on(tmp_path, name: str, folder: str):
+    """One computer. Its roll was imported from the folder's parent, so it is named by its
+    path from there ("photos/roll")."""
     root = tmp_path / f"db_{name}"
     root.mkdir()
     repo = StorageRepository(str(root / "edits.db"), str(root / "settings.db"))
     repo.initialize()
     session = DesktopSessionManager(repo)
-    roll_id = rolls.recognize_folder(repo, folder)
+    (roll_id,) = rolls.import_subfolders_as_rolls(repo, os.path.dirname(folder))
     assets = [{"name": n, "path": os.path.join(folder, n), "hash": h} for n, h in _FRAMES]
     return SimpleNamespace(repo=repo, session=session, folder=folder, roll_id=roll_id, assets=assets)
 
@@ -609,5 +613,168 @@ def test_a_name_the_file_does_not_date_never_replaces_one(tmp_path):
 
     read_roll_sidecar(b.repo, b.roll_id)
 
-    assert _name(b) == "roll"
+    assert _name(b) == "photos/roll"
     assert rolls.roll_defaults(b.repo, b.roll_id) == {"hue_trim": 2.0}
+
+
+def _rename_folder_on(m, new_name: str, keep_current: bool = True) -> None:
+    """Rename the roll and its folder through the controller, on computer *m*."""
+    from negpy.desktop.controller import AppController
+
+    mirror = SidecarMirror(m.repo)
+    controller = SimpleNamespace(
+        session=m.session,
+        flush_sidecars=mirror.flush,
+        repoint_folder=lambda old, new: repoint_folder(m.repo, old, new),
+        _mirror_roll=lambda roll_id: mirror.mark_roll_dirty(roll_id) if keep_current else None,
+    )
+    assert AppController.request_rename_roll(controller, m.roll_id, new_name, True, prefix="photos")
+    m.folder = rolls.roll_for_id(m.repo, m.roll_id)["folder_path"]
+    m.assets = [{**a, "path": os.path.join(m.folder, a["name"])} for a in m.assets]
+
+
+def _refresh_library(m) -> None:
+    """What a Library refresh does: walk every import source again."""
+    for source in rolls.import_sources(m.repo):
+        rolls.import_subfolders_as_rolls(m.repo, source, skip_dismissed=True, recognize=recognize_roll_folder)
+
+
+def _share_roll_uid(a, b) -> None:
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    _mirror_roll(a)
+    read_roll_sidecar(b.repo, b.roll_id)
+    assert rolls.roll_uid(b.repo, b.roll_id) == rolls.roll_uid(a.repo, a.roll_id) != ""
+
+
+def _stitch(folder: str) -> dict:
+    return {
+        "path": os.path.join(folder, "a.tif"),
+        "hash": "s1",
+        "stitch_paths": [os.path.join(folder, "b.tif")],
+        "stitch_transforms": [[1.0, 0.0, 0.0]],
+        "stitch_canvas": [10, 10],
+        "stitch_sizes": [[5, 10]],
+    }
+
+
+def test_a_folder_renamed_on_one_computer_is_followed_on_the_other(tmp_path):
+    a, b = _nas(tmp_path)
+    _share_roll_uid(a, b)
+    b.repo.save_file_settings("h1", _cfg(density=1.4), file_path=b.assets[0]["path"])
+    rolls.set_frame_override(b.repo, b.roll_id, "h2", "sensor", True)
+    rolls.fork_edit(b.repo, b.roll_id, "h3", b.assets[2]["path"], _cfg(hue_trim=7.0))
+    scene_id = rolls.create_scene(b.repo, b.roll_id, "Beach", ["h1"])
+    b.repo.save_global_setting(rolls.HALF_FRAME_MODE_KEY, {b.roll_id: True})
+    remember_composites(b.repo, [_stitch(b.folder)])
+    picks = rolls.create_virtual_roll(b.repo, "Picks", [b.assets[0]["path"]])
+    rolls_before = set(rolls.saved_rolls(b.repo))
+    old_b_folder = b.folder
+
+    _rename_folder_on(a, "roll_best")
+    file_after_rename = _file(a)
+    _refresh_library(b)
+
+    new_b_folder = os.path.join(os.path.dirname(old_b_folder), "roll_best")
+    assert set(rolls.saved_rolls(b.repo)) == rolls_before
+    assert rolls.folder_roll_id_for_path(b.repo, new_b_folder) == b.roll_id
+    assert _name(b) == "photos/roll_best"
+    assert b.repo.load_file_settings("h1").exposure.density == 1.4
+    assert b.repo.load_file_settings_by_path(os.path.join(new_b_folder, "a.tif"))[0] == "h1"
+    assert rolls.frame_override_cards(b.repo, b.roll_id, "h2") == {"sensor"}
+    assert rolls.is_forked(b.repo, b.roll_id, "h3")
+    assert rolls.scene_by_hash(b.repo, b.roll_id)["h1"][1] == scene_id
+    assert rolls.roll_half_frame_mode(b.repo, b.roll_id)
+    stitches, _ = restore_maps(b.repo)
+    assert list(stitches) == [os.path.join(new_b_folder, "a.tif")]
+    assert stitches[os.path.join(new_b_folder, "a.tif")]["paths"] == [os.path.join(new_b_folder, "b.tif")]
+    assert rolls.roll_for_id(b.repo, picks)["member_paths"] == [os.path.join(new_b_folder, "a.tif")]
+    assert _file(a) == file_after_rename
+    assert sorted(os.listdir(os.path.dirname(a.folder))) == ["roll_best"]
+
+
+def test_a_roll_that_never_wrote_its_file_is_followed_by_its_former_folder_name(tmp_path):
+    a, b = _nas(tmp_path)
+    assert rolls.roll_uid(b.repo, b.roll_id) == ""
+
+    _rename_folder_on(a, "roll_best")
+    _refresh_library(b)
+
+    assert _file(a)["former_names"] == ["roll"]
+    assert rolls.folder_roll_id_for_path(b.repo, os.path.join(os.path.dirname(b.folder), "roll_best")) == b.roll_id
+    assert rolls.roll_uid(b.repo, b.roll_id) == rolls.roll_uid(a.repo, a.roll_id)
+    assert len(rolls.saved_rolls(b.repo)) == 1
+
+
+def test_a_copied_folder_becomes_a_roll_of_its_own(tmp_path):
+    a, b = _nas(tmp_path)
+    _share_roll_uid(a, b)
+    uid = rolls.roll_uid(a.repo, a.roll_id)
+    shutil.copytree(a.folder, a.folder + "_copy")
+
+    _refresh_library(b)
+    copy_on_b = rolls.folder_roll_id_for_path(b.repo, b.folder + "_copy")
+    assert copy_on_b not in (None, b.roll_id)
+    assert rolls.roll_uid(b.repo, copy_on_b) not in ("", uid)
+    assert _file(SimpleNamespace(folder=a.folder + "_copy"))["roll_uid"] == uid
+    b_copy = SimpleNamespace(repo=b.repo, roll_id=copy_on_b)
+    _mirror_roll(b_copy)
+    copy_uid = _file(SimpleNamespace(folder=a.folder + "_copy"))["roll_uid"]
+    assert copy_uid == rolls.roll_uid(b.repo, copy_on_b) != uid
+    assert _file(a)["roll_uid"] == uid and rolls.roll_uid(b.repo, b.roll_id) == uid
+
+    _refresh_library(a)
+    copy_on_a = rolls.folder_roll_id_for_path(a.repo, a.folder + "_copy")
+    assert copy_on_a not in (None, a.roll_id)
+    assert rolls.roll_uid(a.repo, copy_on_a) == copy_uid
+    assert rolls.roll_uid(a.repo, a.roll_id) == uid
+
+
+def test_a_missing_folder_is_found_among_its_siblings_or_under_the_library(tmp_path):
+    a, b = _nas(tmp_path)
+    _share_roll_uid(a, b)
+    os.rename(a.folder, a.folder + "_renamed")
+
+    assert find_moved_folder(b.repo, b.roll_id, []) == b.folder + "_renamed"
+
+    elsewhere = tmp_path / "nas" / "archive" / "2026"
+    elsewhere.mkdir(parents=True)
+    os.rename(a.folder + "_renamed", elsewhere / "roll")
+    b_archive = str(tmp_path / "b_mount" / "archive")
+    assert find_moved_folder(b.repo, b.roll_id, []) is None
+    found = find_moved_folder(b.repo, b.roll_id, [b_archive])
+    assert found == os.path.join(b_archive, "2026", "roll")
+
+    follow_folder(b.repo, b.roll_id, found)
+    assert rolls.roll_for_id(b.repo, b.roll_id)["folder_path"] == found
+    assert find_moved_folder(b.repo, b.roll_id, [b_archive]) is None
+
+
+def test_with_keep_current_off_nothing_is_written(tmp_path):
+    """What the other computer sees when the renaming one keeps no sidecars current: a roll
+    whose file already had a uid still follows its folder, taking the new folder name; a
+    roll without one comes back as a new roll beside the old one, which shows its folder
+    missing; and a rename of the name alone stays on the computer that made it."""
+    a, b = _nas(tmp_path)
+    _share_roll_uid(a, b)
+    file_before = _file(a)
+
+    rolls.rename_roll(a.repo, a.roll_id, "Portra 400")
+    _rename_folder_on(a, "roll_best", keep_current=False)
+    assert _file(a) == file_before
+    assert not [n for n in os.listdir(a.folder) if n.endswith(".negpy")]
+    _refresh_library(b)
+    read_roll_sidecar(b.repo, b.roll_id)
+    assert rolls.folder_roll_id_for_path(b.repo, os.path.join(os.path.dirname(b.folder), "roll_best")) == b.roll_id
+    assert _name(b) == "photos/roll_best"
+    rolls.rename_roll(a.repo, a.roll_id, "Portra 400")
+    read_roll_sidecar(b.repo, b.roll_id)
+    assert _name(b) == "photos/roll_best"
+
+    c, d = _nas(tmp_path / "second")
+    _rename_folder_on(c, "roll_best", keep_current=False)
+    assert not os.path.exists(roll_sidecar_path(c.folder))
+    _refresh_library(d)
+    new_on_d = rolls.folder_roll_id_for_path(d.repo, os.path.join(os.path.dirname(d.folder), "roll_best"))
+    assert new_on_d not in (None, d.roll_id)
+    assert not os.path.isdir(rolls.roll_for_id(d.repo, d.roll_id)["folder_path"])
+    assert find_moved_folder(d.repo, d.roll_id, []) is None

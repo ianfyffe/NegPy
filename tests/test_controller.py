@@ -6206,6 +6206,58 @@ class TestLibrarySearch(unittest.TestCase):
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["name"], "Portra 400")
             self.assertEqual(emitted, [True])
 
+    def _moved_roll(self, d: str) -> tuple:
+        """A folder roll whose folder another computer renamed: (roll id, old path, new path)."""
+        from negpy.services.assets.rolls import recognize_folder, set_roll_uid
+        from negpy.services.assets.sidecar import RollSidecar, write_roll_sidecar
+
+        old_path, new_path = os.path.join(d, "roll_a"), os.path.join(d, "roll_b")
+        os.mkdir(old_path)
+        roll_id = recognize_folder(self.controller.session.repo, old_path)
+        set_roll_uid(self.controller.session.repo, roll_id, "u1")
+        write_roll_sidecar(old_path, RollSidecar(None, "roll_a", roll_uid="u1"))
+        os.rename(old_path, new_path)
+        return roll_id, old_path, new_path
+
+    def test_opening_a_roll_whose_folder_moved_opens_it_where_it_went(self):
+        self._dict_repo()
+        from negpy.services.assets.rolls import roll_for_id
+
+        with tempfile.TemporaryDirectory() as d:
+            roll_id, _old, new_path = self._moved_roll(d)
+            with patch.object(self.controller, "request_asset_discovery") as discovery:
+                self.controller.open_roll(roll_id)
+
+            self.assertEqual(discovery.call_args.args[0], [new_path])
+            self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["folder_path"], new_path)
+            self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["name"], "roll_b")
+
+    def test_opening_a_moved_folder_by_its_old_path_follows_it(self):
+        self._dict_repo()
+        with tempfile.TemporaryDirectory() as d:
+            roll_id, old_path, new_path = self._moved_roll(d)
+            with patch.object(self.controller, "request_asset_discovery") as discovery:
+                self.controller.open_library_folder(old_path)
+
+            self.assertEqual(discovery.call_args.args[0], [new_path])
+            self.assertEqual(self.controller.state.active_roll_id, roll_id)
+
+    def test_restoring_a_session_follows_a_folder_that_moved(self):
+        self._dict_repo()
+        from negpy.services.assets.rolls import roll_for_id
+
+        with tempfile.TemporaryDirectory() as d:
+            roll_id, old_path, new_path = self._moved_roll(d)
+            open(os.path.join(new_path, "a.tif"), "wb").close()
+            repo = self.controller.session.repo
+            repo.save_global_setting("session_files", [os.path.join(old_path, "a.tif")])
+            with patch.object(self.controller, "request_asset_discovery") as discovery:
+                self.controller.restore_session()
+
+            self.assertEqual(discovery.call_args.args[0], [os.path.join(new_path, "a.tif")])
+            self.assertEqual(roll_for_id(repo, roll_id)["folder_path"], new_path)
+            self.controller.session.rehome_folder_paths.assert_called_with(old_path, new_path)
+
     def test_request_rename_roll_disk_failure_leaves_the_display_name_alone(self):
         self._dict_repo()
         from negpy.services.assets.rolls import recognize_folder, roll_for_id

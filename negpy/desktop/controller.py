@@ -1348,7 +1348,12 @@ class AppController(QObject):
         return [p for p in paths if os.path.exists(p)]
 
     def restore_session(self) -> None:
-        """Re-loads the previous session's files and reselects the active one."""
+        """Re-loads the previous session's files and reselects the active one. A folder roll
+        whose folder is gone first looks for where another computer moved it."""
+        repo = self.session.repo
+        saved = repo.get_global_setting("session_files", []) or []
+        for roll_id in rolls.folder_rolls_holding(repo, [p for p in saved if not os.path.exists(p)]):
+            self._follow_missing_folder(roll_id)
         paths = self.saved_session_paths()
         if not paths:
             return
@@ -1400,6 +1405,10 @@ class AppController(QObject):
         self.thumbnail_cancel_requested.emit()
         self._announce_rgb = announce_rgb
         self._supersede_sidecar_scan()
+        for path in paths:
+            moved = repoint.roll_moved_to(self.session.repo, path) if os.path.isdir(path) else None
+            if moved is not None and moved[1]:
+                self._on_folder_followed(repoint.follow_folder(self.session.repo, moved[0], path), path)
         self._read_roll_sidecars(rolls.folder_rolls_holding(self.session.repo, paths))
         active_roll_id = self.state.active_roll_id
         request = _DiscoveryRequest(
@@ -1487,7 +1496,7 @@ class AppController(QObject):
     def import_subfolders_as_rolls(self, parent_path: str) -> List[str]:
         """Recognize every roll folder under *parent_path* as its own roll, and
         register it as a search root -- nothing is opened or loaded."""
-        roll_ids = rolls.import_subfolders_as_rolls(self.session.repo, parent_path)
+        roll_ids = rolls.import_subfolders_as_rolls(self.session.repo, parent_path, recognize=self._recognize_roll_folder)
         if roll_ids:
             self._register_library_roots([parent_path])
         return roll_ids
@@ -1499,7 +1508,7 @@ class AppController(QObject):
         dropped = rolls.prune_filtered_rolls(repo)
         before = len(rolls.saved_rolls(repo))
         for source in rolls.import_sources(repo):
-            rolls.import_subfolders_as_rolls(repo, source, skip_dismissed=True)
+            rolls.import_subfolders_as_rolls(repo, source, skip_dismissed=True, recognize=self._recognize_roll_folder)
         return len(rolls.saved_rolls(repo)) - before, dropped
 
     def open_library_folder(self, folder: str, add_to_session: bool = False) -> None:
@@ -1509,14 +1518,16 @@ class AppController(QObject):
         """Recognize and load one or several folders as rolls. Replacing the session
         costs nothing — every edit lives in the database under its own content hash,
         not in the file list."""
-        present = [f for f in folders if os.path.isdir(f)]
+        repo = self.session.repo
+        present = [f if os.path.isdir(f) else self._follow_missing_folder(rolls.folder_roll_id_for_path(repo, f)) or f for f in folders]
+        present = [f for f in present if os.path.isdir(f)]
         if not present:
             self.set_status("Folder is no longer on disk", 3000)
             return
         if not add_to_session:
             # Recognizing every opened folder is independent of which one, if any,
             # becomes the active roll -- that only makes sense for a single one.
-            recognized = [rolls.recognize_folder(self.session.repo, f) for f in present]
+            recognized = [self._recognize_roll_folder(repo, f) for f in present]
             self.state.active_roll_id = recognized[0] if len(recognized) == 1 else None
             self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(self.state.active_roll_id))
             self._register_library_roots(present)
@@ -1538,6 +1549,8 @@ class AppController(QObject):
             self.set_status("That roll no longer exists", 3000)
             return
         if entry["kind"] == "folder":
+            if not os.path.isdir(entry["folder_path"]) and self._follow_missing_folder(roll_id):
+                entry = rolls.roll_for_id(self.session.repo, roll_id) or entry
             paths = [entry["folder_path"], *entry.get("extra_paths", [])]
         else:
             paths = list(entry.get("member_paths", []))
@@ -1583,6 +1596,27 @@ class AppController(QObject):
         self._mirror_roll(roll_id)
         self.flush_sidecars()
         return True
+
+    def _recognize_roll_folder(self, repo, path: str, name: str = "") -> str:
+        """Recognize *path* as a folder roll, following a folder another computer moved.
+        A copy's new uid is written to its roll file when Keep Current is on."""
+        roll_id = repoint.recognize_roll_folder(repo, path, name, on_moved=self._on_folder_followed)
+        if rolls.roll_uid_unwritten(repo, roll_id):
+            self._mirror_roll(roll_id)
+        return roll_id
+
+    def _follow_missing_folder(self, roll_id: Optional[str]) -> Optional[str]:
+        """Find where a folder roll's missing folder went and follow it; the new path, or None."""
+        repo = self.session.repo
+        new_path = repoint.find_moved_folder(repo, roll_id, [*rolls.import_sources(repo), *self.library_roots()]) if roll_id else None
+        if roll_id and new_path:
+            self._on_folder_followed(repoint.follow_folder(repo, roll_id, new_path), new_path)
+        return new_path
+
+    def _on_folder_followed(self, old_path: str, new_path: str) -> None:
+        self.session.rehome_folder_paths(old_path, new_path)
+        self.invalidate_library_walk()
+        self.rolls_updated.emit()
 
     def repoint_folder(self, old_path: str, new_path: str) -> None:
         """Point every stored and loaded path under *old_path* at *new_path*."""
