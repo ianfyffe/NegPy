@@ -12,11 +12,18 @@ from negpy.desktop.view.slider_shortcut_groups import (
 from negpy.desktop.view.styles.theme import THEME
 
 
+MAIN_SCOPE = "main"
+LIVE_VIEW_SCOPE = "live_view"
+
+
 @dataclass(frozen=True)
 class ShortcutEntry:
     default_key: str
     description: str
     category: str
+    # The window that binds the key. A key must be unique within one scope only: a scoped
+    # window takes its own keys before the main window's shortcuts see them.
+    scope: str = MAIN_SCOPE
 
 
 REGISTRY: dict[str, ShortcutEntry] = {
@@ -263,6 +270,9 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "save_work_print": ShortcutEntry("Ctrl+Shift+S", "Save the current edit as a named work print", "Actions"),
     "undo": ShortcutEntry("Ctrl+Z", "Undo", "Actions"),
     "redo": ShortcutEntry("Ctrl+Y", "Redo", "Actions"),
+    "live_view_scan": ShortcutEntry("S", "Scan this frame, or stop the scan", "Live View", LIVE_VIEW_SCOPE),
+    "live_view_focus": ShortcutEntry("F", "Run the camera's autofocus once", "Live View", LIVE_VIEW_SCOPE),
+    "live_view_retake": ShortcutEntry("R", "Retake the current frame", "Live View", LIVE_VIEW_SCOPE),
     "show_shortcuts": ShortcutEntry("?", "Show shortcuts", "Help"),
     "show_analysis_help": ShortcutEntry("", "Analysis panel guide", "Help"),
     "check_for_updates": ShortcutEntry("", "Check for updates", "Help"),
@@ -370,6 +380,19 @@ def merge_bindings(overrides: dict[str, str] | None = None) -> dict[str, str]:
 def load_bindings(repo) -> dict[str, str]:
     saved = repo.get_global_setting("shortcut_bindings", {}) or {}
     return merge_bindings(saved if isinstance(saved, dict) else {})
+
+
+def duplicate_binding(bindings: dict[str, str]) -> tuple[str, str] | None:
+    """The first two actions that share a key within one scope, or None."""
+    seen: dict[tuple[str, str], str] = {}
+    for action_id, key in bindings.items():
+        if not key or action_id not in REGISTRY:
+            continue
+        slot = (REGISTRY[action_id].scope, key)
+        if slot in seen:
+            return seen[slot], action_id
+        seen[slot] = action_id
+    return None
 
 
 def save_bindings(repo, bindings: dict[str, str]) -> None:

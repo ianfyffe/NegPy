@@ -162,11 +162,20 @@ Actions with no default key are not listed; every one of them can still be bound
 | `Ctrl + 9` | Scan tab |
 | `Ctrl + 0` | Favorites tab |
 
+## Live View
+| Key | Action |
+|-----|--------|
+| `S` | Scan this frame, or stop the scan |
+| `F` | Run the camera's autofocus once |
+| `R` | Retake the current frame |
+
 ## Help
 | Key | Action |
 |-----|--------|
 | `?` | Show shortcuts |
 <!-- shortcuts:end -->
+
+The Live View keys work only in the camera's **Live View & Scan** window. There they take priority over a main-window shortcut on the same key.
 
 While a test strip or ring-around is up, `[` and `]` turn that proof's ladder instead of the image. The first `Esc` clears in-progress points; the second puts the tool down.
 

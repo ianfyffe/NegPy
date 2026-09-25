@@ -1,6 +1,6 @@
 """Large pop-out window for the Scanlight live view.
 
-Hosts a `RoiImageLabel` plus an inline toolbar (Scan / Retake), a capture progress bar and a status line,
+Hosts a `RoiImageLabel` plus an inline toolbar (Scan / Focus / Retake), a capture progress bar and a status line,
 so a whole roll can be framed, focused, and scanned without switching back to the
 side panel. The live image carries a magnifier cursor: a click aims the camera
 focus magnifier at that spot, a double-click returns to full frame. The buttons
@@ -8,14 +8,16 @@ emit signals; `ScanlightSidebar` wires them and mirrors scanning state + status.
 """
 
 import time
+from collections.abc import Callable
 
 import qtawesome as qta
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCursor, QKeySequence, QShortcut
+from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QCursor, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QProgressBar, QToolButton, QVBoxLayout, QWidget
 
+from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.roi_image import RoiImageLabel
-from negpy.desktop.view.styles.templates import hint_label, labeled_action, pin_dialog_default, SCAN_BUTTON_HEIGHT
+from negpy.desktop.view.styles.templates import hint_label, labeled_action, pin_dialog_default, wrap_tooltip, SCAN_BUTTON_HEIGHT
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.floating_panel import float_over_app
 
@@ -128,6 +130,7 @@ class LiveViewWindow(QDialog):
 
     closed = pyqtSignal()
     scanRequested = pyqtSignal()
+    focusRequested = pyqtSignal()
     retakeRequested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
@@ -140,10 +143,16 @@ class LiveViewWindow(QDialog):
 
         # ── capture toolbar (mirrors the panel so you needn't switch tabs) ──
         bar = QHBoxLayout()
-        self.scan_btn = labeled_action("fa5s.camera-retro", " Scan", "Capture this frame")
+        self.scan_btn = labeled_action("fa5s.camera-retro", " Scan", "Capture this frame, or stop the scan in progress")
         self.scan_btn.setFixedHeight(SCAN_BUTTON_HEIGHT)
+        # The body's own shutter button is dead while it is tethered, so this is the one way to
+        # drive its autofocus without unplugging. Enabled once the stream reports a drive.
+        self.focus_btn = labeled_action("fa5s.crosshairs", " Focus", "Drive the camera's autofocus once")
+        self.focus_btn.setFixedHeight(SCAN_BUTTON_HEIGHT)
+        self.focus_btn.setEnabled(False)
         self.retake_btn = labeled_action("fa5s.redo", " Retake", "Re-capture the current frame without advancing the counter")
         bar.addWidget(self.scan_btn, 2)
+        bar.addWidget(self.focus_btn, 1)
         bar.addWidget(self.retake_btn, 1)
         layout.addLayout(bar)
 
@@ -208,19 +217,71 @@ class LiveViewWindow(QDialog):
         layout.addWidget(self.status)
 
         self.scan_btn.clicked.connect(lambda: self.scanRequested.emit())
+        self.focus_btn.clicked.connect(lambda: self.focusRequested.emit())
         self.retake_btn.clicked.connect(lambda: self.retakeRequested.emit())
 
         # Pin Scan as the dialog's permanent default button. Without this, Qt hands "default"
         # status to whichever autoDefault button was clicked most recently, so pressing Retake
         # once made Enter keep retaking until Scan was clicked again to reclaim it (issue #997).
-        pin_dialog_default(self.scan_btn, self.retake_btn)
+        pin_dialog_default(self.scan_btn, self.retake_btn, self.focus_btn)
 
-        # Keyboard shortcuts while the pop-up is focused. There are no text fields here, so
-        # letter keys are safe. The buttons respect their gated state.
-        for key, btn in (("S", self.scan_btn), ("R", self.retake_btn)):
-            QShortcut(QKeySequence(key), self, btn.click)
-        self.scan_btn.setToolTip("Scan / Stop  (shortcut: S)")
-        self.retake_btn.setToolTip("Re-capture the current frame without advancing the counter  (shortcut: R)")
+        # There are no text fields here, so letter keys are safe. The buttons respect their gated state.
+        self._key_actions: dict[str, Callable[[], None]] = {}
+        self._autofocus_available = False
+        self.apply_shortcut_tooltips()
+        self.set_autofocus_available(False)
+
+    def set_shortcuts(self, shortcuts: dict[str, Callable[[], None]]) -> None:
+        """Bind keys to this window's actions; `ShortcutManager` passes the live-view scope."""
+        self._key_actions = {
+            QKeySequence(key).toString(QKeySequence.SequenceFormat.PortableText): action for key, action in shortcuts.items()
+        }
+
+    def _key_action(self, ev: QKeyEvent) -> Callable[[], None] | None:
+        return self._key_actions.get(QKeySequence(ev.keyCombination()).toString(QKeySequence.SequenceFormat.PortableText))
+
+    def event(self, e: QEvent) -> bool:
+        # On macOS this is a tool window, and Qt matches the main window's shortcuts in a tool
+        # window too; a key both bind would go ambiguous and fire neither.
+        if isinstance(e, QKeyEvent) and e.type() == QEvent.Type.ShortcutOverride and self._key_action(e) is not None:
+            e.accept()
+            return True
+        return super().event(e)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        action = self._key_action(event)
+        if action is None:
+            super().keyPressEvent(event)
+            return
+        if not event.isAutoRepeat():
+            action()
+        event.accept()
+
+    def apply_shortcut_tooltips(self) -> None:
+        """Re-read the bindings: tooltips are built before saved overrides load, and again
+        whenever the shortcut editor writes a new one."""
+        for btn, action_id in ((self.scan_btn, "live_view_scan"), (self.retake_btn, "live_view_retake")):
+            btn.setToolTip(wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, action_id)))
+        self._apply_focus_tooltip()
+
+    def _apply_focus_tooltip(self) -> None:
+        if self._autofocus_available:
+            tip = tooltip_with_shortcut(self.focus_btn.plain_tooltip, "live_view_focus")
+        else:
+            tip = "This camera offers no autofocus control over USB"
+        self.focus_btn.setToolTip(wrap_tooltip(tip))
+
+    def set_autofocus_available(self, available: bool) -> None:
+        """Enable Focus once the stream reports that this body has an autofocus drive."""
+        self._autofocus_available = available
+        self.focus_btn.setEnabled(available)
+        self._apply_focus_tooltip()
+
+    def set_focusing(self, active: bool) -> None:
+        """Hold the button down while a drive is in flight; it can take a few seconds."""
+        self.focus_btn.setText(" Focusing…" if active else " Focus")
+        if active:
+            self.focus_btn.setEnabled(False)
 
     def set_preview_available(self, available: bool, reason: str = "") -> None:
         """Swap the preview pane for an explanation on bodies that cannot stream.
