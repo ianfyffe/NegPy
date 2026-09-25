@@ -1,13 +1,16 @@
 """Folder moves: every path stored under a folder that was renamed or moved, rewritten to
-the folder's new path. Edits, marks and history are keyed by content hash and never move;
-only the stores that remember a path do."""
+the folder's new path, and a roll that follows its folder to where another computer moved
+it. Edits, marks and history are keyed by content hash and never move; only the stores
+that remember a path do."""
 
 import json
 import os
-from typing import Any, Dict, Optional
+import uuid
+from typing import Any, Callable, Dict, Iterable, Iterator, Optional
 
 from negpy.services.assets import rolls
 from negpy.services.assets.composites import COMPOSITES_KEY
+from negpy.services.assets.sidecar import load_roll_sidecar, roll_sidecar_path, take_roll_file_identity
 
 SESSION_FILES_KEY = "session_files"
 SESSION_ACTIVE_KEY = "session_active_path"
@@ -115,3 +118,101 @@ def repoint_folder(repo: Any, old: str, new: str) -> None:
     name = os.path.basename(os.path.normpath(old))
     repo.repoint_file_paths(name, lambda path: moved_path(path, old, new))
     repo.repoint_saved_configs(json.dumps(name)[1:-1], lambda data: _moved_config(data, old, new))
+
+
+def roll_moved_to(repo: Any, folder: str) -> Optional[tuple[str, bool]]:
+    """The roll here that *folder*'s roll file belongs to, when *folder* is not yet its own:
+    ``(id, True)`` when the roll's folder is gone (the folder moved here), ``(id, False)``
+    when it is still there (a copy). The file names the roll by ``roll_uid``, or by a former
+    folder name in the same parent for a roll with no other uid here. None otherwise."""
+    if rolls.folder_roll_id_for_path(repo, folder) is not None:
+        return None
+    sidecar = load_roll_sidecar(folder)
+    if sidecar is None:
+        return None
+    roll_id = rolls.roll_id_for_uid(repo, sidecar.roll_uid)
+    if roll_id is not None:
+        return roll_id, not os.path.isdir((rolls.roll_for_id(repo, roll_id) or {}).get("folder_path") or "")
+    parent = os.path.dirname(os.path.normpath(folder))
+    for name in reversed(sidecar.former_names):
+        old = os.path.join(parent, name)
+        roll_id = rolls.folder_roll_id_for_path(repo, old)
+        if roll_id is not None and not os.path.isdir(old) and rolls.roll_uid(repo, roll_id) in ("", sidecar.roll_uid):
+            return roll_id, True
+    return None
+
+
+def _followed_name(repo: Any, name: str, old: str, new: str) -> Optional[str]:
+    """The name a roll takes at *new* when *name* is the one its folder gave it at *old*."""
+    if name == rolls.folder_roll_name(old):
+        return rolls.folder_roll_name(new)
+    for source in rolls.import_sources(repo):
+        if rolls.under_folder(old, source) and name == rolls.imported_roll_name(old, source):
+            new_source = moved_path(source, old, new)
+            return rolls.imported_roll_name(new, new_source) if rolls.under_folder(new, new_source) else rolls.folder_roll_name(new)
+    return None
+
+
+def follow_folder(repo: Any, roll_id: str, folder: str) -> str:
+    """Point the roll, and every path stored under its folder, at *folder*, keeping the roll's
+    id, and take the roll file's identity and newer name. A name the old folder gave the
+    roll becomes the one *folder* gives it. Returns the old folder path."""
+    entry = rolls.roll_for_id(repo, roll_id) or {}
+    old = entry.get("folder_path") or ""
+    label = _followed_name(repo, entry.get("name") or "", old, folder)
+    repoint_folder(repo, old, folder)
+    if label:
+        rolls.relabel_roll(repo, roll_id, label)
+    sidecar = load_roll_sidecar(folder)
+    if sidecar is not None:
+        take_roll_file_identity(repo, roll_id, sidecar)
+    return old
+
+
+def recognize_roll_folder(repo: Any, folder: str, name: str = "", on_moved: Optional[Callable[[str, str], None]] = None) -> str:
+    """``rolls.recognize_folder``, except that a folder another computer moved or renamed
+    takes over its roll here (*on_moved* gets the old and new path), and a copy of a roll's
+    folder becomes a roll of its own with a new uid its file does not hold yet."""
+    moved = roll_moved_to(repo, folder)
+    if moved is not None and moved[1]:
+        old = follow_folder(repo, moved[0], folder)
+        if on_moved is not None:
+            on_moved(old, folder)
+        return moved[0]
+    roll_id = rolls.recognize_folder(repo, folder, name)
+    if moved is not None:
+        if not rolls.roll_uid(repo, roll_id):
+            rolls.set_roll_uid(repo, roll_id, uuid.uuid4().hex, unwritten=True)
+    elif (sidecar := load_roll_sidecar(folder)) is not None:
+        take_roll_file_identity(repo, roll_id, sidecar)
+    return roll_id
+
+
+def _candidates(old: str, roots: Iterable[str], filters: list) -> Iterator[str]:
+    """The old folder's siblings, then every roll folder under *roots*, each walked only when
+    the ones before it did not match."""
+    parent = os.path.dirname(os.path.normpath(old))
+    try:
+        names = sorted(os.listdir(parent))
+    except OSError:
+        names = []
+    yield from (os.path.join(parent, n) for n in names if not n.startswith(".") and os.path.isdir(os.path.join(parent, n)))
+    for root in roots:
+        yield from rolls.discover_roll_folders(root, filters)
+
+
+def find_moved_folder(repo: Any, roll_id: str, roots: Iterable[str]) -> Optional[str]:
+    """Where the folder roll's missing folder went: a sibling of the old folder, else a roll
+    folder under *roots*, whose roll file names this roll. Reads only roll files. None when
+    the folder is still there or nothing names the roll."""
+    entry = rolls.roll_for_id(repo, roll_id) or {}
+    old = entry.get("folder_path") or ""
+    if entry.get("kind") != "folder" or not old or os.path.isdir(old):
+        return None
+    seen: set = set()
+    for folder in _candidates(old, roots, rolls.discovery_filters(repo)):
+        key = os.path.normcase(os.path.normpath(folder))
+        if key not in seen and os.path.isfile(roll_sidecar_path(folder)) and roll_moved_to(repo, folder) == (roll_id, True):
+            return folder
+        seen.add(key)
+    return None
