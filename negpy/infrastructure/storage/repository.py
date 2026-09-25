@@ -174,6 +174,16 @@ class StorageRepository(IRepository):
                 (file_hash, settings_json, file_path, updated_at if updated_at is not None else time.time()),
             )
 
+    def touch_file_settings(self, file_hash: str, updated_at: Optional[float] = None) -> None:
+        """Advance a saved edit's ``updated_at`` without changing the edit. A no-op when the
+        hash has no row. A mark or work-print change calls it so its mirrored sidecar reads
+        as newer on another machine; the settings stay untouched."""
+        with self._connect(self.edits_db_path) as conn:
+            conn.execute(
+                "UPDATE file_settings SET updated_at = ? WHERE file_hash = ?",
+                (updated_at if updated_at is not None else time.time(), file_hash),
+            )
+
     def load_file_settings(self, file_hash: str) -> Optional[WorkspaceConfig]:
         record = self.load_file_record(file_hash)
         return record[0] if record else None

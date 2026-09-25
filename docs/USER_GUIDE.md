@@ -248,7 +248,7 @@ Thumbnails are positives. An unopened frame is inverted in the background from a
 Right-click a thumbnail, or use shortcuts, to mark frames (multi-selection works; marks persist):
 
 *   **Keep**: a check badge.
-*   **Reject**: a cross badge and dimming. Batch exports and sidecar writes skip it. The file on disk is never changed.
+*   **Reject**: a cross badge and dimming. Batch export and Export Sidecars skip it, but Keep Current still mirrors its sidecar, so the reject travels. The file on disk is never changed.
 
 #### Reading the badges
 

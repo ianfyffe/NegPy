@@ -1336,6 +1336,11 @@ class DesktopSessionManager(QObject):
             if set_all:
                 f[other] = False
             self.repo.save_file_mark(unforked_hash(f["hash"]), mark if set_all else None, file_path=f.get("path", ""))
+            # A mark lives in its own table, so advance the edit's updated_at too, or the
+            # re-mirrored sidecar keeps the old saved_at and the mark never reaches a machine
+            # that already has the frame. The mark is keyed by the unforked hash, and so is
+            # the row its sidecar reads.
+            self.repo.touch_file_settings(unforked_hash(f["hash"]))
         self.asset_model.refresh()
         self.files_changed.emit()
         self.marks_changed.emit([state.uploaded_files[i] for i in targets])
@@ -1737,7 +1742,7 @@ class DesktopSessionManager(QObject):
         if not (self.state.current_file_hash and name):
             return
         self.repo.save_work_print(self.state.current_file_hash, name, self.state.config)
-        self.work_prints_changed.emit()
+        self._work_prints_changed()
 
     def load_work_print(self, name: str) -> None:
         """Make a named version live. Committed through update_config, so it lands on the
@@ -1753,12 +1758,19 @@ class DesktopSessionManager(QObject):
         if not (self.state.current_file_hash and new_name) or new_name == name:
             return
         self.repo.rename_work_print(self.state.current_file_hash, name, new_name)
-        self.work_prints_changed.emit()
+        self._work_prints_changed()
 
     def delete_work_print(self, name: str) -> None:
         if not self.state.current_file_hash:
             return
         self.repo.delete_work_print(self.state.current_file_hash, name)
+        self._work_prints_changed()
+
+    def _work_prints_changed(self) -> None:
+        # Work prints live in their own table, so advance the edit's updated_at too, or the
+        # re-mirrored sidecar keeps the old saved_at and the change never reaches a machine
+        # that already has the frame.
+        self.repo.touch_file_settings(self.state.current_file_hash)
         self.work_prints_changed.emit()
 
     def jump_to_step(self, index: int) -> None:
