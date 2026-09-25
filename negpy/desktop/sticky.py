@@ -26,8 +26,7 @@ from negpy.desktop.settings_catalog import (
 STICKY_CONFIG_KEY = "sticky_config"
 STICKY_ROWS_KEY = "sticky_rows"
 
-# App-wide sidecar mirror toggle. It was a per-frame export field, so a frame reset
-# silently stopped the mirror; it is one preference now and survives a reset.
+# App-wide sidecar mirror toggle; a frame reset leaves it alone.
 SIDECARS_ENABLED_KEY = "sidecars_enabled"
 
 _CATALOG_EXPORT_FIELDS = frozenset(f for title, rows in CATALOG if title == "Export" for r in rows for f in r.fields)
@@ -61,15 +60,13 @@ def save_sticky_rows(repo: IRepository, ids: list[str]) -> None:
     repo.save_global_setting(STICKY_ROWS_KEY, sorted(ids))
 
 
-# The sidecar mirror toggle left the carry-over catalog when it became an app-wide
-# preference. A saved list keys each row by "section.field", so it can still hold the
-# retired id under its current or pre-rename spelling.
+# A saved list keys each row by "section.field" and can hold these ids, which are not
+# in the catalog.
 _RETIRED_STICKY_ROW_IDS: frozenset[str] = frozenset({"export.sidecars_enabled", "export.export_sidecars_enabled"})
 
 
 def migrate_retired_sticky_rows(repo: IRepository) -> None:
-    """Drop retired row ids from a saved carry-over list, once. A stale id is skipped on
-    load anyway; this strips it so the stored list stays truthful. Idempotent."""
+    """Drop retired row ids from a saved carry-over list. Idempotent."""
     stored = repo.get_global_setting(STICKY_ROWS_KEY)
     if not isinstance(stored, list):
         return
@@ -154,12 +151,8 @@ def migrate_legacy(repo: IRepository) -> None:
 
 
 def migrate_sidecars_enabled_preference(repo: IRepository) -> None:
-    """Seed the app-wide sidecar mirror preference from the toggle users last saved, once.
-
-    The toggle used to ride in the per-frame export config, so its last value sits in the
-    saved export snapshot under its current or pre-rename name. A user who never set it
-    starts off.
-    """
+    """Seed the app-wide sidecar mirror preference once, from the export snapshot that
+    last held it as a per-frame field. With no snapshot value it starts off."""
     if repo.get_global_setting(SIDECARS_ENABLED_KEY) is not None:
         return
     for store_key in ("last_export_config", STICKY_CONFIG_KEY):
