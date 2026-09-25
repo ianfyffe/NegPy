@@ -627,7 +627,8 @@ def plan_roll_file_write(repo, roll_id: str, on_disk: Optional[Dict[str, Any]]) 
     former = tuple(dict.fromkeys([*_names(file.get("former_names") if file else None), *rolls.former_folder_names(repo, roll_id)]))
     name, name_at = entry.get("name") or "", rolls.name_updated_at(repo, roll_id)
     file_name_at = _time(file.get("name_at")) if file else None
-    if file is not None and file_name_at is not None and (name_at is None or file_name_at > name_at):
+    copy = bool(entry.get("roll_uid_unwritten"))
+    if file is not None and not copy and file_name_at is not None and (name_at is None or file_name_at > name_at):
         name, name_at = str(file.get("name") or ""), file_name_at
     if file is None or file_at is None or (local_at is not None and local_at >= file_at):
         if local_at is None:
@@ -637,7 +638,7 @@ def plan_roll_file_write(repo, roll_id: str, on_disk: Optional[Dict[str, Any]]) 
             half = rolls.roll_half_frame_mode(repo, roll_id)
             payload = _roll_payload(RollSidecar(local_at, name, half, state, uid, name_at, former))
     else:
-        if name_at is None or name_at == file_name_at:
+        if not copy and (name_at is None or name_at == file_name_at):
             name, name_at = file.get("name"), file.get("name_at")
         payload = {**file, "roll_uid": uid, "name": name, "name_at": name_at, "former_names": list(former)}
         if not former and "former_names" not in file:
@@ -677,26 +678,44 @@ def export_roll_sidecar(repo, roll_id: str) -> Optional[str]:
     return write_roll_file(repo, roll_id)
 
 
-def take_roll_file_identity(repo, roll_id: str, sidecar: RollSidecar) -> bool:
-    """Take the file's uid, and its name when dated after the name here. A name the file
-    does not date never replaces one. True when the name changed.
+def is_copy_of(holder_folder: str, folder: str, uid: str) -> bool:
+    """Whether *folder* is a copy of *holder_folder*: another folder, not another path to the
+    same one, whose own roll file still reads with *uid*."""
+    try:
+        if not os.path.isdir(holder_folder) or os.path.samefile(holder_folder, folder):
+            return False
+    except OSError:
+        return False
+    held = load_roll_sidecar(holder_folder)
+    return held is not None and held.roll_uid == uid
 
-    A copied folder keeps its own uid until written. A uid another roll here holds stays
-    that roll's: when that roll's folder is still there this folder is a copy, and gets a
-    uid of its own."""
+
+def claim_copy(repo, roll_id: str) -> None:
+    """Give a copied folder's roll a uid of its own, unwritten until its file takes it, and
+    date its own name now, so the name the copied file carries never replaces it."""
+    rolls.set_roll_uid(repo, roll_id, uuid.uuid4().hex, unwritten=True)
+    rolls.rename_roll(repo, roll_id, (rolls.roll_for_id(repo, roll_id) or {}).get("name") or "")
+
+
+def take_roll_file_identity(repo, roll_id: str, sidecar: RollSidecar) -> bool:
+    """Take the file's uid, unless another roll here holds it, and its name when dated after
+    the name here; a copy keeps its own of both until written. True when the name changed."""
     entry = rolls.roll_for_id(repo, roll_id)
     if entry is None:
         return False
     uid = sidecar.roll_uid
-    if uid and entry.get("roll_uid") != uid and not entry.get("roll_uid_unwritten"):
+    if uid and not entry.get("roll_uid") and not entry.get("roll_uid_unwritten"):
         holder = rolls.roll_id_for_uid(repo, uid)
-        holder_folder = (rolls.roll_for_id(repo, holder) or {}).get("folder_path") or "" if holder else ""
         if holder is None:
             rolls.set_roll_uid(repo, roll_id, uid)
-        elif os.path.isdir(holder_folder) and not entry.get("roll_uid"):
-            rolls.set_roll_uid(repo, roll_id, uuid.uuid4().hex, unwritten=True)
+        elif is_copy_of((rolls.roll_for_id(repo, holder) or {}).get("folder_path") or "", entry.get("folder_path") or "", uid):
+            claim_copy(repo, roll_id)
+    elif uid and entry.get("roll_uid") != uid and not entry.get("roll_uid_unwritten"):
+        rolls.set_roll_uid(repo, roll_id, uid)
     local_at = rolls.name_updated_at(repo, roll_id)
-    if not sidecar.name or sidecar.name_at is None or (local_at is not None and sidecar.name_at <= local_at):
+    if rolls.roll_uid_unwritten(repo, roll_id) or not sidecar.name or sidecar.name_at is None:
+        return False
+    if local_at is not None and sidecar.name_at <= local_at:
         return False
     rolls.rename_roll(repo, roll_id, sidecar.name, when=sidecar.name_at)
     return sidecar.name != entry.get("name")
