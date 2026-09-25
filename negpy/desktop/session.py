@@ -39,6 +39,7 @@ from negpy.kernel.system.config import APP_CONFIG, DEFAULT_WORKSPACE_CONFIG
 from negpy.kernel.system.text import count_of
 from negpy.services.assets.composites import remember_composites
 from negpy.services.assets.flatfield import FlatFieldProfiles
+from negpy.services.assets.repoint import moved_path
 from negpy.services.assets import rolls
 from negpy.services.assets import semantic_model
 from negpy.services.assets.rolls import unforked_hash
@@ -2139,31 +2140,22 @@ class DesktopSessionManager(QObject):
         self._persist_session()
 
     def rehome_folder_paths(self, old_prefix: str, new_prefix: str) -> None:
-        """After a folder roll's own folder is renamed on disk, repoint every loaded
-        asset (and the active file) that lived under *old_prefix* to *new_prefix* --
-        content hashes are unchanged, so edits and history still find their frame by
-        hash alone; only the session's own path bookkeeping needs to catch up.
-        """
-        old_prefix = old_prefix.rstrip("/\\")
+        """Repoint every loaded asset (and the active file) under a folder that moved to
+        *new_prefix*. Content hashes are unchanged, so edits and history still find their
+        frame by hash; only the session's own path bookkeeping follows."""
 
-        def rehome(path: str) -> str:
-            if path and (path == old_prefix or path.startswith(old_prefix + os.sep)):
-                return new_prefix + path[len(old_prefix) :]
-            return path
+        def rehome(value: Any) -> Any:
+            if isinstance(value, str):
+                return moved_path(value, old_prefix, new_prefix)
+            return type(value)(rehome(v) for v in value) if isinstance(value, (list, tuple)) else value
 
         changed = False
         for f in self.state.uploaded_files:
-            for key in ("path", "green_path", "blue_path"):
+            for key in ("path", "green_path", "blue_path", "stitch_paths", "hdr_paths", "stitch_triplets"):
                 if f.get(key):
                     new_val = rehome(f[key])
                     if new_val != f[key]:
                         f[key] = new_val
-                        changed = True
-            for key in ("stitch_paths", "hdr_paths"):
-                if f.get(key):
-                    new_list = [rehome(p) for p in f[key]]
-                    if new_list != f[key]:
-                        f[key] = new_list
                         changed = True
 
         if self.state.current_file_path:

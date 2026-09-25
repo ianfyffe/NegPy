@@ -90,7 +90,7 @@ from negpy.domain.models import (
     resolve_preset_export,
 )
 from negpy.services.assets.composites import forget_composite, restore_maps
-from negpy.services.assets import rolls
+from negpy.services.assets import repoint, rolls
 from negpy.services.assets.half_frame import (
     HalfGeometry,
     base_hash,
@@ -1564,22 +1564,28 @@ class AppController(QObject):
         self.set_status(f"Saved as roll “{name}”", 3000)
         return roll_id
 
-    def request_rename_roll(self, roll_id: str, new_name: str, rename_folder: bool) -> bool:
-        """Rename a roll's display name, and -- only if asked -- its backing folder on
-        disk too. All-or-nothing: if the disk rename fails (missing folder, a sibling
-        already named that, no permission), the display name is left alone as well,
-        so the two names can never end up telling different stories.
-        """
+    def request_rename_roll(self, roll_id: str, new_name: str, rename_folder: bool, prefix: str = "") -> bool:
+        """Rename a roll to *new_name* under its folder rows' *prefix*, and -- only if asked --
+        its folder on disk to *new_name*. All-or-nothing: if the disk rename fails (missing
+        folder, a sibling already named that, no permission), the display name stays too."""
+        repo = self.session.repo
         if rename_folder:
-            entry = rolls.roll_for_id(self.session.repo, roll_id)
+            entry = rolls.roll_for_id(repo, roll_id)
             old_path = entry.get("folder_path", "") if entry else ""
-            new_path = rolls.rename_folder_roll_disk(self.session.repo, roll_id, new_name)
+            # A sidecar still queued under the old path would create that folder again.
+            self.flush_sidecars()
+            new_path = rolls.rename_folder_roll_disk(repo, roll_id, new_name)
             if new_path is None:
                 return False
-            if old_path and roll_id == self.state.active_roll_id:
-                self.session.rehome_folder_paths(old_path, new_path)
-        rolls.rename_roll(self.session.repo, roll_id, new_name)
+            self.repoint_folder(old_path, new_path)
+        rolls.rename_roll(repo, roll_id, f"{prefix}{rolls.ROLL_PATH_SEP}{new_name}" if prefix else new_name)
         return True
+
+    def repoint_folder(self, old_path: str, new_path: str) -> None:
+        """Point every stored and loaded path under *old_path* at *new_path*."""
+        repoint.repoint_folder(self.session.repo, old_path, new_path)
+        self.session.rehome_folder_paths(old_path, new_path)
+        self.invalidate_library_walk()
 
     def invalidate_library_walk(self) -> None:
         """Drop the cached traversal so the next search re-reads the folders."""
