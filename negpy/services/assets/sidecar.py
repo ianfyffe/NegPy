@@ -646,15 +646,24 @@ def plan_roll_file_write(repo, roll_id: str, on_disk: Optional[Dict[str, Any]]) 
     return payload if payload != file else None
 
 
+def _unreadable(path: str, data: Optional[Dict[str, Any]]) -> bool:
+    """A roll file that is there but does not read as one: mid-sync, truncated, locked."""
+    return _roll_file(data) is None and os.path.lexists(path)
+
+
 def write_roll_file(repo, roll_id: str) -> Optional[str]:
     """Write what ``plan_roll_file_write`` plans into the folder roll's file, and keep the
-    uid it names on the roll here. Returns the path, or None when nothing was written."""
+    uid it names on the roll here. Returns the path, or None when nothing was written. A
+    file that cannot be read is left alone: it may hold newer state."""
     entry = rolls.roll_for_id(repo, roll_id) or {}
     folder = entry.get("folder_path") or ""
     if entry.get("kind") != "folder" or not folder:
         return None
     path = roll_sidecar_path(folder)
     on_disk = _read_json(path)
+    if _unreadable(path, on_disk):
+        logger.warning("Roll file %s cannot be read; not writing over it", path)
+        return None
     payload = plan_roll_file_write(repo, roll_id, on_disk)
     if payload is not None:
         _write_json(path, payload)
@@ -673,7 +682,7 @@ def export_roll_sidecar(repo, roll_id: str) -> Optional[str]:
         return None
     if rolls.roll_updated_at(repo, roll_id) is None and rolls.has_portable_state(repo, roll_id):
         on_disk = load_roll_sidecar(folder)
-        if on_disk is None or on_disk.saved_at is None:
+        if (on_disk is None and not os.path.lexists(roll_sidecar_path(folder))) or (on_disk is not None and on_disk.saved_at is None):
             rolls.touch_roll(repo, roll_id)
     return write_roll_file(repo, roll_id)
 
