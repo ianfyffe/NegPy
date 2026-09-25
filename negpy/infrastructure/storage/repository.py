@@ -236,6 +236,23 @@ class StorageRepository(IRepository):
             return None
         return WorkspaceConfig.from_flat_dict(json.loads(row[0])), float(row[1] or 0.0)
 
+    def load_file_updated_at(self, file_hash: str) -> Optional[float]:
+        """The saved edit's ``updated_at`` without reading the edit, or None with no saved edit."""
+        with self._connect(self.edits_db_path) as conn:
+            row = conn.execute("SELECT updated_at FROM file_settings WHERE file_hash = ?", (file_hash,)).fetchone()
+        return float(row[0] or 0.0) if row else None
+
+    def has_settings_for_path(self, file_path: str) -> bool:
+        """Whether ``load_file_settings_by_path`` finds a row, without reading its edit."""
+        if not file_path:
+            return False
+        with self._connect(self.edits_db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM file_settings WHERE file_path = ? AND file_hash NOT LIKE '%#%'",
+                (file_path,),
+            ).fetchone()
+        return row is not None
+
     def delete_file_settings(self, file_hash: str) -> None:
         """Delete this hash's saved edit, its undo history and its work prints.
 

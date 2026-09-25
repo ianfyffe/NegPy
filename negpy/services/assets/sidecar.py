@@ -65,6 +65,62 @@ class Sidecar:
     # None when the file does not say: format 2, no folder roll, or a frame forked in it.
     roll_locks: Optional[tuple] = None
 
+    @property
+    def work_print_stamps(self) -> Dict[str, float]:
+        return {name: wp.stamp for name, wp in self.work_prints.items()}
+
+    def work_print(self, name: str) -> Optional[SidecarWorkPrint]:
+        return self.work_prints.get(name)
+
+
+@dataclass(frozen=True)
+class SidecarScan:
+    """What a sidecar says about times, the mark and work-print names, read without building
+    a config. ``sidecar()`` and ``work_print()`` build from the raw JSON it keeps."""
+
+    saved_at: Optional[float]
+    mark: Optional[str]
+    mark_at: Optional[float]
+    work_print_stamps: Dict[str, float]
+    deleted_work_prints: Dict[str, float]
+    edit: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
+    prints: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False, compare=False)
+    source_hash: str = ""
+    roll_locks: Optional[tuple] = None
+
+    @property
+    def has_edit(self) -> bool:
+        return self.edit is not None
+
+    def work_print(self, name: str) -> Optional[SidecarWorkPrint]:
+        entry = self.prints.get(name)
+        if entry is None:
+            return None
+        try:
+            updated = entry.get("updated_at")
+            return SidecarWorkPrint(
+                float(entry.get("created_at") or 0.0),
+                WorkspaceConfig.from_flat_dict(entry["edit"]),
+                float(updated) if isinstance(updated, (int, float)) else None,
+            )
+        except Exception as exc:
+            logger.warning("Skipping work print %r in sidecar: %s", name, exc)
+            return None
+
+    def sidecar(self) -> Sidecar:
+        """The whole sidecar, every config built."""
+        work_prints = {name: wp for name in self.prints if (wp := self.work_print(name)) is not None}
+        return Sidecar(
+            config=WorkspaceConfig.from_flat_dict(self.edit) if self.edit is not None else None,
+            saved_at=self.saved_at,
+            source_hash=self.source_hash,
+            mark=self.mark,
+            mark_at=self.mark_at,
+            work_prints=work_prints,
+            deleted_work_prints=dict(self.deleted_work_prints),
+            roll_locks=self.roll_locks,
+        )
+
 
 def sidecar_path_for(source_path: str, half: int = 0) -> str:
     """Sidecar path next to the source file: ``<basename>.negpy`` (``<basename>.<half>.negpy`` for half-frame assets)."""
@@ -124,42 +180,48 @@ def _to_payload(sidecar: Sidecar) -> Dict[str, Any]:
     }
 
 
-def _from_payload(data: Dict[str, Any]) -> Optional[Sidecar]:
+def _scan_payload(data: Dict[str, Any]) -> Optional[SidecarScan]:
     if "sidecar_format" not in data:
-        return Sidecar(config=WorkspaceConfig.from_flat_dict(data))
+        return SidecarScan(saved_at=None, mark=None, mark_at=None, work_print_stamps={}, deleted_work_prints={}, edit=data)
     edit = data.get("edit")
     if "edit" not in data or (edit is not None and not isinstance(edit, dict)):
         return None
     saved_at = data.get("saved_at")
-    saved_at = float(saved_at) if isinstance(saved_at, (int, float)) else None
+    saved_at = float(saved_at) if isinstance(saved_at, (int, float)) and edit is not None else None
     mark_at = data.get("mark_at")
     mark = data.get("mark")
     locks = data.get("roll_locks")
-    work_prints: Dict[str, SidecarWorkPrint] = {}
+    prints: Dict[str, Dict[str, Any]] = {}
+    stamps: Dict[str, float] = {}
     for name, entry in (data.get("work_prints") or {}).items():
         if isinstance(entry, dict) and isinstance(entry.get("edit"), dict):
-            try:
-                updated = entry.get("updated_at")
-                work_prints[str(name)] = SidecarWorkPrint(
-                    float(entry.get("created_at") or 0.0),
-                    WorkspaceConfig.from_flat_dict(entry["edit"]),
-                    float(updated) if isinstance(updated, (int, float)) else None,
-                )
-            except Exception as exc:
-                logger.warning("Skipping work print %r in sidecar: %s", name, exc)
-    return Sidecar(
-        config=WorkspaceConfig.from_flat_dict(edit) if edit is not None else None,
-        saved_at=saved_at if edit is not None else None,
-        source_hash=str(data.get("source_hash") or ""),
+            stamp = entry.get("updated_at", entry.get("created_at"))
+            prints[str(name)] = entry
+            stamps[str(name)] = float(stamp) if isinstance(stamp, (int, float)) else 0.0
+    legacy_saved_at = data.get("saved_at")
+    return SidecarScan(
+        saved_at=saved_at,
         mark=mark if mark in _MARKS else None,
         # A file without mark_at dates a mark by saved_at; its null mark says nothing.
-        mark_at=float(mark_at) if isinstance(mark_at, (int, float)) else saved_at if mark in _MARKS else None,
-        work_prints=work_prints,
+        mark_at=float(mark_at)
+        if isinstance(mark_at, (int, float))
+        else float(legacy_saved_at)
+        if mark in _MARKS and isinstance(legacy_saved_at, (int, float))
+        else None,
+        work_print_stamps=stamps,
         deleted_work_prints={
             str(name): float(t) for name, t in (data.get("deleted_work_prints") or {}).items() if isinstance(t, (int, float))
         },
+        edit=edit,
+        prints=prints,
+        source_hash=str(data.get("source_hash") or ""),
         roll_locks=tuple(str(c) for c in locks) if isinstance(locks, list) else None,
     )
+
+
+def _from_payload(data: Dict[str, Any]) -> Optional[Sidecar]:
+    scan = _scan_payload(data)
+    return scan.sidecar() if scan is not None else None
 
 
 def load_sidecar(source_path: str, half: int = 0) -> Optional[Sidecar]:
@@ -242,7 +304,7 @@ def _latest(print_at: Optional[float], deleted_at: Optional[float]) -> Optional[
     return (print_at, False) if print_at is not None else None
 
 
-def merge_sidecar_extras(repo, file_hash: str, source_path: str, sidecar: Sidecar) -> bool:
+def merge_sidecar_extras(repo, file_hash: str, source_path: str, sidecar: "Sidecar | SidecarScan") -> bool:
     """Take the sidecar's mark when dated after the mark here, and for each work-print name
     whatever happened to it last on either side: a save, or a deletion or rename away (a
     tombstone). Never touches the edit. True when the mark or the prints here changed."""
@@ -252,21 +314,21 @@ def merge_sidecar_extras(repo, file_hash: str, source_path: str, sidecar: Sideca
     if newer:
         repo.save_file_mark(file_hash, sidecar.mark, file_path=source_path, marked_at=sidecar.mark_at)
         changed = (local[0] if local else None) != sidecar.mark
-    if not sidecar.work_prints and not sidecar.deleted_work_prints:
+    stamps = sidecar.work_print_stamps
+    if not stamps and not sidecar.deleted_work_prints:
         return changed
     held = repo.load_work_print_stamps(file_hash)
     gone = repo.load_work_print_tombstones(file_hash)
     local_bind: Optional[str] = None
-    for name in {*sidecar.work_prints, *sidecar.deleted_work_prints}:
-        wp = sidecar.work_prints.get(name)
-        theirs = _latest(wp.stamp if wp else None, sidecar.deleted_work_prints.get(name))
+    for name in {*stamps, *sidecar.deleted_work_prints}:
+        theirs = _latest(stamps.get(name), sidecar.deleted_work_prints.get(name))
         mine = _latest(held.get(name), gone.get(name))
         if theirs is None or (mine is not None and theirs <= mine):
             continue
         if theirs[1]:
             repo.delete_work_print(file_hash, name, deleted_at=theirs[0])
             changed = changed or name in held
-        elif wp is not None:
+        elif (wp := sidecar.work_print(name)) is not None:
             if local_bind is None:
                 roll_id = _folder_roll(repo, source_path)
                 local_bind = f"roll:{roll_id}" if roll_id else ""
@@ -299,8 +361,8 @@ def newer_sidecar(repo, file_hash: str, source_path: str, half: int = 0) -> Opti
     sidecar = load_sidecar(source_path, half)
     if sidecar is None or sidecar.config is None or sidecar.saved_at is None:
         return None
-    record = repo.load_file_record(file_hash)
-    if record is None or sidecar.saved_at <= record[1]:
+    local = repo.load_file_updated_at(file_hash)
+    if local is None or sidecar.saved_at <= local:
         return None
     return sidecar
 
@@ -314,18 +376,74 @@ def _is_composite(asset: Dict[str, Any]) -> bool:
     return bool(asset.get("hdr_paths") or asset.get("stitch_paths"))
 
 
-def pending_sidecar_offers(repo, assets) -> list[SidecarOffer]:
-    """Frames whose sidecar was saved after their edit here, minus declined versions."""
+def pending_sidecar_offers(repo, assets, reader: Optional["SidecarReader"] = None) -> list[SidecarOffer]:
+    """Frames whose sidecar edit was saved after their edit here, minus declined versions."""
+    reader = reader if reader is not None else SidecarReader()
     declined = repo.get_global_setting(DECLINED_KEY, default=None) or {}
     offers = []
     for asset in assets:
         file_hash, path = asset.get("hash") or "", asset.get("path") or ""
         if not file_hash or not path or _is_composite(asset) or unforked_hash(file_hash) != file_hash:
             continue
-        sidecar = newer_sidecar(repo, file_hash, path, half=int(asset.get("half") or 0))
-        if sidecar is not None and declined.get(file_hash) != sidecar.saved_at:
+        local = repo.load_file_updated_at(file_hash)
+        if local is None:
+            continue
+        scan = reader.scan(path, int(asset.get("half") or 0))
+        if scan is None or not scan.has_edit or scan.saved_at is None or scan.saved_at <= local:
+            continue
+        if declined.get(file_hash) != scan.saved_at and (sidecar := _built(scan, path)) is not None:
             offers.append(SidecarOffer(asset, sidecar))
     return offers
+
+
+def _built(scan: SidecarScan, source_path: str) -> Optional[Sidecar]:
+    try:
+        return scan.sidecar()
+    except Exception as exc:
+        logger.warning("Failed to load sidecar for %s: %s", source_path, exc)
+        return None
+
+
+class SidecarReader:
+    """Sidecar scans for discovery, kept for the session. A file whose (mtime_ns, size) has
+    not changed since it was last read is served from memory, and its mark and work prints
+    are not merged again."""
+
+    def __init__(self) -> None:
+        self._scans: Dict[str, tuple[tuple[int, int], Optional[SidecarScan]]] = {}
+        self._merged: Dict[str, tuple[int, int]] = {}
+
+    def scan(self, source_path: str, half: int = 0) -> Optional[SidecarScan]:
+        path = sidecar_path_for(source_path, half)
+        try:
+            st = os.stat(path)
+        except OSError:
+            self._scans.pop(path, None)
+            return None
+        stamp = (st.st_mtime_ns, st.st_size)
+        hit = self._scans.get(path)
+        if hit is not None and hit[0] == stamp:
+            return hit[1]
+        data = _read_json(path)
+        try:
+            scan = _scan_payload(data) if data is not None else None
+        except Exception as exc:
+            logger.warning("Failed to load sidecar %s: %s", path, exc)
+            scan = None
+        self._scans[path] = (stamp, scan)
+        return scan
+
+    def merge_due(self, source_path: str, half: int = 0) -> bool:
+        """Whether the scanned file changed since its mark and work prints were last merged."""
+        path = sidecar_path_for(source_path, half)
+        hit = self._scans.get(path)
+        return hit is None or self._merged.get(path) != hit[0]
+
+    def merged(self, source_path: str, half: int = 0) -> None:
+        path = sidecar_path_for(source_path, half)
+        hit = self._scans.get(path)
+        if hit is not None:
+            self._merged[path] = hit[0]
 
 
 def _offer_key(offer) -> str:
@@ -449,7 +567,7 @@ def read_roll_sidecar(repo, roll_id: str, any_age: bool = False) -> Optional[Rol
     return offer
 
 
-def read_frame_sidecars(repo, assets) -> tuple[list[str], list[str]]:
+def read_frame_sidecars(repo, assets, reader: Optional[SidecarReader] = None) -> tuple[list[str], list[str]]:
     """Load each frame's sidecar where it cannot overwrite a newer state here. Returns
     (hashes whose edit was filled, hashes that took only a newer mark or work print).
 
@@ -457,6 +575,7 @@ def read_frame_sidecars(repo, assets) -> tuple[list[str], list[str]]:
     match resolves it first. A frame with an edit, or opened through a roll fork, merges the
     mark and work prints into the shared hash. A composite has no sidecar of its own.
     """
+    reader = reader if reader is not None else SidecarReader()
     filled: list[str] = []
     merged: list[str] = []
     for asset in assets:
@@ -465,17 +584,22 @@ def read_frame_sidecars(repo, assets) -> tuple[list[str], list[str]]:
             continue
         half = int(asset.get("half") or 0)
         shared = unforked_hash(file_hash)
-        unedited = shared == file_hash and repo.load_file_record(file_hash) is None
-        if unedited and not half and repo.load_file_settings_by_path(path) is not None:
+        unedited = shared == file_hash and repo.load_file_updated_at(file_hash) is None
+        if unedited and not half and repo.has_settings_for_path(path):
             continue
-        sidecar = load_sidecar(path, half)
-        if sidecar is None:
+        scan = reader.scan(path, half)
+        if scan is None:
             continue
-        if unedited and sidecar.config is not None:
-            promote_sidecar(repo, file_hash, path, sidecar)
-            filled.append(file_hash)
-        elif merge_sidecar_extras(repo, shared, path, sidecar):
-            merged.append(shared)
+        if unedited and scan.has_edit:
+            sidecar = _built(scan, path)
+            if sidecar is not None:
+                promote_sidecar(repo, file_hash, path, sidecar)
+                filled.append(file_hash)
+                reader.merged(path, half)
+        elif reader.merge_due(path, half):
+            if merge_sidecar_extras(repo, shared, path, scan):
+                merged.append(shared)
+            reader.merged(path, half)
     return filled, merged
 
 

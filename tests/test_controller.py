@@ -999,7 +999,7 @@ class TestAppController(unittest.TestCase):
         ):
             filled = self.controller._load_sidecars_of_unedited(assets)
 
-        read.assert_called_once_with(self.mock_session_manager.repo, assets)
+        read.assert_called_once_with(self.mock_session_manager.repo, assets, self.controller._sidecar_reader)
         self.assertEqual(filled, ["hash1"])
         status.assert_called_once_with("Loaded 1 edit from sidecars", 4000)
 
@@ -4076,7 +4076,9 @@ class TestDiscoveryProgressPopup(unittest.TestCase):
         self.mock_session_manager.add_files.side_effect = lambda _p, validated_info=None: order.append("add_files")
         self.mock_session_manager.state.uploaded_files = [asset]
 
-        with patch("negpy.desktop.controller.read_frame_sidecars", side_effect=lambda _r, _a: order.append("promote") or (["h1"], [])):
+        with patch(
+            "negpy.desktop.controller.read_frame_sidecars", side_effect=lambda _r, _a, _reader: order.append("promote") or (["h1"], [])
+        ):
             self.controller._on_discovery_finished([asset])
 
         self.assertEqual(order, ["promote", "add_files"])
