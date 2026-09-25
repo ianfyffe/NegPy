@@ -39,10 +39,9 @@ from negpy.kernel.system.config import APP_CONFIG, DEFAULT_WORKSPACE_CONFIG
 from negpy.kernel.system.text import count_of
 from negpy.services.assets.composites import remember_composites
 from negpy.services.assets.flatfield import FlatFieldProfiles
-from negpy.services.assets.repoint import moved_path
 from negpy.services.assets import rolls
 from negpy.services.assets import semantic_model
-from negpy.services.assets.rolls import unforked_hash
+from negpy.services.assets.rolls import moved_path, unforked_hash
 from negpy.services.assets.search import facts_for, match, parse_query
 from negpy.services.assets.sidecar import load_or_promote
 from negpy.services.assets.thumbnails import asset_thumbnail_key

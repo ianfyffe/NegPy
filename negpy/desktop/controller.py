@@ -1622,6 +1622,7 @@ class AppController(QObject):
         return new_path
 
     def _on_folder_followed(self, old_path: str, new_path: str) -> None:
+        self._sidecar_mirror.rehome_pending(old_path, new_path)
         self.session.rehome_folder_paths(old_path, new_path)
         self.invalidate_library_walk()
         self.rolls_updated.emit()
@@ -1629,6 +1630,7 @@ class AppController(QObject):
     def repoint_folder(self, old_path: str, new_path: str) -> None:
         """Point every stored and loaded path under *old_path* at *new_path*."""
         repoint.repoint_folder(self.session.repo, old_path, new_path)
+        self._sidecar_mirror.rehome_pending(old_path, new_path)
         self.session.rehome_folder_paths(old_path, new_path)
         self.invalidate_library_walk()
 
@@ -6738,7 +6740,9 @@ class AppController(QObject):
             if sidecar is None:
                 continue  # no edit, mark or work print: nothing to carry
             try:
-                write_sidecar(f["path"], sidecar, half=half)
+                if write_sidecar(f["path"], sidecar, half=half) is None:
+                    failed += 1
+                    continue
                 written += 1
                 folders.add(os.path.dirname(f["path"]))
             except Exception as exc:

@@ -172,3 +172,19 @@ def test_a_folder_renamed_here_keeps_its_stitch_and_virtual_roll_membership(repo
     assert all(
         os.path.exists(p) for p in (*stitches[os.path.join(new_path, "1.tif")]["paths"], *rolls.roll_for_id(repo, picks)["member_paths"])
     )
+
+
+def test_only_configs_that_name_the_old_folder_are_read(repo, monkeypatch):
+    cfg = DEFAULT_WORKSPACE_CONFIG
+    here = replace(cfg, rgbscan=RgbScanConfig(enabled=True, green_path=_in(OLD, "g.tif"), blue_path=_in(OLD, "b.tif")))
+    elsewhere = replace(cfg, rgbscan=RgbScanConfig(enabled=True, green_path="/mnt/other/roll_a/g.tif", blue_path="/mnt/other/roll_a/b.tif"))
+    repo.save_file_settings("h1", here)
+    repo.save_file_settings("h2", elsewhere)
+    read = []
+    original = repo.repoint_saved_configs
+    monkeypatch.setattr(repo, "repoint_saved_configs", lambda contains, move: original(contains, lambda d: read.append(d) or move(d)))
+
+    repoint_folder(repo, OLD, NEW)
+
+    assert [d["green_path"] for d in read] == [_in(OLD, "g.tif")]
+    assert repo.load_file_settings("h2").rgbscan.green_path == "/mnt/other/roll_a/g.tif"

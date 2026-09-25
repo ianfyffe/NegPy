@@ -31,6 +31,7 @@ from negpy.services.assets.sidecar import (
     roll_sidecar_path,
     sidecar_from_repo,
     sidecar_path_for,
+    write_sidecar,
 )
 
 _FRAMES = (("a.tif", "h1"), ("b.tif", "h2"), ("c.tif", "h3"))
@@ -892,3 +893,19 @@ def test_only_the_leaf_of_a_name_travels(tmp_path):
 
     assert _file(a)["name"] == "Portra"
     assert _name(b) == "photos/Portra"
+
+
+def test_a_followed_folder_is_never_created_again_by_a_waiting_sidecar(tmp_path):
+    a, b = _nas(tmp_path)
+    b.repo.save_file_settings("h1", _cfg(), file_path=b.assets[0]["path"])
+    mirror = SidecarMirror(b.repo)
+    mirror.mark_dirty("h1", b.assets[0]["path"])
+    old_b_folder = b.folder
+    os.rename(a.folder, a.folder + "_best")
+
+    assert write_sidecar(b.assets[0]["path"], sidecar_from_repo(b.repo, "h1", b.assets[0]["path"])) is None
+    mirror.rehome_pending(old_b_folder, old_b_folder + "_best")
+    mirror.flush()
+
+    assert not os.path.exists(old_b_folder)
+    assert load_sidecar(os.path.join(old_b_folder + "_best", "a.tif")) is not None

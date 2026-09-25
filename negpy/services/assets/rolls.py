@@ -171,6 +171,21 @@ def _folder_key(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
 
 
+def moved_path(path: str, old: str, new: str) -> str:
+    """*path* rebased from folder *old* onto *new* when it is *old* or under it, compared as
+    ``_folder_key`` compares folders; any other path comes back unchanged."""
+    if not path or not old:
+        return path
+    norm, base = os.path.normpath(path), os.path.normpath(old)
+    key, base_key = os.path.normcase(norm), os.path.normcase(base)
+    if key == base_key:
+        return new
+    prefix = base_key.rstrip(os.sep) + os.sep
+    if key.startswith(prefix):
+        return os.path.join(new, norm[len(prefix) :])
+    return path
+
+
 def folder_roll_id_for_path(repo: Any, path: str) -> Optional[str]:
     """The id of the roll recognizing *path*, or None if not yet recognized."""
     key = _folder_key(path)
