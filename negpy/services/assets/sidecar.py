@@ -152,7 +152,7 @@ def _folder_roll(repo, source_path: str) -> Optional[str]:
 
 
 def _roll_locks(repo, file_hash: str, source_path: str) -> Optional[tuple]:
-    roll_id = _folder_roll(repo, source_path)
+    roll_id = _folder_roll(repo, source_path) if unforked_hash(file_hash) == file_hash else None
     if roll_id is None or rolls.is_forked(repo, roll_id, file_hash):
         return None
     return tuple(sorted(rolls.frame_override_cards(repo, roll_id, file_hash)))
@@ -160,8 +160,9 @@ def _roll_locks(repo, file_hash: str, source_path: str) -> Optional[tuple]:
 
 def _restore_roll_locks(repo, file_hash: str, source_path: str, sidecar: Sidecar) -> None:
     """Set the frame's locks in its folder roll from the sidecar. A file that does not say
-    locks every card where the edit differs from this roll's defaults, and unlocks none."""
-    roll_id = _folder_roll(repo, source_path)
+    locks every card where the edit differs from this roll's defaults, and unlocks none. A
+    fork hash has no locks of its own to set."""
+    roll_id = _folder_roll(repo, source_path) if unforked_hash(file_hash) == file_hash else None
     if roll_id is None or rolls.is_forked(repo, roll_id, file_hash):
         return
     current = rolls.frame_override_cards(repo, roll_id, file_hash)

@@ -840,6 +840,40 @@ class TestAppController(unittest.TestCase):
         self.mock_session_manager.reload_current_file.assert_called_once()
         refresh.assert_called_once_with(["hash1"])
 
+    def _reload_sidecar_on(self, file_hash: str, shown: bool):
+        from negpy.services.assets.sidecar import RollSidecar, RollSidecarOffer, Sidecar
+
+        state = self.mock_session_manager.state
+        state.uploaded_files = [{"name": "a.dng", "path": "/tmp/a.dng", "hash": file_hash}]
+        state.selected_file_idx = 0
+        roll = RollSidecarOffer("r1", "Roll", RollSidecar(saved_at=9.0, half_frame_mode=True))
+        with (
+            patch("negpy.desktop.controller.rolls.folder_roll_id_for_path", return_value="r1"),
+            patch("negpy.desktop.controller.read_roll_sidecar", return_value=roll),
+            patch("negpy.desktop.controller.load_sidecar", return_value=Sidecar(WorkspaceConfig(), saved_at=8.0)),
+            patch("negpy.desktop.controller.promote_sidecar") as promote,
+            patch.object(self.controller, "_show_sidecar_offers", return_value=shown) as show,
+            patch.object(self.controller, "set_status") as status,
+        ):
+            self.controller.reload_sidecar()
+        return promote, show, status
+
+    def test_reload_from_sidecar_refuses_a_fork(self):
+        promote, show, status = self._reload_sidecar_on("hash1#roll:r1", shown=False)
+
+        promote.assert_not_called()
+        show.assert_not_called()
+        self.assertEqual(status.call_args.kwargs.get("kind"), "warning")
+
+    def test_reload_from_sidecar_ends_when_the_roll_file_changes_half_frame(self):
+        """Re-discovery replaces the whole-frame asset, so its sidecar is not the one to load."""
+        promote, show, _ = self._reload_sidecar_on("hash1", shown=True)
+        show.assert_called_once()
+        promote.assert_not_called()
+
+        promote, _, _ = self._reload_sidecar_on("hash1", shown=False)
+        promote.assert_called_once()
+
     def test_export_sidecars_writes_the_folders_roll_file(self):
         from negpy.services.assets.sidecar import Sidecar
 
