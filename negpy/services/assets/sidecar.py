@@ -608,16 +608,10 @@ def _names(value: Any) -> tuple:
 
 
 def plan_roll_file_write(repo, roll_id: str, on_disk: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """What to write over a folder roll's file, given the file's payload (None without one),
-    or None to leave it as it is. Reads only.
-
-    The roll's state is written only when the roll here was changed at or after the file's
-    ``saved_at``: nothing writes over a newer file. A roll never changed here writes its
-    identity and name alone. The uid is a copied folder's own until written, else the file's,
-    else the roll's, else a new one. The name is whichever side's is dated later; the former
-    folder names are both sides'. Over a newer file only these change; every other field
-    stays as the file has it.
-    """
+    """The payload to write over a folder roll's file (*on_disk*, None without one), or None.
+    State goes only over an older file, and never over a newer one; the uid (a copy's own,
+    else the file's, else the roll's), the later name's leaf and both sides' former names go
+    either way. A roll never changed here writes its identity alone. Reads only."""
     entry = rolls.roll_for_id(repo, roll_id)
     if not entry or entry.get("kind") != "folder":
         return None

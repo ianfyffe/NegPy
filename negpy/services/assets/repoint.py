@@ -82,11 +82,9 @@ def _moved_config(data: Dict[str, Any], old: str, new: str) -> Optional[Dict[str
 
 
 def repoint_folder(repo: Any, old: str, new: str) -> None:
-    """Rewrite every stored path equal to *old* or under it to the same place under *new*:
-    rolls (folders, extra and member paths), composites, the saved session, the import
-    sources, dismissed folders and library roots, the path columns of edits, marks and
-    embeddings, and the source paths inside saved configs. A saved edit keeps its
-    ``updated_at``, because a path change is not an edit. Idempotent."""
+    """Rewrite every stored path at or under *old* to the same place under *new*: rolls,
+    composites, the saved session, the library lists, and the path columns and source paths
+    of saved edits. A saved edit keeps its ``updated_at``: a path change is not an edit."""
     if not old or not new or os.path.normcase(os.path.normpath(old)) == os.path.normcase(os.path.normpath(new)):
         return
     _repoint_rolls(repo, old, new)
@@ -109,11 +107,10 @@ MOVED, COPY, UNSURE = "moved", "copy", "unsure"
 
 
 def roll_moved_to(repo: Any, folder: str) -> Optional[tuple[str, str]]:
-    """The roll here that *folder*'s roll file names, when *folder* is not yet its own, and
-    ``MOVED`` (its folder is gone from a parent that is there), ``COPY`` (both folders hold its
-    file) or ``UNSURE`` (another path to one folder, an offline share, a folder that cannot be
-    told apart yet). The file names the roll by ``roll_uid``, or by a former folder name in the
-    same parent. None otherwise."""
+    """The roll here that *folder*'s roll file names, by ``roll_uid`` or a former folder name in
+    the same parent, and ``MOVED`` (its folder is gone from a parent that is there), ``COPY``
+    (both folders hold its file) or ``UNSURE`` (another path to one folder, an offline share,
+    a stale listing). None when *folder* is a roll's own or names no roll here."""
     if rolls.folder_roll_id_for_path(repo, folder) is not None:
         return None
     sidecar = load_roll_sidecar(folder)
