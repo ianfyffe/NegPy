@@ -61,6 +61,23 @@ def save_sticky_rows(repo: IRepository, ids: list[str]) -> None:
     repo.save_global_setting(STICKY_ROWS_KEY, sorted(ids))
 
 
+# The sidecar mirror toggle left the carry-over catalog when it became an app-wide
+# preference. A saved list keys each row by "section.field", so it can still hold the
+# retired id under its current or pre-rename spelling.
+_RETIRED_STICKY_ROW_IDS: frozenset[str] = frozenset({"export.sidecars_enabled", "export.export_sidecars_enabled"})
+
+
+def migrate_retired_sticky_rows(repo: IRepository) -> None:
+    """Drop retired row ids from a saved carry-over list, once. A stale id is skipped on
+    load anyway; this strips it so the stored list stays truthful. Idempotent."""
+    stored = repo.get_global_setting(STICKY_ROWS_KEY)
+    if not isinstance(stored, list):
+        return
+    kept = [rid for rid in stored if rid not in _RETIRED_STICKY_ROW_IDS]
+    if len(kept) != len(stored):
+        save_sticky_rows(repo, kept)
+
+
 # Kept out of the snapshot and written only by the Description… dialog, so the last
 # confirm wins for the roll instead of whichever frame was saved last.
 DESCRIPTION_FIELDS_KEY = "last_description_fields"
