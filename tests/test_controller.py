@@ -792,6 +792,79 @@ class TestAppController(unittest.TestCase):
         self.mock_session_manager.reload_current_file.assert_called_once()
         refresh.assert_called_once_with(["hash1"])
 
+    def test_export_sidecars_writes_the_folders_roll_file(self):
+        from negpy.services.assets.sidecar import Sidecar
+
+        self._wire_repo_store()
+        repo = self.controller.session.repo
+        roll_id = rolls.recognize_folder(repo, "/tmp")
+        row = Sidecar(config=WorkspaceConfig(), saved_at=5.0, source_hash="hash3")
+
+        with (
+            patch("negpy.desktop.controller.load_or_promote", return_value=None),
+            patch("negpy.desktop.controller.sidecar_from_repo", return_value=row),
+            patch("negpy.desktop.controller.write_sidecar"),
+            patch("negpy.desktop.controller.export_roll_sidecar") as export,
+        ):
+            self.controller._write_edit_sidecars([{"name": f"{h}.dng", "path": f"/tmp/{h}.dng", "hash": h} for h in ("h1", "h2")])
+
+        export.assert_called_once_with(repo, roll_id)
+
+    def test_opening_a_folder_reads_its_roll_file_before_discovery(self):
+        """The roll file's half-frame mode decides which assets discovery makes."""
+        self._wire_repo_store()
+        order = []
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch("negpy.desktop.controller.read_roll_sidecar", side_effect=lambda repo, roll_id: order.append("roll")),
+            patch.object(self.controller, "request_asset_discovery", side_effect=lambda *a, **k: order.append("discover")),
+        ):
+            self.controller.open_library_folders([folder])
+
+        self.assertEqual(order, ["roll", "discover"])
+
+    def test_a_newer_roll_file_leads_the_next_offer_once(self):
+        from negpy.services.assets.sidecar import RollSidecar, RollSidecarOffer, Sidecar, SidecarOffer
+
+        roll = RollSidecarOffer("r1", "Roll", RollSidecar(saved_at=9.0))
+        frame = SidecarOffer({"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}, Sidecar(WorkspaceConfig(), saved_at=8.0))
+        with (
+            patch("negpy.desktop.controller.read_roll_sidecar", return_value=roll),
+            patch("negpy.desktop.controller.pending_sidecar_offers", return_value=[frame]),
+            patch("negpy.desktop.controller.QTimer.singleShot", side_effect=lambda _ms, fn: fn()),
+            patch.object(self.controller, "_show_sidecar_offers") as show,
+        ):
+            self.controller._read_roll_sidecars(["r1"])
+            self.controller._offer_newer_sidecars([])
+            self.controller._offer_newer_sidecars([])
+
+        self.assertEqual([c.args[0] for c in show.call_args_list], [[roll, frame], [frame]])
+
+    def test_loading_a_roll_offer_adopts_it_before_the_frames_and_rediscovers_a_half_frame_change(self):
+        from negpy.services.assets.sidecar import RollSidecar, RollSidecarOffer, Sidecar, SidecarOffer
+
+        self._wire_repo_store()
+        state = self.mock_session_manager.state
+        state.active_roll_id = "r1"
+        state.uploaded_files = [{"name": f"{h}.dng", "path": f"/tmp/{h}.dng", "hash": h} for h in ("hash1", "hash2")]
+        roll = RollSidecarOffer("r1", "Roll", RollSidecar(saved_at=9.0, half_frame_mode=True))
+        frame = SidecarOffer(state.uploaded_files[0], Sidecar(WorkspaceConfig(), saved_at=8.0))
+        calls = []
+        with (
+            patch("negpy.desktop.controller.adopt_roll_sidecar", side_effect=lambda *a: calls.append("roll")),
+            patch("negpy.desktop.controller.promote_sidecar", side_effect=lambda *a: calls.append("frame")),
+            patch("negpy.desktop.controller.decline_sidecar_offers"),
+            patch.object(self.controller, "_rediscover_loaded") as rediscover,
+            patch.object(self.controller, "refresh_thumbnails_for") as refresh,
+            patch.object(self.controller, "set_status") as status,
+        ):
+            self.controller.apply_sidecar_offers([roll, frame], [])
+
+        self.assertEqual(calls, ["roll", "frame"])
+        rediscover.assert_called_once()
+        refresh.assert_called_once_with(["hash1", "hash2"])
+        status.assert_called_once_with("Loaded roll settings and 1 edit from sidecars", 4000)
+
     def test_sidecars_of_unedited_frames_load_with_a_status_line(self):
         assets = [{"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}]
         with (
@@ -1106,6 +1179,30 @@ class TestAppController(unittest.TestCase):
 
         self.assertEqual(self.controller.apply_roll_card("sensor"), 0)
         self.assertEqual(rolls.roll_defaults(self.controller.session.repo, roll_id), {})
+
+    def test_apply_to_roll_mirrors_the_roll_file_and_the_active_frame_only(self):
+        """Apply to Roll changes the roll and the active frame's lock, never the other
+        frames' rows: two files to write, not one per frame."""
+        self._wire_repo_store()
+        repo = self.controller.session.repo
+        roll_id = rolls.recognize_folder(repo, "/roll")
+        rolls.set_frame_override(repo, roll_id, "h1", "sensor", locked=True)
+        state = self.mock_session_manager.state
+        state.sidecars_enabled = True
+        state.active_roll_id = roll_id
+        state.uploaded_files = [{"name": f"{h}.dng", "path": f"/roll/{h}.dng", "hash": h} for h in ("h1", "h2", "h3", "h4")]
+        state.selected_file_idx = 0
+        state.current_file_hash = "h1"
+        state.stale_thumbnails = set()
+        self.mock_session_manager.frame_locks_changed.side_effect = lambda _roll, asset: self.controller._mirror_sidecars_for([asset])
+
+        self.controller.apply_roll_card("sensor")
+
+        self.mock_session_manager.frame_locks_changed.assert_called_once_with(roll_id, state.uploaded_files[0])
+        repo.save_file_settings.assert_not_called()
+        self.assertEqual(set(self.controller._sidecar_mirror._dirty), {"h1"})
+        self.assertEqual(self.controller._sidecar_mirror._dirty_rolls, {roll_id})
+        self.assertEqual(self.controller._sidecar_mirror.pending(), 2)
 
     def test_a_lock_change_on_the_active_frame_reaches_its_sidecar_once(self):
         """Frame and Reset to Roll both change the lock set, which the frame's sidecar carries;
