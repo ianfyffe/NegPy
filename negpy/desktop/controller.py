@@ -107,6 +107,7 @@ from negpy.services.export.templating import path_safe, render_export_filename
 from negpy.services.assets.sidecar import (
     RollSidecarOffer,
     SidecarMirror,
+    SidecarReader,
     adopt_roll_sidecar,
     decline_sidecar_offers,
     export_roll_sidecar,
@@ -924,6 +925,7 @@ class AppController(QObject):
         self.session.files_changed.connect(self._render_debounce.start)
 
         self._sidecar_mirror = SidecarMirror(self.session.repo, on_merged=self._on_sidecar_extras_merged)
+        self._sidecar_reader = SidecarReader()
         self._sidecar_flush_timer = QTimer()
         self._sidecar_flush_timer.setSingleShot(True)
         self._sidecar_flush_timer.setInterval(SIDECAR_FLUSH_MS)
@@ -6786,7 +6788,7 @@ class AppController(QObject):
         """Fill frames that have no edit here from their sidecars, and take newer marks and
         work prints, before the session hydrates them. Returns the hashes whose edit was
         filled; their filmstrip thumbnails predate the edit."""
-        filled, merged = read_frame_sidecars(self.session.repo, assets)
+        filled, merged = read_frame_sidecars(self.session.repo, assets, self._sidecar_reader)
         loaded = [count_of(len(filled), "edit")] if filled else []
         if merged:
             loaded.append(f"the marks or work prints of {count_of(len(merged), 'frame')}")
@@ -6810,7 +6812,7 @@ class AppController(QObject):
         """Once per folder open: newer roll files, and frames whose sidecar was saved after
         their edit here, get one dialog. A declined version is not offered again; a closed
         dialog asks next time."""
-        offers = [*self._pending_roll_offers.values(), *pending_sidecar_offers(self.session.repo, assets)]
+        offers = [*self._pending_roll_offers.values(), *pending_sidecar_offers(self.session.repo, assets, self._sidecar_reader)]
         self._pending_roll_offers = {}
         if offers:
             QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))

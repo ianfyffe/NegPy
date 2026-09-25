@@ -13,6 +13,7 @@ from negpy.infrastructure.storage.repository import StorageRepository
 from negpy.services.assets.sidecar import (
     DECLINED_KEY,
     Sidecar,
+    SidecarReader,
     SidecarMirror,
     SidecarWorkPrint,
     decline_sidecar_offers,
@@ -878,3 +879,69 @@ def test_the_mirror_keeps_a_newer_mark_and_work_print_already_in_the_file(tmp_pa
     mirror_b.mark_dirty("h", src)
     mirror_b.flush()
     assert merged == []
+
+
+# --- Discovery reads -------------------------------------------------------------------
+
+
+def _edited_roll(tmp_path, repo, count: int = 3) -> list[dict]:
+    assets = []
+    for i in range(count):
+        src = str(tmp_path / f"IMG_{i}.NEF")
+        repo.save_file_settings(f"h{i}", _rich_config(), file_path=src, updated_at=100.0)
+        repo.save_file_mark(f"h{i}", "keeper", file_path=src, marked_at=100.0)
+        _write(src, _rich_config(), saved_at=50.0, mark="keeper", mark_at=50.0, work_prints={"v": SidecarWorkPrint(10.0, _rich_config())})
+        repo.save_work_print(f"h{i}", "v", _rich_config(), created_at=10.0)
+        assets.append({"name": f"IMG_{i}", "path": src, "hash": f"h{i}"})
+    return assets
+
+
+def test_discovery_parses_each_file_once_and_builds_no_config_it_does_not_apply(tmp_path, repo, monkeypatch):
+    from negpy.services.assets import rolls as rolls_module
+    from negpy.services.assets import sidecar as sidecar_module
+
+    assets = _edited_roll(tmp_path, repo)
+    reads, builds, roll_reads = [], [], []
+    real_read, real_build, real_rolls = sidecar_module._read_json, WorkspaceConfig.from_flat_dict, rolls_module._read
+    monkeypatch.setattr(sidecar_module, "_read_json", lambda path: reads.append(path) or real_read(path))
+    monkeypatch.setattr(WorkspaceConfig, "from_flat_dict", staticmethod(lambda d: builds.append(1) or real_build(d)))
+    monkeypatch.setattr(rolls_module, "_read", lambda r: roll_reads.append(1) or real_rolls(r))
+
+    reader = SidecarReader()
+    assert read_frame_sidecars(repo, assets, reader) == ([], [])
+    assert pending_sidecar_offers(repo, assets, reader) == []
+    assert len(reads) == len(assets)
+    assert builds == [] and roll_reads == []
+
+
+def test_an_unchanged_file_is_not_read_or_merged_again(tmp_path, repo, monkeypatch):
+    from negpy.services.assets import sidecar as sidecar_module
+
+    src = str(tmp_path / "IMG_u.NEF")
+    asset = {"name": "u", "path": src, "hash": "h_u"}
+    repo.save_file_settings("h_u", WorkspaceConfig(), file_path=src, updated_at=100.0)
+    _write(src, _rich_config(), saved_at=50.0, mark="excluded", mark_at=150.0)
+    reader = SidecarReader()
+    assert read_frame_sidecars(repo, [asset], reader) == ([], ["h_u"])
+
+    reads, merges = [], []
+    real_read, real_merge = sidecar_module._read_json, sidecar_module.merge_sidecar_extras
+    monkeypatch.setattr(sidecar_module, "_read_json", lambda path: reads.append(path) or real_read(path))
+    monkeypatch.setattr(sidecar_module, "merge_sidecar_extras", lambda *a: merges.append(a) or real_merge(*a))
+    assert read_frame_sidecars(repo, [asset], reader) == ([], [])
+    assert (reads, merges) == ([], [])
+
+    _write(src, _rich_config(), saved_at=50.0, mark="keeper", mark_at=200.0)
+    stat = os.stat(sidecar_path_for(src))
+    os.utime(sidecar_path_for(src), ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    assert read_frame_sidecars(repo, [asset], reader) == ([], ["h_u"])
+    assert len(reads) == 1 and repo.load_file_mark("h_u") == "keeper"
+
+
+def test_an_offer_builds_the_sidecar_it_offers(tmp_path, repo):
+    src = str(tmp_path / "IMG_of.NEF")
+    repo.save_file_settings("h_of", WorkspaceConfig(), file_path=src, updated_at=10.0)
+    _write(src, _rich_config(), saved_at=20.0, work_prints={"v": SidecarWorkPrint(15.0, _rich_config())})
+    offers = pending_sidecar_offers(repo, [{"name": "of", "path": src, "hash": "h_of"}], SidecarReader())
+    assert len(offers) == 1
+    assert offers[0].sidecar.config == _rich_config() and list(offers[0].sidecar.work_prints) == ["v"]
