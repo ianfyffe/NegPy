@@ -693,7 +693,7 @@ class TestAppController(unittest.TestCase):
 
         with (
             patch("negpy.desktop.controller.load_or_promote", return_value=None),
-            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h, *_: row if h == "hash3" else None),
             patch("negpy.desktop.controller.write_sidecar") as mock_write,
         ):
             written, failed = self.controller._write_edit_sidecars([unsaved, saved, composite])
@@ -714,7 +714,7 @@ class TestAppController(unittest.TestCase):
 
         with (
             patch("negpy.desktop.controller.load_or_promote", return_value=None) as mock_promote,
-            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h, *_: row if h == "hash3" else None),
             patch("negpy.desktop.controller.write_sidecar") as mock_write,
         ):
             written, failed = self.controller._write_edit_sidecars([fork, saved])
@@ -739,7 +739,7 @@ class TestAppController(unittest.TestCase):
 
         with (
             patch("negpy.desktop.controller.load_or_promote", return_value=None),
-            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h, *_: row if h == "hash3" else None),
             patch("negpy.desktop.controller.write_sidecar") as mock_write,
         ):
             self.controller.export_edit_sidecars()
@@ -1106,6 +1106,22 @@ class TestAppController(unittest.TestCase):
 
         self.assertEqual(self.controller.apply_roll_card("sensor"), 0)
         self.assertEqual(rolls.roll_defaults(self.controller.session.repo, roll_id), {})
+
+    def test_a_lock_change_on_the_active_frame_reaches_its_sidecar_once(self):
+        """Frame and Reset to Roll both change the lock set, which the frame's sidecar carries;
+        a click that leaves it as it was does not."""
+        self._wire_repo_store()
+        roll_id = rolls.create_virtual_roll(self.controller.session.repo, "Portra", [])
+        state = self.mock_session_manager.state
+        state.active_roll_id = roll_id
+        state.uploaded_files = [{"name": "a.dng", "path": "/a.dng", "hash": "h1"}]
+        state.selected_file_idx = 0
+        state.current_file_hash = "h1"
+
+        self.controller.set_roll_card_locked("lens", True)
+        self.controller.set_roll_card_locked("lens", True)
+
+        self.mock_session_manager.frame_locks_changed.assert_called_once_with(roll_id, state.uploaded_files[0])
 
     def test_a_frame_section_reads_frame_until_it_is_pushed(self):
         from negpy.services.assets import rolls

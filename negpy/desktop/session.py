@@ -757,6 +757,7 @@ class DesktopSessionManager(QObject):
     settings_saved = pyqtSignal()
     marks_changed = pyqtSignal(list)  # The assets whose triage mark was just written
     frames_saved = pyqtSignal(list)  # Non-active assets whose edit was just written by a roll action
+    locks_changed = pyqtSignal(list)  # Assets whose roll locks in their folder roll just changed
     active_file_changing = pyqtSignal()  # Outgoing file about to be replaced — last chance to snapshot it
     settings_copied = pyqtSignal()
     settings_pasted = pyqtSignal()
@@ -1686,13 +1687,23 @@ class DesktopSessionManager(QObject):
         roll_id = self.state.active_roll_id or self._roll_id_for_orphan_asset(asset)
         if roll_id is None:
             return
-        defaults = rolls.roll_defaults(self.repo, roll_id)
         base = unforked_hash(self.state.current_file_hash)
         locked = rolls.frame_override_cards(self.repo, roll_id, base)
-        for card_key, (section, names) in rolls.ROLL_DEFAULT_FIELDS.items():
-            values = getattr(self.state.config, section)
-            if card_key not in locked and any(n in defaults and not rolls.same_value(getattr(values, n), defaults[n]) for n in names):
-                rolls.set_frame_override(self.repo, roll_id, base, card_key, True)
+        diverged = rolls.diverged_cards(rolls.roll_defaults(self.repo, roll_id), self.state.config)
+        if not diverged <= locked:
+            rolls.set_frame_locks(self.repo, roll_id, base, locked | diverged)
+            self.frame_locks_changed(roll_id, asset)
+
+    def frame_locks_changed(self, roll_id: str, asset: dict) -> None:
+        """A frame's locks in its folder roll travel in its sidecar, so a change advances its
+        row and re-mirrors it. A lock in any other roll, or on a fork, stays local."""
+        file_hash, path = asset.get("hash") or "", asset.get("path") or ""
+        if not file_hash or unforked_hash(file_hash) != file_hash:
+            return
+        if rolls.folder_roll_id_for_path(self.repo, os.path.dirname(path)) != roll_id:
+            return
+        self.repo.touch_file_settings(file_hash)
+        self.locks_changed.emit([asset])
 
     def undo(self) -> None:
         if self.state.undo_index > 0 and self.state.current_file_hash:
@@ -1796,8 +1807,9 @@ class DesktopSessionManager(QObject):
         config = self._with_scan_setup(DEFAULT_WORKSPACE_CONFIG)
         if asset.get("hash"):
             roll_id = self.state.active_roll_id or self._roll_id_for_orphan_asset(asset)
-            if roll_id is not None:
+            if roll_id is not None and rolls.frame_override_cards(self.repo, roll_id, unforked_hash(asset["hash"])):
                 rolls.clear_frame_overrides(self.repo, roll_id, unforked_hash(asset["hash"]))
+                self.frame_locks_changed(roll_id, asset)
             config = self._overlay_roll_defaults(config, asset)
         return self._mode_aware_reset_defaults(self._asset_defaults(config, asset))
 
