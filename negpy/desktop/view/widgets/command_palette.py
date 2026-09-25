@@ -8,7 +8,7 @@ from PyQt6.QtCore import QEvent, Qt, QTimer
 from PyQt6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
 from negpy.desktop.view.shortcut_editor_search import HIGHLIGHT_MS
-from negpy.desktop.view.shortcut_registry import REGISTRY, display_key, key_for, label_with_shortcut
+from negpy.desktop.view.shortcut_registry import MAIN_SCOPE, REGISTRY, display_key, key_for, label_with_shortcut
 from negpy.desktop.view.slider_shortcut_groups import SLIDER_GROUPS
 from negpy.desktop.view.styles.templates import hint_label
 from negpy.desktop.view.styles.theme import THEME
@@ -127,7 +127,13 @@ def build_index(window) -> list[Entry]:
         entries.append(make_entry("slider", slider.label.text(), " › ".join(where), slider))
     nudges = {group.inc_action for group in SLIDER_GROUPS} | {group.dec_action for group in SLIDER_GROUPS}
     for action_id, spec in REGISTRY.items():
-        if action_id in nudges or action_id == "command_palette" or window.shortcut_manager.action_for(action_id) is None:
+        # A scoped action runs from its own window only.
+        if (
+            action_id in nudges
+            or action_id == "command_palette"
+            or spec.scope != MAIN_SCOPE
+            or window.shortcut_manager.action_for(action_id) is None
+        ):
             continue
         entries.append(make_entry("action", spec.description, display_key(key_for(action_id)), action_id))
     return entries

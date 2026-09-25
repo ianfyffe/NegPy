@@ -8,14 +8,16 @@ emit signals; `ScanlightSidebar` wires them and mirrors scanning state + status.
 """
 
 import time
+from collections.abc import Callable
 
 import qtawesome as qta
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCursor, QKeySequence, QShortcut
+from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QCursor, QKeyEvent, QKeySequence, QShortcut
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QProgressBar, QToolButton, QVBoxLayout, QWidget
 
+from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.roi_image import RoiImageLabel
-from negpy.desktop.view.styles.templates import hint_label, labeled_action, pin_dialog_default, SCAN_BUTTON_HEIGHT
+from negpy.desktop.view.styles.templates import hint_label, labeled_action, pin_dialog_default, wrap_tooltip, SCAN_BUTTON_HEIGHT
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.floating_panel import float_over_app
 
@@ -141,7 +143,7 @@ class LiveViewWindow(QDialog):
 
         # ── capture toolbar (mirrors the panel so you needn't switch tabs) ──
         bar = QHBoxLayout()
-        self.scan_btn = labeled_action("fa5s.camera-retro", " Scan", "Capture this frame")
+        self.scan_btn = labeled_action("fa5s.camera-retro", " Scan", "Capture this frame, or stop the scan in progress")
         self.scan_btn.setFixedHeight(SCAN_BUTTON_HEIGHT)
         # The body's own shutter button is dead while it is tethered, so this is the one way to
         # drive its autofocus without unplugging. Enabled once the stream reports a drive.
@@ -223,13 +225,43 @@ class LiveViewWindow(QDialog):
         # once made Enter keep retaking until Scan was clicked again to reclaim it (issue #997).
         pin_dialog_default(self.scan_btn, self.retake_btn, self.focus_btn)
 
-        # Keyboard shortcuts while the pop-up is focused. There are no text fields here, so
-        # letter keys are safe. The buttons respect their gated state.
-        for key, btn in (("S", self.scan_btn), ("F", self.focus_btn), ("R", self.retake_btn)):
-            QShortcut(QKeySequence(key), self, btn.click)
-        self.scan_btn.setToolTip("Scan / Stop  (shortcut: S)")
-        self.retake_btn.setToolTip("Re-capture the current frame without advancing the counter  (shortcut: R)")
+        # There are no text fields here, so letter keys are safe. The buttons respect their gated state.
+        self._key_actions: dict[str, Callable[[], None]] = {}
+        QShortcut(QKeySequence("F"), self, self.focus_btn.click)
+        self.apply_shortcut_tooltips()
         self.set_autofocus_available(False)
+
+    def set_shortcuts(self, shortcuts: dict[str, Callable[[], None]]) -> None:
+        """Bind keys to this window's actions; `ShortcutManager` passes the live-view scope."""
+        self._key_actions = {
+            QKeySequence(key).toString(QKeySequence.SequenceFormat.PortableText): action for key, action in shortcuts.items()
+        }
+
+    def _key_action(self, ev: QKeyEvent) -> Callable[[], None] | None:
+        return self._key_actions.get(QKeySequence(ev.keyCombination()).toString(QKeySequence.SequenceFormat.PortableText))
+
+    def event(self, e: QEvent) -> bool:
+        # On macOS this is a tool window, and Qt matches the main window's shortcuts in a tool
+        # window too; a key both bind would go ambiguous and fire neither.
+        if isinstance(e, QKeyEvent) and e.type() == QEvent.Type.ShortcutOverride and self._key_action(e) is not None:
+            e.accept()
+            return True
+        return super().event(e)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        action = self._key_action(event)
+        if action is None:
+            super().keyPressEvent(event)
+            return
+        if not event.isAutoRepeat():
+            action()
+        event.accept()
+
+    def apply_shortcut_tooltips(self) -> None:
+        """Re-read the bindings: tooltips are built before saved overrides load, and again
+        whenever the shortcut editor writes a new one."""
+        for btn, action_id in ((self.scan_btn, "live_view_scan"), (self.retake_btn, "live_view_retake")):
+            btn.setToolTip(wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, action_id)))
 
     def set_autofocus_available(self, available: bool) -> None:
         """Enable Focus once the stream reports that this body has an autofocus drive."""

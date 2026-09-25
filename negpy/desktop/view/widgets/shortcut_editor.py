@@ -41,6 +41,7 @@ from negpy.desktop.view.shortcut_registry import (
     display_key,
     default_bindings,
     default_slider_steps,
+    duplicate_binding,
 )
 from negpy.desktop.view.widgets.collapsible import CollapsibleSection
 from negpy.desktop.view.widgets.key_sequence_edit import KeypadAwareKeySequenceEdit
@@ -369,20 +370,16 @@ class ShortcutEditorDialog(QDialog):
         return {group_id: float(spin.value()) for group_id, spin in self._step_edits.items()}
 
     def _save(self) -> None:
-        seen: dict[str, str] = {}
-        for action_id, edit in self._edits.items():
-            key = self._portable(edit)
-            if not key:
-                continue
-            other = seen.get(key)
-            if other is not None:
-                QMessageBox.warning(
-                    self,
-                    "Duplicate Shortcut",
-                    f'"{display_key(key)}" is assigned to both "{REGISTRY[other].description}" and "{REGISTRY[action_id].description}".',
-                )
-                return
-            seen[key] = action_id
+        bindings = self.bindings()
+        clash = duplicate_binding(bindings)
+        if clash is not None:
+            other, action_id = clash
+            QMessageBox.warning(
+                self,
+                "Duplicate Shortcut",
+                f'"{display_key(bindings[action_id])}" is assigned to both "{REGISTRY[other].description}" and "{REGISTRY[action_id].description}".',
+            )
+            return
 
         for group_id, spin in self._step_edits.items():
             if spin.value() <= 0:
