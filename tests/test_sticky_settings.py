@@ -19,6 +19,7 @@ from negpy.desktop.sticky import (
     load_sticky_rows,
     migrate_legacy,
     migrate_legacy_export_destination,
+    migrate_retired_sticky_rows,
     migrate_sidecars_enabled_preference,
     save_sticky_rows,
     sticky_snapshot,
@@ -182,6 +183,31 @@ class TestAlwaysSticky(unittest.TestCase):
         catalog_fields = {f for r in all_rows() for f in r.fields}
         for _key, field in ALWAYS_STICKY_PROCESS:
             self.assertNotIn(field, catalog_fields)
+
+
+class TestRetiredStickyRows(unittest.TestCase):
+    _VALID = "exposure.paper_dmin"
+
+    def test_load_drops_retired_id_and_keeps_others(self):
+        repo = _repo({STICKY_ROWS_KEY: [self._VALID, "export.sidecars_enabled"]})
+        ids = {r.id for r in load_sticky_rows(repo)}
+        self.assertEqual(ids, {self._VALID})
+
+    def test_migrate_strips_retired_ids(self):
+        repo = _repo({STICKY_ROWS_KEY: [self._VALID, "export.sidecars_enabled", "export.export_sidecars_enabled"]})
+        migrate_retired_sticky_rows(repo)
+        self.assertEqual(repo.store[STICKY_ROWS_KEY], [self._VALID])
+
+    def test_migrate_leaves_a_clean_list_untouched(self):
+        repo = _repo({STICKY_ROWS_KEY: [self._VALID]})
+        repo.save_global_setting.reset_mock()
+        migrate_retired_sticky_rows(repo)
+        repo.save_global_setting.assert_not_called()
+
+    def test_migrate_no_op_when_never_chose(self):
+        repo = _repo()
+        migrate_retired_sticky_rows(repo)
+        self.assertNotIn(STICKY_ROWS_KEY, repo.store)
 
 
 class TestSidecarsEnabledSeed(unittest.TestCase):
