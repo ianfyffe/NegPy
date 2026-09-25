@@ -195,8 +195,7 @@ class AppState:
     # opens that menu and its Exclude item does the same job in one more step.
     right_click_excludes: bool = False
 
-    # App-wide: mirror every edit, mark and work print to a .negpy sidecar next to its
-    # source. A preference, not a per-frame field, so a frame reset never stops the mirror.
+    # App-wide, so a frame reset never stops the sidecar mirror.
     sidecars_enabled: bool = False
 
     # Crop tool composition guide (CropGuide value); display-only, so not in GeometryConfig
@@ -1336,10 +1335,8 @@ class DesktopSessionManager(QObject):
             if set_all:
                 f[other] = False
             self.repo.save_file_mark(unforked_hash(f["hash"]), mark if set_all else None, file_path=f.get("path", ""))
-            # A mark lives in its own table, so advance the edit's updated_at too, or the
-            # re-mirrored sidecar keeps the old saved_at and the mark never reaches a machine
-            # that already has the frame. The mark is keyed by the unforked hash, and so is
-            # the row its sidecar reads.
+            # The sidecar's saved_at is the row's updated_at, so a mark must advance it to
+            # reach a machine that has the frame. Marks and sidecars both key by unforked hash.
             self.repo.touch_file_settings(unforked_hash(f["hash"]))
         self.asset_model.refresh()
         self.files_changed.emit()
@@ -1767,9 +1764,7 @@ class DesktopSessionManager(QObject):
         self._work_prints_changed()
 
     def _work_prints_changed(self) -> None:
-        # Work prints live in their own table, so advance the edit's updated_at too, or the
-        # re-mirrored sidecar keeps the old saved_at and the change never reaches a machine
-        # that already has the frame.
+        # The sidecar's saved_at is the row's updated_at; see toggle_mark.
         self.repo.touch_file_settings(self.state.current_file_hash)
         self.work_prints_changed.emit()
 
