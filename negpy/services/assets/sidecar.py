@@ -21,7 +21,7 @@ import os
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, NamedTuple, Optional
+from typing import Any, Callable, Dict, NamedTuple, Optional
 
 from negpy.domain.models import WorkspaceConfig
 from negpy.kernel.system.logging import get_logger
@@ -529,12 +529,14 @@ class SidecarMirror:
     Frames and rolls are marked dirty as they are saved and written in one flush, so a
     slider drag costs one file write, not one per tick. The flush reads the rows back from
     the repo, which is what makes the file match the DB rather than the in-flight config.
-    A frame with no edit here first takes the edit its file holds (``load_or_promote``), so
-    a mark or work print never writes a null edit over one.
+    Before writing, a frame takes what its file holds that is newer: the mark and work
+    prints (``merge_sidecar_extras``), and the edit when it has none here
+    (``load_or_promote``). *on_merged* gets the hashes whose mark or work prints changed.
     """
 
-    def __init__(self, repo) -> None:
+    def __init__(self, repo, on_merged: Optional[Callable[[list[str]], None]] = None) -> None:
         self._repo = repo
+        self._on_merged = on_merged
         self._dirty: Dict[str, tuple[str, int]] = {}
         self._dirty_rolls: set[str] = set()
         self._unwritable_dirs: set[str] = set()
@@ -558,9 +560,13 @@ class SidecarMirror:
         pending, self._dirty = self._dirty, {}
         pending_rolls, self._dirty_rolls = self._dirty_rolls, set()
         written = failed = 0
+        merged: list[str] = []
         for file_hash, (source_path, half) in pending.items():
             if os.path.dirname(source_path) in self._unwritable_dirs:
                 continue
+            on_disk = load_sidecar(source_path, half)
+            if on_disk is not None and merge_sidecar_extras(self._repo, file_hash, source_path, on_disk):
+                merged.append(file_hash)
             load_or_promote(self._repo, file_hash, source_path, half=half)
             sidecar = sidecar_from_repo(self._repo, file_hash, source_path)
             if sidecar is None:
@@ -573,6 +579,8 @@ class SidecarMirror:
                 continue
             ok = self._write(os.path.normpath(found[0]), write_roll_sidecar, *found)
             written, failed = written + ok, failed + (not ok)
+        if merged and self._on_merged is not None:
+            self._on_merged(merged)
         return written, failed
 
     def _write(self, folder: str, write, *args, **kwargs) -> bool:

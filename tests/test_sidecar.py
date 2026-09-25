@@ -845,3 +845,36 @@ def test_work_print_updated_at_backfilled_from_created_at(tmp_path):
     repo = StorageRepository(edits, str(tmp_path / "settings.db"))
     repo.initialize()
     assert repo.load_work_print_stamps("h") == {"v1": 7.0}
+
+
+def test_the_mirror_keeps_a_newer_mark_and_work_print_already_in_the_file(tmp_path):
+    src = str(tmp_path / "IMG_mm.NEF")
+    a = StorageRepository(str(tmp_path / "a_edits.db"), str(tmp_path / "a_settings.db"))
+    b = StorageRepository(str(tmp_path / "b_edits.db"), str(tmp_path / "b_settings.db"))
+    for r in (a, b):
+        r.initialize()
+        r.save_file_settings("h", WorkspaceConfig(), file_path=src, updated_at=10.0)
+    b.save_file_mark("h", "excluded", file_path=src, marked_at=50.0)
+    a.save_file_mark("h", "keeper", file_path=src, marked_at=100.0)
+    a.save_work_print("h", "theirs", _rich_config(), created_at=60.0)
+    mirror_a = SidecarMirror(a)
+    mirror_a.mark_dirty("h", src)
+    mirror_a.flush()
+
+    b.touch_file_settings("h", 300.0)
+    merged = []
+    mirror_b = SidecarMirror(b, on_merged=merged.extend)
+    mirror_b.mark_dirty("h", src)
+    assert mirror_b.flush() == (1, 0)
+
+    assert merged == ["h"]
+    assert b.load_mark_record("h") == ("keeper", 100.0)
+    assert b.list_work_prints("h") == ["theirs"]
+    loaded = load_sidecar(src)
+    assert loaded is not None and (loaded.saved_at, loaded.mark, list(loaded.work_prints)) == (300.0, "keeper", ["theirs"])
+
+    # Nothing newer in the file: the callback does not fire.
+    merged.clear()
+    mirror_b.mark_dirty("h", src)
+    mirror_b.flush()
+    assert merged == []

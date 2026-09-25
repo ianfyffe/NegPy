@@ -923,7 +923,7 @@ class AppController(QObject):
         self.session.state_changed.connect(self._render_debounce.start)
         self.session.files_changed.connect(self._render_debounce.start)
 
-        self._sidecar_mirror = SidecarMirror(self.session.repo)
+        self._sidecar_mirror = SidecarMirror(self.session.repo, on_merged=self._on_sidecar_extras_merged)
         self._sidecar_flush_timer = QTimer()
         self._sidecar_flush_timer.setSingleShot(True)
         self._sidecar_flush_timer.setInterval(SIDECAR_FLUSH_MS)
@@ -6707,6 +6707,12 @@ class AppController(QObject):
         asset = self._current_asset()
         if asset is not None and asset.get("hash") == self.state.current_file_hash:
             self._mirror_sidecars_for([asset])
+
+    def _on_sidecar_extras_merged(self, hashes: list[str]) -> None:
+        """The mirror took a newer mark or work print from a file before writing it."""
+        self.session.refresh_marks()
+        if rolls.unforked_hash(self.state.current_file_hash or "") in hashes:
+            self.session.work_prints_changed.emit()
 
     def set_sidecars_enabled(self, enabled: bool) -> None:
         """Toggle the app-wide sidecar mirror. Enabling mirrors the current frame now, so
