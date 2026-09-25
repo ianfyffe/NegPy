@@ -89,7 +89,8 @@ Two things stay outside the user directory:
 
 - `.negpy` sidecars, which are written next to the source images. A sidecar written by a
   development build is promoted into the database of whichever install opens that image
-  next. Sidecar export is off by default; if you turn it on, test against copies.
+  next, or offered to it when that install already holds an edit. The sidecar mirror is off
+  by default; if you turn it on, test against copies.
 - Exports, wherever you send them.
 
 ## 🏗️ Project Structure

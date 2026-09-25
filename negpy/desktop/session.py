@@ -13,11 +13,14 @@ from negpy.desktop.sticky import (
     ALWAYS_STICKY_PROCESS,
     DESCRIPTION_FIELDS_KEY,
     EXPORT_REMAINDER,
+    SIDECARS_ENABLED_KEY,
     STICKY_CONFIG_KEY,
     load_sticky_config,
     load_sticky_rows,
     migrate_legacy,
     migrate_legacy_export_destination,
+    migrate_retired_sticky_rows,
+    migrate_sidecars_enabled_preference,
     sticky_snapshot,
 )
 from negpy.desktop.view.canvas.crop_guides import CropGuide
@@ -38,7 +41,7 @@ from negpy.services.assets.composites import remember_composites
 from negpy.services.assets.flatfield import FlatFieldProfiles
 from negpy.services.assets import rolls
 from negpy.services.assets import semantic_model
-from negpy.services.assets.rolls import unforked_hash
+from negpy.services.assets.rolls import moved_path, unforked_hash
 from negpy.services.assets.search import facts_for, match, parse_query
 from negpy.services.assets.sidecar import load_or_promote
 from negpy.services.assets.thumbnails import asset_thumbnail_key
@@ -191,6 +194,9 @@ class AppState:
     # and the canvas context menu is unreachable while the removal is on. Off, a right-click
     # opens that menu and its Exclude item does the same job in one more step.
     right_click_excludes: bool = False
+
+    # App-wide, so a frame reset never stops the sidecar mirror.
+    sidecars_enabled: bool = False
 
     # Crop tool composition guide (CropGuide value); display-only, so not in GeometryConfig
     crop_guide: str = "thirds"
@@ -749,6 +755,9 @@ class DesktopSessionManager(QObject):
     history_changed = pyqtSignal()  # Emitted when undo/redo/persist happens
     work_prints_changed = pyqtSignal()  # A named version was saved, renamed or deleted
     settings_saved = pyqtSignal()
+    marks_changed = pyqtSignal(list)  # The shared (unforked) assets whose triage mark was just written
+    frames_saved = pyqtSignal(list)  # Non-active assets whose edit was just written by a roll action
+    locks_changed = pyqtSignal(list)  # Assets whose roll locks in their folder roll just changed
     active_file_changing = pyqtSignal()  # Outgoing file about to be replaced — last chance to snapshot it
     settings_copied = pyqtSignal()
     settings_pasted = pyqtSignal()
@@ -779,6 +788,8 @@ class DesktopSessionManager(QObject):
 
         migrate_legacy(self.repo)
         migrate_legacy_export_destination(self.repo)
+        migrate_sidecars_enabled_preference(self.repo)
+        migrate_retired_sticky_rows(self.repo)
 
         # Load global hardware settings
         saved_gpu = self.repo.get_global_setting("gpu_enabled")
@@ -817,6 +828,10 @@ class DesktopSessionManager(QObject):
         saved_right_click_excludes = self.repo.get_global_setting("right_click_excludes")
         if saved_right_click_excludes is not None:
             self.state.right_click_excludes = bool(saved_right_click_excludes)
+
+        saved_sidecars = self.repo.get_global_setting(SIDECARS_ENABLED_KEY)
+        if saved_sidecars is not None:
+            self.state.sidecars_enabled = bool(saved_sidecars)
 
         saved_guide = self.repo.get_global_setting("crop_guide")
         if saved_guide in set(CropGuide):
@@ -970,6 +985,12 @@ class DesktopSessionManager(QObject):
             self.repo.save_global_setting("right_click_excludes", enabled)
             self.state_changed.emit()
 
+    def set_sidecars_enabled(self, enabled: bool) -> None:
+        """Updates and persists the app-wide sidecar mirror toggle."""
+        if self.state.sidecars_enabled != enabled:
+            self.state.sidecars_enabled = enabled
+            self.repo.save_global_setting(SIDECARS_ENABLED_KEY, enabled)
+
     def set_invert_zoom_scroll(self, enabled: bool) -> None:
         """Updates and persists whether the wheel zoom direction is reversed."""
         if self.state.invert_zoom_scroll != enabled:
@@ -1050,13 +1071,13 @@ class DesktopSessionManager(QObject):
             if remainder:
                 config = replace(config, export=replace(config.export, **remainder))
 
-        # The flat-field profile is rig-global, so the active one always overrides the
-        # per-file id. New files default to enabled when a profile is active, and saved
-        # files keep their toggle.
+        # The flat-field profile is rig-global, so the active one overrides the per-file id.
+        # With no rig active here, a saved id stays: it names a profile on another machine,
+        # resolves to no gain here, and blanking it would drop that edit's correction for good.
         active_ff = self.repo.get_global_setting("flatfield_active_profile")
         ff_prof = FlatFieldProfiles.get(active_ff) if active_ff else None
-        ff_id = ff_prof.id if ff_prof else ""
-        config = replace(config, flatfield=replace(config.flatfield, profile_id=ff_id))
+        if ff_prof is not None:
+            config = replace(config, flatfield=replace(config.flatfield, profile_id=ff_prof.id))
         # Distortion left the profile for the per-image geometry; adopt a legacy rig value
         # once, on frames that carry none of their own.
         if config.geometry.distortion_k1 == 0.0 and ff_prof is not None and ff_prof.k1 != 0.0:
@@ -1107,7 +1128,7 @@ class DesktopSessionManager(QObject):
         if only_global:
             return config
 
-        config = replace(config, flatfield=replace(config.flatfield, apply=bool(ff_id)))
+        config = replace(config, flatfield=replace(config.flatfield, apply=ff_prof is not None))
 
         return self._with_scan_setup(config)
 
@@ -1314,9 +1335,11 @@ class DesktopSessionManager(QObject):
             f[mark] = set_all
             if set_all:
                 f[other] = False
+            # A mark belongs to the scan, not a roll's fork, and travels in the shared sidecar.
             self.repo.save_file_mark(unforked_hash(f["hash"]), mark if set_all else None, file_path=f.get("path", ""))
         self.asset_model.refresh()
         self.files_changed.emit()
+        self.marks_changed.emit([{**state.uploaded_files[i], "hash": unforked_hash(state.uploaded_files[i]["hash"])} for i in targets])
 
     def _stamp_scenes(self) -> None:
         by_hash = rolls.scene_by_hash(self.repo, self.state.active_roll_id)
@@ -1363,6 +1386,7 @@ class DesktopSessionManager(QObject):
 
         count = 0
         changed_hashes: list[str] = []
+        saved_assets: list = []
         for idx in target_indices:
             if idx == self.state.selected_file_idx or not (0 <= idx < len(self.state.uploaded_files)):
                 continue
@@ -1381,8 +1405,11 @@ class DesktopSessionManager(QObject):
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=target_path)
             changed_hashes.append(target_hash)
+            saved_assets.append(self.state.uploaded_files[idx])
             count += 1
 
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             n = len(rows) + int(luma) + int(color)
             noun = "setting" if n == 1 else "settings"
@@ -1412,6 +1439,7 @@ class DesktopSessionManager(QObject):
 
         count = 0
         changed_hashes: list[str] = []
+        saved_assets: list = []
         for idx in target_indices:
             if not (0 <= idx < len(self.state.uploaded_files)):
                 continue
@@ -1425,8 +1453,11 @@ class DesktopSessionManager(QObject):
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=self.state.uploaded_files[idx]["path"])
             changed_hashes.append(target_hash)
+            saved_assets.append(self.state.uploaded_files[idx])
             count += 1
 
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             n = len(rows)
             noun = "setting" if n == 1 else "settings"
@@ -1445,6 +1476,7 @@ class DesktopSessionManager(QObject):
         target_indices = self.asset_model.visible_actual_indices_ordered() if scope == "roll" else self.state.selected_indices
         count = 0
         changed_hashes: list[str] = []
+        saved_assets: list = []
         for idx in target_indices:
             if not (0 <= idx < len(self.state.uploaded_files)):
                 continue
@@ -1458,7 +1490,10 @@ class DesktopSessionManager(QObject):
                 self.push_external_history(target_hash, target_config, defaults)
                 self.repo.save_file_settings(target_hash, defaults, file_path=asset["path"])
                 changed_hashes.append(target_hash)
+                saved_assets.append(asset)
             count += 1
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             self.settings_synced.emit(f"Reset {count} frame{'s' if count != 1 else ''} to defaults")
             self.settings_saved.emit()
@@ -1477,6 +1512,7 @@ class DesktopSessionManager(QObject):
             return []
 
         touched_keys = []
+        saved_assets: list = []
         # Two open paths sharing a content hash share an edit row; applying a relative
         # turn to both would read-modify-write it twice and turn it 180 in one click.
         seen_hashes = {self.state.current_file_hash}
@@ -1497,8 +1533,11 @@ class DesktopSessionManager(QObject):
             self.push_external_history(target_hash, target_config, new_config)
             self.repo.save_file_settings(target_hash, new_config, file_path=asset["path"])
             touched_keys.append(asset_thumbnail_key(asset))
+            saved_assets.append(asset)
             count += 1
 
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             total = count + int(active_included)
             self.settings_synced.emit(f"Rotated {total} frame{'s' if total != 1 else ''}")
@@ -1512,6 +1551,7 @@ class DesktopSessionManager(QObject):
             return []
 
         touched_keys = []
+        saved_assets: list = []
         seen_hashes = {self.state.current_file_hash}
         count = 0
         for idx in self.state.selected_indices:
@@ -1530,8 +1570,11 @@ class DesktopSessionManager(QObject):
             self.push_external_history(target_hash, target_config, new_config)
             self.repo.save_file_settings(target_hash, new_config, file_path=asset["path"])
             touched_keys.append(asset_thumbnail_key(asset))
+            saved_assets.append(asset)
             count += 1
 
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if count:
             total = count + int(active_included)
             self.settings_synced.emit(f"Flipped {total} frame{'s' if total != 1 else ''}")
@@ -1642,13 +1685,23 @@ class DesktopSessionManager(QObject):
         roll_id = self.state.active_roll_id or self._roll_id_for_orphan_asset(asset)
         if roll_id is None:
             return
-        defaults = rolls.roll_defaults(self.repo, roll_id)
         base = unforked_hash(self.state.current_file_hash)
         locked = rolls.frame_override_cards(self.repo, roll_id, base)
-        for card_key, (section, names) in rolls.ROLL_DEFAULT_FIELDS.items():
-            values = getattr(self.state.config, section)
-            if card_key not in locked and any(n in defaults and not rolls.same_value(getattr(values, n), defaults[n]) for n in names):
-                rolls.set_frame_override(self.repo, roll_id, base, card_key, True)
+        diverged = rolls.diverged_cards(rolls.roll_defaults(self.repo, roll_id), self.state.config)
+        if not diverged <= locked:
+            rolls.set_frame_locks(self.repo, roll_id, base, locked | diverged)
+            self.frame_locks_changed(roll_id, asset)
+
+    def frame_locks_changed(self, roll_id: str, asset: dict) -> None:
+        """A frame's locks in its folder roll travel in its sidecar, so a change advances its
+        row and re-mirrors it. A lock in any other roll, or on a fork, stays local."""
+        file_hash, path = asset.get("hash") or "", asset.get("path") or ""
+        if not file_hash or unforked_hash(file_hash) != file_hash:
+            return
+        if rolls.folder_roll_id_for_path(self.repo, os.path.dirname(path)) != roll_id:
+            return
+        self.repo.touch_file_settings(file_hash)
+        self.locks_changed.emit([asset])
 
     def undo(self) -> None:
         if self.state.undo_index > 0 and self.state.current_file_hash:
@@ -1695,7 +1748,7 @@ class DesktopSessionManager(QObject):
         if not (self.state.current_file_hash and name):
             return
         self.repo.save_work_print(self.state.current_file_hash, name, self.state.config)
-        self.work_prints_changed.emit()
+        self._work_prints_changed()
 
     def load_work_print(self, name: str) -> None:
         """Make a named version live. Committed through update_config, so it lands on the
@@ -1711,12 +1764,17 @@ class DesktopSessionManager(QObject):
         if not (self.state.current_file_hash and new_name) or new_name == name:
             return
         self.repo.rename_work_print(self.state.current_file_hash, name, new_name)
-        self.work_prints_changed.emit()
+        self._work_prints_changed()
 
     def delete_work_print(self, name: str) -> None:
         if not self.state.current_file_hash:
             return
         self.repo.delete_work_print(self.state.current_file_hash, name)
+        self._work_prints_changed()
+
+    def _work_prints_changed(self) -> None:
+        # Work prints belong to the edit they were saved from: a fork's stay with the fork,
+        # which never mirrors.
         self.work_prints_changed.emit()
 
     def jump_to_step(self, index: int) -> None:
@@ -1747,8 +1805,9 @@ class DesktopSessionManager(QObject):
         config = self._with_scan_setup(DEFAULT_WORKSPACE_CONFIG)
         if asset.get("hash"):
             roll_id = self.state.active_roll_id or self._roll_id_for_orphan_asset(asset)
-            if roll_id is not None:
+            if roll_id is not None and rolls.frame_override_cards(self.repo, roll_id, unforked_hash(asset["hash"])):
                 rolls.clear_frame_overrides(self.repo, roll_id, unforked_hash(asset["hash"]))
+                self.frame_locks_changed(roll_id, asset)
             config = self._overlay_roll_defaults(config, asset)
         return self._mode_aware_reset_defaults(self._asset_defaults(config, asset))
 
@@ -1776,6 +1835,7 @@ class DesktopSessionManager(QObject):
         step, the same split `_on_normalization_finished` uses for a roll-wide write.
         """
         changed_hashes: list[str] = []
+        saved_assets: list = []
         for f_info in assets:
             new_p = self._reset_frame(f_info)
             if f_info["hash"] == self.state.current_file_hash:
@@ -1785,6 +1845,9 @@ class DesktopSessionManager(QObject):
             self.push_external_history(f_info["hash"], old_p, new_p)
             self.repo.save_file_settings(f_info["hash"], new_p, file_path=f_info["path"])
             changed_hashes.append(f_info["hash"])
+            saved_assets.append(f_info)
+        if saved_assets:
+            self.frames_saved.emit(saved_assets)
         if changed_hashes:
             self.frames_edited_offscreen.emit(changed_hashes)
 
@@ -1966,8 +2029,16 @@ class DesktopSessionManager(QObject):
                     logger.error(f"Failed to add {path}: {e}")
 
         # Marks: the DB is the source of truth and toggles write through, so the unconditional
-        # overlay cannot lose one. Keyed on the base hash, not a roll-forked variant: a
-        # keep/reject is a judgement on the physical scan, shared by every roll it's in.
+        # overlay cannot lose one.
+        self._overlay_marks()
+
+        self.asset_model.refresh()
+        self.files_changed.emit()
+        self._persist_session()
+
+    def _overlay_marks(self) -> None:
+        # Keyed on the base hash, not a roll-forked variant: a keep/reject is a judgement
+        # on the physical scan, shared by every roll it's in.
         marks = self.repo.load_file_marks()
         for f in self.state.uploaded_files:
             m = marks.get(unforked_hash(f["hash"]))
@@ -1975,9 +2046,18 @@ class DesktopSessionManager(QObject):
             f["excluded"] = m == "excluded"
         self._stamp_scenes()
 
+    def refresh_marks(self) -> None:
+        """Re-read every frame's triage mark from the repository."""
+        self._overlay_marks()
         self.asset_model.refresh()
         self.files_changed.emit()
-        self._persist_session()
+
+    def reload_current_file(self) -> None:
+        """Re-hydrate the active frame from the repository; an unsaved in-memory edit is dropped."""
+        idx = self.state.selected_file_idx
+        if 0 <= idx < len(self.state.uploaded_files):
+            self._config_dirty = False
+            self.select_file(idx, selection_override=list(self.state.selected_indices or [idx]))
 
     def apply_composite(self, indices: List[int], composite: dict) -> None:
         """Replace the source assets with the composite built from them (inserted at the
@@ -2059,31 +2139,22 @@ class DesktopSessionManager(QObject):
         self._persist_session()
 
     def rehome_folder_paths(self, old_prefix: str, new_prefix: str) -> None:
-        """After a folder roll's own folder is renamed on disk, repoint every loaded
-        asset (and the active file) that lived under *old_prefix* to *new_prefix* --
-        content hashes are unchanged, so edits and history still find their frame by
-        hash alone; only the session's own path bookkeeping needs to catch up.
-        """
-        old_prefix = old_prefix.rstrip("/\\")
+        """Repoint every loaded asset (and the active file) under a folder that moved to
+        *new_prefix*. Content hashes are unchanged, so edits and history still find their
+        frame by hash; only the session's own path bookkeeping follows."""
 
-        def rehome(path: str) -> str:
-            if path and (path == old_prefix or path.startswith(old_prefix + os.sep)):
-                return new_prefix + path[len(old_prefix) :]
-            return path
+        def rehome(value: Any) -> Any:
+            if isinstance(value, str):
+                return moved_path(value, old_prefix, new_prefix)
+            return type(value)(rehome(v) for v in value) if isinstance(value, (list, tuple)) else value
 
         changed = False
         for f in self.state.uploaded_files:
-            for key in ("path", "green_path", "blue_path"):
+            for key in ("path", "green_path", "blue_path", "stitch_paths", "hdr_paths", "stitch_triplets"):
                 if f.get(key):
                     new_val = rehome(f[key])
                     if new_val != f[key]:
                         f[key] = new_val
-                        changed = True
-            for key in ("stitch_paths", "hdr_paths"):
-                if f.get(key):
-                    new_list = [rehome(p) for p in f[key]]
-                    if new_list != f[key]:
-                        f[key] = new_list
                         changed = True
 
         if self.state.current_file_path:

@@ -13,11 +13,14 @@ from negpy.desktop.settings_catalog import (
 from negpy.desktop.sticky import (
     ALWAYS_STICKY_PROCESS,
     EXPORT_REMAINDER,
+    SIDECARS_ENABLED_KEY,
     STICKY_CONFIG_KEY,
     STICKY_ROWS_KEY,
     load_sticky_rows,
     migrate_legacy,
     migrate_legacy_export_destination,
+    migrate_retired_sticky_rows,
+    migrate_sidecars_enabled_preference,
     save_sticky_rows,
     sticky_snapshot,
 )
@@ -180,6 +183,53 @@ class TestAlwaysSticky(unittest.TestCase):
         catalog_fields = {f for r in all_rows() for f in r.fields}
         for _key, field in ALWAYS_STICKY_PROCESS:
             self.assertNotIn(field, catalog_fields)
+
+
+class TestRetiredStickyRows(unittest.TestCase):
+    _VALID = "exposure.paper_dmin"
+
+    def test_load_drops_retired_id_and_keeps_others(self):
+        repo = _repo({STICKY_ROWS_KEY: [self._VALID, "export.sidecars_enabled"]})
+        ids = {r.id for r in load_sticky_rows(repo)}
+        self.assertEqual(ids, {self._VALID})
+
+    def test_migrate_strips_retired_ids(self):
+        repo = _repo({STICKY_ROWS_KEY: [self._VALID, "export.sidecars_enabled", "export.export_sidecars_enabled"]})
+        migrate_retired_sticky_rows(repo)
+        self.assertEqual(repo.store[STICKY_ROWS_KEY], [self._VALID])
+
+    def test_migrate_leaves_a_clean_list_untouched(self):
+        repo = _repo({STICKY_ROWS_KEY: [self._VALID]})
+        repo.save_global_setting.reset_mock()
+        migrate_retired_sticky_rows(repo)
+        repo.save_global_setting.assert_not_called()
+
+    def test_migrate_no_op_when_never_chose(self):
+        repo = _repo()
+        migrate_retired_sticky_rows(repo)
+        self.assertNotIn(STICKY_ROWS_KEY, repo.store)
+
+
+class TestSidecarsEnabledSeed(unittest.TestCase):
+    def test_seeds_from_last_export_config(self):
+        repo = _repo({"last_export_config": {"sidecars_enabled": True}})
+        migrate_sidecars_enabled_preference(repo)
+        self.assertIs(repo.store[SIDECARS_ENABLED_KEY], True)
+
+    def test_reads_pre_rename_key(self):
+        repo = _repo({STICKY_CONFIG_KEY: {"export_sidecars_enabled": True}})
+        migrate_sidecars_enabled_preference(repo)
+        self.assertIs(repo.store[SIDECARS_ENABLED_KEY], True)
+
+    def test_no_seed_on_a_fresh_install(self):
+        repo = _repo()
+        migrate_sidecars_enabled_preference(repo)
+        self.assertNotIn(SIDECARS_ENABLED_KEY, repo.store)
+
+    def test_runs_once(self):
+        repo = _repo({SIDECARS_ENABLED_KEY: False, "last_export_config": {"sidecars_enabled": True}})
+        migrate_sidecars_enabled_preference(repo)
+        self.assertIs(repo.store[SIDECARS_ENABLED_KEY], False)
 
 
 if __name__ == "__main__":

@@ -173,11 +173,11 @@ class LibraryTree(QWidget):
             return self.import_subfolders(path)
         if not confirm_load_roll(self, self.repo, images, folder_label(path)):
             return False
-        is_new = rolls.folder_roll_id_for_path(self.repo, path) is None
+        known = set(rolls.saved_rolls(self.repo))
         self.controller.open_library_folder(path)
         self.reload()
         self.rolls_changed.emit()
-        if is_new:
+        if rolls.folder_roll_id_for_path(self.repo, path) not in known:
             self.folder_roll_created.emit(path)
         return True
 
@@ -439,16 +439,14 @@ class LibraryTree(QWidget):
             warn_invalid_roll_name(self, "Rename Roll")
             return
 
-        if rename_folder:
-            if not self.controller.request_rename_roll(roll_id, name, True):
-                QMessageBox.warning(
-                    self,
-                    "Rename Roll",
-                    "Could not rename the folder on disk — check that no other folder already has that name, "
-                    "and that you have permission to rename it here.",
-                )
-                return
-        rolls.rename_roll(self.repo, roll_id, f"{prefix}{rolls.ROLL_PATH_SEP}{name}" if prefix else name)
+        if not self.controller.request_rename_roll(roll_id, name, rename_folder, prefix=prefix):
+            QMessageBox.warning(
+                self,
+                "Rename Roll",
+                "Could not rename the folder on disk — check that no other folder already has that name, "
+                "and that you have permission to rename it here.",
+            )
+            return
 
         self.reload()
         self.rolls_changed.emit()

@@ -54,6 +54,30 @@ class TestDesktopSessionSync(unittest.TestCase):
         self.assertEqual(self.session.state.selected_file_idx, 1)
         self.assertEqual(self.session.state.selected_indices, [1])
 
+    def test_toggle_mark_dates_the_mark_not_the_edit(self):
+        self.session.state.selected_indices = [0]
+        self.session.toggle_mark("excluded")
+        self.mock_repo.save_file_mark.assert_called_once_with("hash1", "excluded", file_path="path1")
+        self.mock_repo.touch_file_settings.assert_not_called()
+
+    def test_toggle_mark_writes_the_unforked_hash(self):
+        self.session.state.uploaded_files[0]["hash"] = "hash1#roll:r1"
+        self.session.state.selected_indices = [0]
+        self.session.toggle_mark("keeper")
+        self.mock_repo.save_file_mark.assert_called_once_with("hash1", "keeper", file_path="path1")
+
+    def test_save_work_print_leaves_the_edit_timestamp(self):
+        self.session.state.current_file_hash = "hash1"
+        self.session.save_work_print("Version A")
+        self.mock_repo.save_work_print.assert_called_once()
+        self.mock_repo.touch_file_settings.assert_not_called()
+
+    def test_delete_work_print_leaves_the_edit_timestamp(self):
+        self.session.state.current_file_hash = "hash1"
+        self.session.delete_work_print("Version A")
+        self.mock_repo.delete_work_print.assert_called_once_with("hash1", "Version A")
+        self.mock_repo.touch_file_settings.assert_not_called()
+
     def test_rediscovery_refreshes_same_path_in_place(self):
         refreshed = {
             "name": "file1 (RGB)",
@@ -468,6 +492,23 @@ class TestDesktopSessionSync(unittest.TestCase):
 
         self.assertEqual(seeded.geometry.distortion_k1, -0.05)
         self.assertEqual(kept.geometry.distortion_k1, 0.012)
+
+    def test_flatfield_keeps_saved_id_when_no_rig_is_active(self):
+        """A saved profile id from another machine survives a load here, so copying the
+        profile over restores the correction; an active rig still overrides it."""
+        self.mock_repo.get_global_setting.side_effect = lambda key, default=None: default
+        theirs = WorkspaceConfig(flatfield=replace(WorkspaceConfig().flatfield, apply=True, profile_id="rig-b"))
+        kept = self.session._apply_sticky_settings(theirs, only_global=True)
+        self.assertEqual(kept.flatfield.profile_id, "rig-b")
+        self.assertTrue(kept.flatfield.apply)
+
+        prof = SimpleNamespace(id="rig-a", k1=0.0)
+        self.mock_repo.get_global_setting.side_effect = lambda key, default=None: (
+            "rig-a" if key == "flatfield_active_profile" else default
+        )
+        with patch("negpy.desktop.session.FlatFieldProfiles.get", return_value=prof):
+            overridden = self.session._apply_sticky_settings(theirs, only_global=True)
+        self.assertEqual(overridden.flatfield.profile_id, "rig-a")
 
     def test_paper_black_carries_to_new_files(self):
         """Sticky must carry an explicit value over the file's base."""
@@ -1182,6 +1223,7 @@ class TestDesktopSessionSync(unittest.TestCase):
                 "stitch_transforms": [[1, 0, 0], [0, 1, 0]],
                 "stitch_canvas": [100, 100],
                 "stitch_sizes": [[50, 100], [50, 100]],
+                "stitch_triplets": [["/scans/roll_a/1g.tif", "/scans/roll_a/1b.tif"], ["", ""]],
             },
         ]
 
@@ -1191,6 +1233,7 @@ class TestDesktopSessionSync(unittest.TestCase):
         self.assertEqual(triplet["green_path"], "/scans/roll_b/g.tif")
         self.assertEqual(triplet["blue_path"], "/scans/roll_b/b.tif")
         self.assertEqual(stitch["stitch_paths"], ["/scans/roll_b/1.tif", "/scans/roll_b/2.tif"])
+        self.assertEqual(stitch["stitch_triplets"], [["/scans/roll_b/1g.tif", "/scans/roll_b/1b.tif"], ["", ""]])
 
     def test_rehome_folder_paths_is_a_noop_when_nothing_matches(self):
         self.session.state.uploaded_files = [{"name": "c.tif", "path": "/elsewhere/c.tif", "hash": "hc"}]
@@ -1230,6 +1273,18 @@ class TestDesktopSessionSync(unittest.TestCase):
         # Frame 1 rotates from its OWN stored rotation (3), not the active frame's new value.
         self.assertEqual(args[1].geometry.rotation, 0)
         self.assertEqual(kwargs["file_path"], "path2")
+
+    def test_batch_rotate_and_flip_report_the_other_frames_as_saved(self):
+        self.session.state.selected_file_idx = 0
+        self.mock_repo.load_file_settings.return_value = WorkspaceConfig()
+        self.session.update_selection([0, 1])
+        saved_batches: list = []
+        self.session.frames_saved.connect(saved_batches.append)
+
+        self.session.rotate_selected_frames(1)
+        self.session.flip_selected_frames(True)
+
+        self.assertEqual([[f["hash"] for f in batch] for batch in saved_batches], [["hash2"], ["hash2"]])
 
     def test_rotate_selected_frames_message_excludes_active_when_deselected(self):
         self.session.state.uploaded_files.append({"name": "file3.dng", "path": "path3", "hash": "hash3"})
@@ -1335,6 +1390,18 @@ class TestDesktopSessionSync(unittest.TestCase):
         self.assertEqual(saved["hash1"], DEFAULT_WORKSPACE_CONFIG)
         self.assertEqual(saved["hash2"], DEFAULT_WORKSPACE_CONFIG)
         self.assertEqual(saved["hash3"], DEFAULT_WORKSPACE_CONFIG)
+
+    def test_reset_roll_settings_reports_offscreen_frames_as_saved(self):
+        self._seed_roll()
+        self.session.asset_model.refresh()
+        saved_batches: list = []
+        self.session.frames_saved.connect(saved_batches.append)
+
+        self.session.reset_roll_settings(scope="roll")
+
+        active = self.session.state.selected_file_idx
+        expected = [f["hash"] for i, f in enumerate(self.session.state.uploaded_files) if i != active]
+        self.assertEqual([[f["hash"] for f in batch] for batch in saved_batches], [expected])
 
     def test_reset_roll_settings_selection_scope_resets_only_selected_frames(self):
         self._seed_roll()

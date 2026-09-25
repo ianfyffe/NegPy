@@ -15,7 +15,7 @@ If Windows blocks the default data folder, NegPy suggests `%LOCALAPPDATA%\NegPy\
 ### Screen layout
 
 *   **Left, the film strip**: your frames as a contact sheet, with import, sorting and triage tools.
-*   **Center, the canvas**: the live preview. Most tools (crop, white-balance picker, heal brush, dodge/burn masks) work by clicking on it. Scroll or pinch to zoom, drag to pan. The bottom toolbar holds Fit/**1:1** zoom (one scan pixel per screen pixel; below **HQ** a **preview res · HQ off** pill shows the preview is scaled up), undo/redo, rotate/flip and more. Rotate 90° and flip act on every selected frame. Items that do not fit go into the **⋯** menu, which holds every action, including **Preferences…** (all app-wide settings, §15), **Edit Toolbar…** and **Persistent Settings…**. Right-click the image for **Reset View**, **Sticky Zoom** (keep the zoom across frames), the pickers, copy/paste settings and **Unload** (remove the frame from the session, keep its edit). An empty canvas shows **Load some scans to get started**; click it for **Import Folder as a Roll…** (the folder becomes a roll and opens, as in Library) or **Add Files…**.
+*   **Center, the canvas**: the live preview. Most tools (crop, white-balance picker, heal brush, dodge/burn masks) work by clicking on it. Scroll or pinch to zoom, drag to pan. The bottom toolbar holds Fit/**1:1** zoom (one scan pixel per screen pixel; below **HQ** a **preview res · HQ off** pill shows the preview is scaled up), undo/redo, rotate/flip and more. Rotate 90° and flip act on every selected frame. Items that do not fit go into the **⋯** menu, which holds every action, including **Preferences…** (all app-wide settings, §15), **Edit Toolbar…** and **Persistent Settings…**. Right-click the image for **Reset View**, **Sticky Zoom** (keep the zoom across frames), the pickers, copy/paste settings, **Reload from Sidecar** (when a `.negpy` sits next to the frame) and **Unload** (remove the frame from the session, keep its edit). An empty canvas shows **Load some scans to get started**; click it for **Import Folder as a Roll…** (the folder becomes a roll and opens, as in Library) or **Add Files…**.
 *   **Right, the controls**: tabs **Roll** / **Frame** / **Metadata** / **Gear** / **Export** / **Scan**. **Frame** has a pinned **Analysis** readout and its own row of tabs below it. Roll and Frame change the render; the other tabs do not.
 
 Drag a panel by its top edge (the thin strip above Session, the margin around the Controls panel's **Find** box) to float it; its pin button docks it again. **Shift+H** hides both panels, and brings both back. NegPy remembers the layout. **Reset Panel Layout** in the **⋯** menu restores the default layout.
@@ -139,8 +139,8 @@ NegPy never creates, renames, moves or deletes anything in the folder. Reorganiz
 
 Right-click a roll for:
 
-*   **Rename…**: renames the roll, not the folder rows above it. A folder roll also offers **Also rename the folder on disk** (unticked by default, asked each time). NegPy refuses with a warning if a sibling has that name or permission is missing. Inside a cloud-sync folder (Dropbox, iCloud, OneDrive), the sync can treat a rename as delete and re-upload.
-*   **Delete…**: forgets the roll record only; folder, images and edits stay. **↻** does not bring it back; **Import Folder as a Roll…** restores it. **Clear Library** in *Manage Database* forgets all rolls.
+*   **Rename…**: renames the roll, not the folder rows above it. A folder roll also offers **Also rename the folder on disk** (unticked by default, asked each time). NegPy refuses with a warning if a sibling has that name or permission is missing. Stitches, HDR merges and virtual-roll members in the folder follow it, and your other computers follow the rename (Export → Sidecars). Inside a cloud-sync folder (Dropbox, iCloud, OneDrive), the sync can treat a rename as delete and re-upload.
+*   **Delete…**: forgets the roll record only; folder, images, edits and its `.negpy-roll` file stay. **↻** does not bring it back; **Import Folder as a Roll…** restores it, and the roll file is then offered rather than taken. **Clear Library** in *Manage Database* forgets all rolls.
 *   **Roll Analysis** (**loaded** roll only): runs Roll Analysis on every frame outside a scene ([§10.5](#105-roll-analysis)) and stores it as the roll's baseline, for any frame's **Use average** toggles, in this roll or another.
 
 #### Rolls that are not folders
@@ -248,7 +248,7 @@ Thumbnails are positives. An unopened frame is inverted in the background from a
 Right-click a thumbnail, or use shortcuts, to mark frames (multi-selection works; marks persist):
 
 *   **Keep**: a check badge.
-*   **Reject**: a cross badge and dimming. Batch exports and sidecar writes skip it. The file on disk is never changed.
+*   **Reject**: a cross badge and dimming. Batch export and Export Sidecars skip it, but Keep Current still mirrors its sidecar, so the reject travels. The file on disk is never changed.
 
 #### Reading the badges
 
@@ -645,7 +645,7 @@ A **work print** is a named version of this frame, like the test prints kept on 
 *   **Click** one to make it live. That is an edit, so **Ctrl+Z** restores the previous state.
 *   **Right-click** for **Export This Version…**, **Rename…** or **Delete**. Delete asks first; an empty name is ignored.
 
-Work prints are **never pruned and never thrown away by a later edit**, unlike the undo history, which keeps the last 100 steps and drops the branch above you when you edit after stepping back. The list appears once you save one. Work prints belong to the frame (a preset is a look for other images). They are stored in NegPy's database, not in `.negpy` sidecars.
+Work prints are **never pruned and never thrown away by a later edit**, unlike the undo history, which keeps the last 100 steps and drops the branch above you when you edit after stepping back. The list appears once you save one. Work prints belong to the frame (a preset is a look for other images). They are stored in NegPy's database and travel in `.negpy` sidecars, added by name to the other computer's.
 
 ### Edit history
 
@@ -830,7 +830,7 @@ The scanning optics: one lens correction and one light correction for every fram
 
 Corrects uneven illumination (vignetting, falloff) from a copy-stand or scanner light, using a shot of the bare light source.
 
-*   **Profile** dropdown, **+** and **trash**: **+** reads a reference image once and bakes it into a named profile in NegPy's `flatfield` folder, so the reference file can then be moved or deleted. **Trash** asks first: the gain map is lost, and every frame using it loses its correction.
+*   **Profile** dropdown, **+** and **trash**: **+** reads a reference image once and bakes it into a named profile in NegPy's `flatfield` folder, so the reference file can then be moved or deleted. **Trash** asks first: the gain map is lost, and every frame using it loses its correction. A frame edited on another computer keeps its profile id; the panel says when that profile is not here, and copying its `.npz` into the `flatfield` folder restores the correction.
 *   **Apply Flat Field** (bulb toggle beside the dropdown): apply the selected profile to this roll, enabled once a profile exists.
 
 A newly chosen profile becomes the rig's default for the next roll.
@@ -983,7 +983,13 @@ The printer's record for this frame: the numbered dodge/burn masks and a card wi
 <!-- panel:export_sidecars -->
 #### Sidecars
 
-**Save on export** writes a `.negpy` sidecar next to each source on export. **Export Sidecars** writes them for all visible frames now and reports failures in read-only folders. Edits always stay in the database too.
+A `.negpy` sidecar is a plain-file copy of one frame's edit, mark and work prints, next to the source. **Keep Current** is an app-wide switch that mirrors every change to it; it survives a frame reset. **Export Sidecars** writes one now for every visible frame with a saved edit, mark or work print and reports failures in read-only folders. Edits always stay in the database too. Undo history, stitches, HDR merges, a roll's own copy of a frame, flat-field profiles and presets do not travel in a sidecar.
+
+Sidecars carry an edit between computers. A frame with no edit here loads its sidecar on open, and the status bar reports how many did. A mark or work print travels on its own, with or without an edit: each time the folder loads, a mark set after the one here and a work print saved, renamed or deleted after the copy here load without asking. When a folder holds sidecars saved after the edits here, one dialog lists them: **Load Selected** replaces those edits, **Keep Mine** leaves them and does not ask again for those versions. **Reload from Sidecar** (right-click the canvas) loads the edit in the frame's sidecar whatever its age, after offering the folder's roll file when it differs from the roll here. The newer copy wins by its saved time, so keep both computers' clocks close.
+
+A folder roll also has a `.negpy-roll` file in its folder with its card defaults, scenes, Roll Analysis baselines and Half Frame setting. Keep Current and Export Sidecars write it, and each frame's sidecar records which cards the frame locks, so the roll looks the same on the other computer. The file is read each time the roll's frames load, a restored session included. A roll new to a computer takes the file without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
+
+The roll file also names the roll, with one id on every computer, and carries its name without the folder rows above it, which each computer keeps its own. A rename reaches the other computers without a dialog, even after **Keep Mine**; the later rename wins. When the folder is renamed on one computer, the others follow it on **↻**, import or open: the roll keeps its settings, scenes, card locks, independent edits, stitches, HDR merges and virtual-roll members, and they never rename anything on disk. A copied folder becomes a roll of its own. A roll on a share that is not mounted stays as it is until the share is back. With Keep Current off nothing is written: a roll whose file already named it still follows its folder, but a new display name stays on this computer, and a roll whose file did not name it yet comes back as a new roll beside the old one, which shows **folder missing**.
 
 <!-- panel:contact_sheet -->
 #### Contact Sheet
@@ -1147,7 +1153,7 @@ The button reads **"Open Releases Page"** when NegPy cannot update itself: a sou
 ## Additional Info
 
 *   **GPU acceleration**: previews render on the GPU; Normalization analysis (bounds, white/black point, normalize) runs on the CPU. Turn it off in **Preferences → Performance** or force a backend in `override.toml` if you suspect a driver issue.
-*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. Optional `.negpy` sidecars mirror them.
+*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. `.negpy` sidecars (Export → Sidecars) mirror them and carry them between computers.
 *   **Saving edits**: written on export, on frame switch, or on save. Closing mid-edit before any of these loses unsaved changes.
 *   **Keyboard shortcuts**: [KEYBOARD.md](KEYBOARD.md)
 *   **Filename templating**: [TEMPLATING.md](TEMPLATING.md)

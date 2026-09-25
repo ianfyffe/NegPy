@@ -218,8 +218,6 @@ class ExportConfig:
     contact_sheet_default_background_color: str = "#000000"
     contact_sheet_default_label_color: str = "#ffffff"
 
-    export_sidecars_enabled: bool = False
-
     def __post_init__(self) -> None:
         fmt = coerce_enum(ExportFormat, migrate_export_fmt(self.export_fmt), ExportFormat.JPEG)
         object.__setattr__(self, "export_fmt", fmt)

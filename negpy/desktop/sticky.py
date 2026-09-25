@@ -26,6 +26,8 @@ from negpy.desktop.settings_catalog import (
 STICKY_CONFIG_KEY = "sticky_config"
 STICKY_ROWS_KEY = "sticky_rows"
 
+SIDECARS_ENABLED_KEY = "sidecars_enabled"
+
 _CATALOG_EXPORT_FIELDS = frozenset(f for title, rows in CATALOG if title == "Export" for r in rows for f in r.fields)
 
 # Export fields the catalog deliberately does not list: the output folder, ICC paths and
@@ -55,6 +57,21 @@ def load_sticky_rows(repo: IRepository) -> list[SettingRow]:
 
 def save_sticky_rows(repo: IRepository, ids: list[str]) -> None:
     repo.save_global_setting(STICKY_ROWS_KEY, sorted(ids))
+
+
+# A saved list keys each row by "section.field" and can hold these ids, which are not
+# in the catalog.
+_RETIRED_STICKY_ROW_IDS: frozenset[str] = frozenset({"export.sidecars_enabled", "export.export_sidecars_enabled"})
+
+
+def migrate_retired_sticky_rows(repo: IRepository) -> None:
+    """Drop retired row ids from a saved carry-over list. Idempotent."""
+    stored = repo.get_global_setting(STICKY_ROWS_KEY)
+    if not isinstance(stored, list):
+        return
+    kept = [rid for rid in stored if rid not in _RETIRED_STICKY_ROW_IDS]
+    if len(kept) != len(stored):
+        save_sticky_rows(repo, kept)
 
 
 # Kept out of the snapshot and written only by the Description… dialog, so the last
@@ -130,6 +147,21 @@ def migrate_legacy(repo: IRepository) -> None:
         return
     known = {f for r in all_rows() for f in r.fields}
     repo.save_global_setting(STICKY_CONFIG_KEY, {k: v for k, v in flat.items() if k in known})
+
+
+def migrate_sidecars_enabled_preference(repo: IRepository) -> None:
+    """Seed the app-wide sidecar mirror preference once, from the export snapshot that
+    last held it as a per-frame field. With no snapshot value it starts off."""
+    if repo.get_global_setting(SIDECARS_ENABLED_KEY) is not None:
+        return
+    for store_key in ("last_export_config", STICKY_CONFIG_KEY):
+        stored = repo.get_global_setting(store_key)
+        if not isinstance(stored, dict):
+            continue
+        for field in ("sidecars_enabled", "export_sidecars_enabled"):
+            if field in stored:
+                repo.save_global_setting(SIDECARS_ENABLED_KEY, bool(stored[field]))
+                return
 
 
 _EXPORT_DESTINATION_MIGRATED_KEY = "export_destination_migrated_v1"

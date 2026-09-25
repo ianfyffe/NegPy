@@ -3,7 +3,7 @@ import json
 import os
 import time
 from contextlib import contextmanager
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 import numpy as np
 from negpy.domain.models import ExportPreset, WorkspaceConfig
 from negpy.domain.interfaces import IRepository
@@ -74,6 +74,17 @@ class StorageRepository(IRepository):
                 )
             """)
 
+            # A deleted or renamed-away work print's name and time, so a sidecar that still
+            # holds the print does not bring it back.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS work_print_tombstones (
+                    file_hash TEXT,
+                    name TEXT,
+                    deleted_at REAL,
+                    PRIMARY KEY (file_hash, name)
+                )
+            """)
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS file_marks (
                     file_hash TEXT PRIMARY KEY,
@@ -117,6 +128,37 @@ class StorageRepository(IRepository):
             except sqlite3.OperationalError:
                 pass  # already exists
 
+            # Migration: updated_at, the timestamp a sidecar is compared against. Rows from
+            # before the column are stamped now, so a sidecar written later still wins.
+            try:
+                conn.execute("ALTER TABLE file_settings ADD COLUMN updated_at REAL")
+            except sqlite3.OperationalError:
+                pass  # already exists
+            conn.execute("UPDATE file_settings SET updated_at = ? WHERE updated_at IS NULL", (time.time(),))
+
+            # Migration: marked_at, the time a sidecar's mark is compared against. A mark from
+            # before the column takes its edit's updated_at, which dated it until then. A mark
+            # with no edit had no time and never travelled, so it is stamped now: a file's mark
+            # made before this install knew of it cannot replace it.
+            try:
+                conn.execute("ALTER TABLE file_marks ADD COLUMN marked_at REAL")
+            except sqlite3.OperationalError:
+                pass  # already exists
+            conn.execute(
+                "UPDATE file_marks SET marked_at = COALESCE("
+                "(SELECT updated_at FROM file_settings WHERE file_settings.file_hash = file_marks.file_hash), ?) "
+                "WHERE marked_at IS NULL",
+                (time.time(),),
+            )
+
+            # Migration: updated_at, when a work print was last saved or renamed, which a
+            # tombstone for its name is compared against. A print from before it was saved once.
+            try:
+                conn.execute("ALTER TABLE work_prints ADD COLUMN updated_at REAL")
+            except sqlite3.OperationalError:
+                pass  # already exists
+            conn.execute("UPDATE work_prints SET updated_at = created_at WHERE updated_at IS NULL")
+
         with self._connect(self.settings_db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
@@ -126,49 +168,90 @@ class StorageRepository(IRepository):
                 )
             """)
 
-    def save_file_mark(self, file_hash: str, mark: Optional[str], file_path: str = "") -> None:
-        """Persists a triage mark ('keeper'/'excluded'); None clears it."""
+    def save_file_mark(self, file_hash: str, mark: Optional[str], file_path: str = "", marked_at: Optional[float] = None) -> None:
+        """Persists a triage mark ('keeper'/'excluded'); None clears it. ``marked_at`` defaults
+        to now. A cleared mark keeps its row with an empty mark, so the clear has a time too."""
         with self._connect(self.edits_db_path) as conn:
-            if mark:
-                conn.execute(
-                    "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path) VALUES (?, ?, ?)",
-                    (file_hash, mark, file_path),
-                )
-            else:
-                conn.execute("DELETE FROM file_marks WHERE file_hash = ?", (file_hash,))
+            conn.execute(
+                "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path, marked_at) VALUES (?, ?, ?, ?)",
+                (file_hash, mark or "", file_path, marked_at if marked_at is not None else time.time()),
+            )
+
+    def load_file_mark(self, file_hash: str) -> Optional[str]:
+        record = self.load_mark_record(file_hash)
+        return record[0] if record else None
+
+    def load_mark_record(self, file_hash: str) -> Optional[tuple[Optional[str], float]]:
+        """(mark or None when cleared, marked_at), or None when the frame was never marked."""
+        with self._connect(self.edits_db_path) as conn:
+            row = conn.execute("SELECT mark, marked_at FROM file_marks WHERE file_hash = ?", (file_hash,)).fetchone()
+        return (str(row[0]) or None, float(row[1] or 0.0)) if row else None
 
     def load_file_marks(self) -> dict[str, str]:
         """Returns all triage marks as {file_hash: mark}."""
         with self._connect(self.edits_db_path) as conn:
-            cursor = conn.execute("SELECT file_hash, mark FROM file_marks")
+            cursor = conn.execute("SELECT file_hash, mark FROM file_marks WHERE mark != ''")
             return {row[0]: row[1] for row in cursor.fetchall()}
 
     def load_file_marks_by_path(self) -> dict[str, str]:
         """Triage marks as {file_path: mark}, for lookups that have no hash in hand.
         Marks written before the path column exists are absent, not wrong."""
         with self._connect(self.edits_db_path) as conn:
-            cursor = conn.execute("SELECT file_path, mark FROM file_marks WHERE file_path IS NOT NULL AND file_path != ''")
+            cursor = conn.execute("SELECT file_path, mark FROM file_marks WHERE file_path IS NOT NULL AND file_path != '' AND mark != ''")
             return {str(row[0]): str(row[1]) for row in cursor.fetchall()}
 
-    def save_file_settings(self, file_hash: str, settings: WorkspaceConfig, file_path: str = "") -> None:
+    def save_file_settings(
+        self, file_hash: str, settings: WorkspaceConfig, file_path: str = "", updated_at: Optional[float] = None
+    ) -> None:
+        """``updated_at`` defaults to now; a sidecar promotion passes the sidecar's own time."""
         with self._connect(self.edits_db_path) as conn:
             settings_json = json.dumps(settings.to_dict(), default=str)
             conn.execute(
-                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path) VALUES (?, ?, ?)",
-                (file_hash, settings_json, file_path),
+                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path, updated_at) VALUES (?, ?, ?, ?)",
+                (file_hash, settings_json, file_path, updated_at if updated_at is not None else time.time()),
+            )
+
+    def touch_file_settings(self, file_hash: str, updated_at: Optional[float] = None) -> None:
+        """Advance a saved edit's ``updated_at`` without changing the edit. A no-op when the
+        hash has no row. A sidecar's edit is dated by this time, so a roll-lock change, which
+        lives outside the edit but travels with it, advances it."""
+        with self._connect(self.edits_db_path) as conn:
+            conn.execute(
+                "UPDATE file_settings SET updated_at = ? WHERE file_hash = ?",
+                (updated_at if updated_at is not None else time.time(), file_hash),
             )
 
     def load_file_settings(self, file_hash: str) -> Optional[WorkspaceConfig]:
+        record = self.load_file_record(file_hash)
+        return record[0] if record else None
+
+    def load_file_record(self, file_hash: str) -> Optional[tuple[WorkspaceConfig, float]]:
+        """(config, updated_at) for this hash, or None with no saved edit."""
         with self._connect(self.edits_db_path) as conn:
-            cursor = conn.execute(
-                "SELECT settings_json FROM file_settings WHERE file_hash = ?",
+            row = conn.execute(
+                "SELECT settings_json, updated_at FROM file_settings WHERE file_hash = ?",
                 (file_hash,),
-            )
-            row = cursor.fetchone()
-            if row:
-                data = json.loads(row[0])
-                return WorkspaceConfig.from_flat_dict(data)
-        return None
+            ).fetchone()
+        if not row:
+            return None
+        return WorkspaceConfig.from_flat_dict(json.loads(row[0])), float(row[1] or 0.0)
+
+    def load_file_updated_at(self, file_hash: str) -> Optional[float]:
+        """The saved edit's ``updated_at`` without reading the edit, or None with no saved edit."""
+        with self._connect(self.edits_db_path) as conn:
+            row = conn.execute("SELECT updated_at FROM file_settings WHERE file_hash = ?", (file_hash,)).fetchone()
+        return float(row[0] or 0.0) if row else None
+
+    def has_settings_for_path(self, file_path: str) -> bool:
+        """Whether ``load_file_settings_by_path`` finds a row, without reading its edit."""
+        if not file_path:
+            return False
+        with self._connect(self.edits_db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM file_settings WHERE file_path = ? AND file_hash NOT LIKE '%#%'",
+                (file_path,),
+            ).fetchone()
+        return row is not None
 
     def delete_file_settings(self, file_hash: str) -> None:
         """Delete this hash's saved edit, its undo history and its work prints.
@@ -176,7 +259,7 @@ class StorageRepository(IRepository):
         The triage mark stays: a keep/reject is a judgement on the frame, not an edit.
         """
         with self._connect(self.edits_db_path) as conn:
-            for table in ("file_settings", "edit_history", "work_prints", "image_embeddings"):
+            for table in ("file_settings", "edit_history", "work_prints", "work_print_tombstones", "image_embeddings"):
                 conn.execute(f"DELETE FROM {table} WHERE file_hash = ?", (file_hash,))
 
     def save_embedding(self, file_hash: str, vector: np.ndarray, model_version: str, file_path: str = "") -> None:
@@ -281,27 +364,75 @@ class StorageRepository(IRepository):
             if conn.execute("SELECT 1 FROM file_settings WHERE file_hash = ?", (new_hash,)).fetchone():
                 return
             row = conn.execute(
-                "SELECT settings_json FROM file_settings WHERE file_hash = ?",
+                "SELECT settings_json, updated_at FROM file_settings WHERE file_hash = ?",
                 (old_hash,),
             ).fetchone()
             if not row:
                 return
             conn.execute(
-                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path) VALUES (?, ?, ?)",
-                (new_hash, row[0], file_path),
+                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path, updated_at) VALUES (?, ?, ?, ?)",
+                (new_hash, row[0], file_path, row[1]),
             )
             conn.execute("DELETE FROM file_settings WHERE file_hash = ?", (old_hash,))
             conn.execute("UPDATE OR REPLACE edit_history SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
             conn.execute("UPDATE OR REPLACE work_prints SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
+            conn.execute("UPDATE OR REPLACE work_print_tombstones SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
             conn.execute("UPDATE OR REPLACE file_marks SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
 
-    def save_work_print(self, file_hash: str, name: str, settings: WorkspaceConfig) -> None:
-        """Store (or replace) a named version of this frame's edit."""
+    @staticmethod
+    def _like_containing(text: str) -> str:
+        escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
+
+    def repoint_file_paths(self, contains: str, move: Callable[[str], str]) -> None:
+        """Rewrite the stored path of each edit, mark and embedding to ``move(path)``. Only
+        rows whose path holds *contains* (ASCII case ignored) are read."""
+        with self._connect(self.edits_db_path) as conn:
+            for table in ("file_settings", "file_marks", "image_embeddings"):
+                rows = conn.execute(
+                    f"SELECT rowid, file_path FROM {table} WHERE file_path LIKE ? ESCAPE '\\'", (self._like_containing(contains),)
+                ).fetchall()
+                moved = [(new, rowid) for rowid, path in rows if (new := move(path)) != path]
+                conn.executemany(f"UPDATE {table} SET file_path = ? WHERE rowid = ?", moved)
+
+    def repoint_saved_configs(self, contains: str, move: Callable[[dict], Optional[dict]]) -> None:
+        """Replace each saved edit, work print and history step's flat config with
+        ``move(config)`` where that is not None. Only rows whose JSON holds *contains* are
+        read. ``updated_at`` stays."""
+        with self._connect(self.edits_db_path) as conn:
+            for table in ("file_settings", "work_prints", "edit_history"):
+                rows = conn.execute(
+                    f"SELECT rowid, settings_json FROM {table} WHERE settings_json LIKE ? ESCAPE '\\'", (self._like_containing(contains),)
+                ).fetchall()
+                moved = [(json.dumps(new, default=str), rowid) for rowid, text in rows if (new := move(json.loads(text))) is not None]
+                conn.executemany(f"UPDATE {table} SET settings_json = ? WHERE rowid = ?", moved)
+
+    def save_work_print(
+        self,
+        file_hash: str,
+        name: str,
+        settings: WorkspaceConfig,
+        created_at: Optional[float] = None,
+        updated_at: Optional[float] = None,
+    ) -> None:
+        """Store (or replace) a named version of this frame's edit. ``updated_at`` defaults to
+        ``created_at``, which defaults to now. Clears the name's tombstone."""
+        created = created_at if created_at is not None else time.time()
         with self._connect(self.edits_db_path) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO work_prints (file_hash, name, created_at, settings_json) VALUES (?, ?, ?, ?)",
-                (file_hash, name, time.time(), json.dumps(settings.to_dict(), default=str)),
+                "INSERT OR REPLACE INTO work_prints (file_hash, name, created_at, settings_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (file_hash, name, created, json.dumps(settings.to_dict(), default=str), updated_at if updated_at is not None else created),
             )
+            conn.execute("DELETE FROM work_print_tombstones WHERE file_hash = ? AND name = ?", (file_hash, name))
+
+    def load_work_prints(self, file_hash: str) -> List[tuple[str, float, WorkspaceConfig]]:
+        """This frame's work prints as (name, created_at, config), newest first."""
+        with self._connect(self.edits_db_path) as conn:
+            rows = conn.execute(
+                "SELECT name, created_at, settings_json FROM work_prints WHERE file_hash = ? ORDER BY created_at DESC, rowid DESC",
+                (file_hash,),
+            ).fetchall()
+        return [(str(name), float(created_at or 0.0), WorkspaceConfig.from_flat_dict(json.loads(js))) for name, created_at, js in rows]
 
     def list_work_prints(self, file_hash: str) -> List[str]:
         """This frame's work-print names, newest first."""
@@ -320,16 +451,42 @@ class StorageRepository(IRepository):
             ).fetchone()
         return WorkspaceConfig.from_flat_dict(json.loads(row[0])) if row else None
 
-    def rename_work_print(self, file_hash: str, name: str, new_name: str) -> None:
+    def load_work_print_stamps(self, file_hash: str) -> dict[str, float]:
+        """{name: updated_at} for this frame's work prints, without reading their edits."""
         with self._connect(self.edits_db_path) as conn:
+            rows = conn.execute("SELECT name, updated_at, created_at FROM work_prints WHERE file_hash = ?", (file_hash,)).fetchall()
+        return {str(name): float(updated if updated is not None else created or 0.0) for name, updated, created in rows}
+
+    def load_work_print_tombstones(self, file_hash: str) -> dict[str, float]:
+        """{name: deleted_at} for this frame's deleted or renamed-away work prints."""
+        with self._connect(self.edits_db_path) as conn:
+            rows = conn.execute("SELECT name, deleted_at FROM work_print_tombstones WHERE file_hash = ?", (file_hash,)).fetchall()
+        return {str(name): float(deleted_at or 0.0) for name, deleted_at in rows}
+
+    def rename_work_print(self, file_hash: str, name: str, new_name: str) -> None:
+        """A rename is a new save under *new_name* and a tombstone for *name*."""
+        now = time.time()
+        with self._connect(self.edits_db_path) as conn:
+            if conn.execute("SELECT 1 FROM work_prints WHERE file_hash = ? AND name = ?", (file_hash, name)).fetchone() is None:
+                return
             conn.execute(
-                "UPDATE OR REPLACE work_prints SET name = ? WHERE file_hash = ? AND name = ?",
-                (new_name, file_hash, name),
+                "UPDATE OR REPLACE work_prints SET name = ?, updated_at = ? WHERE file_hash = ? AND name = ?",
+                (new_name, now, file_hash, name),
+            )
+            conn.execute("DELETE FROM work_print_tombstones WHERE file_hash = ? AND name = ?", (file_hash, new_name))
+            conn.execute(
+                "INSERT OR REPLACE INTO work_print_tombstones (file_hash, name, deleted_at) VALUES (?, ?, ?)",
+                (file_hash, name, now),
             )
 
-    def delete_work_print(self, file_hash: str, name: str) -> None:
+    def delete_work_print(self, file_hash: str, name: str, deleted_at: Optional[float] = None) -> None:
+        """Delete a work print and leave a tombstone for its name, dated ``deleted_at`` (now)."""
         with self._connect(self.edits_db_path) as conn:
             conn.execute("DELETE FROM work_prints WHERE file_hash = ? AND name = ?", (file_hash, name))
+            conn.execute(
+                "INSERT OR REPLACE INTO work_print_tombstones (file_hash, name, deleted_at) VALUES (?, ?, ?)",
+                (file_hash, name, deleted_at if deleted_at is not None else time.time()),
+            )
 
     def save_history_step(self, file_hash: str, index: int, settings: WorkspaceConfig) -> None:
         with self._connect(self.edits_db_path) as conn:
@@ -453,9 +610,9 @@ class StorageRepository(IRepository):
     # Database management (view and clear), behind the DB Management dialog.
 
     @staticmethod
-    def _count(conn: sqlite3.Connection, table: str) -> int:
+    def _count(conn: sqlite3.Connection, table: str, where: str = "1") -> int:
         try:
-            return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            return int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}").fetchone()[0])
         except sqlite3.OperationalError:
             return 0  # table not created yet
 
@@ -481,7 +638,7 @@ class StorageRepository(IRepository):
             file_settings = self._count(conn, "file_settings")
             edit_history = self._count(conn, "edit_history")
             work_prints = self._count(conn, "work_prints")
-            file_marks = self._count(conn, "file_marks")
+            file_marks = self._count(conn, "file_marks", "mark != ''")
 
         with self._connect(self.settings_db_path) as conn:
             global_settings = self._count(conn, "global_settings")
@@ -523,7 +680,7 @@ class StorageRepository(IRepository):
         left intact — so a reloaded image starts from defaults without losing the
         user's tooling. Flat-field profiles live in the file store
         (APP_CONFIG.flatfield_dir), not here, so they are untouched too."""
-        self._wipe(self.edits_db_path, ["file_settings", "edit_history", "work_prints", "file_marks"])
+        self._wipe(self.edits_db_path, ["file_settings", "edit_history", "work_prints", "work_print_tombstones", "file_marks"])
 
     def reset_everything(self) -> None:
         """Full clean slate: every table in both databases. Export presets, rig
@@ -532,6 +689,6 @@ class StorageRepository(IRepository):
         working against the emptied databases without re-init. File-store assets
         (flat-field profiles, sensor/crosstalk matrices) are on disk, not in these
         databases, so they survive — as with a fresh install."""
-        self._wipe(self.edits_db_path, ["file_settings", "edit_history", "work_prints", "file_marks"])
+        self._wipe(self.edits_db_path, ["file_settings", "edit_history", "work_prints", "work_print_tombstones", "file_marks"])
         self._wipe(self.settings_db_path, ["global_settings"])
         self._global_json = None
