@@ -126,15 +126,18 @@ class StorageRepository(IRepository):
             conn.execute("UPDATE file_settings SET updated_at = ? WHERE updated_at IS NULL", (time.time(),))
 
             # Migration: marked_at, the time a sidecar's mark is compared against. A mark from
-            # before the column takes its edit's updated_at, which dated it until then, else 0.
+            # before the column takes its edit's updated_at, which dated it until then. A mark
+            # with no edit had no time and never travelled, so it is stamped now: a file's mark
+            # made before this install knew of it cannot replace it.
             try:
                 conn.execute("ALTER TABLE file_marks ADD COLUMN marked_at REAL")
             except sqlite3.OperationalError:
                 pass  # already exists
             conn.execute(
                 "UPDATE file_marks SET marked_at = COALESCE("
-                "(SELECT updated_at FROM file_settings WHERE file_settings.file_hash = file_marks.file_hash), 0) "
-                "WHERE marked_at IS NULL"
+                "(SELECT updated_at FROM file_settings WHERE file_settings.file_hash = file_marks.file_hash), ?) "
+                "WHERE marked_at IS NULL",
+                (time.time(),),
             )
 
         with self._connect(self.settings_db_path) as conn:
