@@ -6669,9 +6669,7 @@ class AppController(QObject):
         for f in files:
             if f.get("hdr_paths") or f.get("stitch_paths"):
                 continue
-            # The sidecar beside the source is the shared frame's; a roll fork's edit never
-            # overwrites it, and load_or_promote would otherwise rehome the shared edit onto
-            # the fork. Matches the mirror, which skips a fork too.
+            # The sidecar beside the source holds the shared edit, never a roll fork's.
             if rolls.unforked_hash(f["hash"]) != f["hash"]:
                 continue
             half = int(f.get("half") or 0)
