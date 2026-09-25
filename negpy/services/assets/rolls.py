@@ -525,12 +525,34 @@ def set_frame_override(repo: Any, roll_id: str, file_hash: str, card_key: str, l
         cards.add(card_key)
     else:
         cards.discard(card_key)
+    _write_frame_locks(repo, store, entry, file_hash, cards)
+
+
+def set_frame_locks(repo: Any, roll_id: str, file_hash: str, cards) -> None:
+    """Replace one frame's locked cards within one roll. Unknown card keys are dropped."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is not None:
+        _write_frame_locks(repo, store, entry, file_hash, {c for c in cards if c in ROLL_DEFAULT_FIELDS})
+
+
+def _write_frame_locks(repo: Any, store: Dict[str, dict], entry: dict, file_hash: str, cards: set) -> None:
+    overrides = dict(entry.get("frame_overrides", {}))
     if cards:
         overrides[file_hash] = sorted(cards)
     else:
         overrides.pop(file_hash, None)
     entry["frame_overrides"] = overrides
     _write(repo, store)
+
+
+def diverged_cards(defaults: Dict[str, Any], config: "WorkspaceConfig") -> set:
+    """The cards on which *config* differs from a roll field the roll has set."""
+    return {
+        card_key
+        for card_key, (section, names) in ROLL_DEFAULT_FIELDS.items()
+        if any(n in defaults and not same_value(getattr(getattr(config, section), n), defaults[n]) for n in names)
+    }
 
 
 def resolve_roll_config(repo: Any, roll_id: Optional[str], file_hash: str, config: "WorkspaceConfig") -> "WorkspaceConfig":

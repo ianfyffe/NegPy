@@ -927,6 +927,7 @@ class AppController(QObject):
         self.session.work_prints_changed.connect(self._mirror_current_sidecar)
         self.session.marks_changed.connect(self._mirror_sidecars_for)
         self.session.frames_saved.connect(self._mirror_sidecars_for)
+        self.session.locks_changed.connect(self._mirror_sidecars_for)
         self.session.active_file_changing.connect(self.flush_sidecars)
 
     def generate_missing_thumbnails(self) -> None:
@@ -4532,9 +4533,17 @@ class AppController(QObject):
         current = self._card_values(self.state.config, card_key)
         matches_roll = all(name in defaults and rolls.same_value(value, defaults[name]) for name, value in current.items())
         diverged = not matches_roll
-        if diverged == self.roll_card_locked(card_key):
+        self._set_active_card_lock(roll_id, card_key, diverged)
+
+    def _set_active_card_lock(self, roll_id: str, card_key: str, locked: bool) -> None:
+        """Lock or unlock one roll card on the active frame; a change re-mirrors its sidecar."""
+        file_hash = rolls.unforked_hash(self.state.current_file_hash)
+        if (card_key in rolls.frame_override_cards(self.session.repo, roll_id, file_hash)) == locked:
             return
-        rolls.set_frame_override(self.session.repo, roll_id, rolls.unforked_hash(self.state.current_file_hash), card_key, diverged)
+        rolls.set_frame_override(self.session.repo, roll_id, file_hash, card_key, locked)
+        asset = self._current_asset()
+        if asset is not None and asset.get("hash") == self.state.current_file_hash:
+            self.session.frame_locks_changed(roll_id, asset)
 
     def set_process_mode(self, mode: str) -> None:
         """Switches Film Mode for the active frame, locking the "film" card away from
@@ -4589,7 +4598,7 @@ class AppController(QObject):
             self._carry_roll_cast_removal(roll_id, self.state.config.process.process_mode)
         for card_key in pushed:
             rolls.set_roll_defaults(self.session.repo, roll_id, **self._card_values(self.state.config, card_key))
-            rolls.set_frame_override(self.session.repo, roll_id, rolls.unforked_hash(active_hash), card_key, False)
+            self._set_active_card_lock(roll_id, card_key, False)
 
         touched = set(pushed)
         if sweep:
@@ -4709,14 +4718,13 @@ class AppController(QObject):
         if not cards:
             return 0
         roll_id = self.state.active_roll_id
-        file_hash = rolls.unforked_hash(self.state.current_file_hash)
         defaults = rolls.roll_defaults(self.session.repo, roll_id)
         pushes = self._section_pushes()
         config = self.state.config
         for key in cards:
             if key in rolls.ROLL_DEFAULT_FIELDS:
                 config = self._with_roll_card(config, key, defaults)
-                rolls.set_frame_override(self.session.repo, roll_id, file_hash, key, False)
+                self._set_active_card_lock(roll_id, key, False)
             else:
                 config = self._with_frame_card_push(config, pushes[key])
         if all(key in self.METADATA_CARDS for key in cards):
@@ -4784,7 +4792,7 @@ class AppController(QObject):
         if locked:
             frozen = self._card_values(self.state.config, card_key)
             self.session.update_config(self._with_card_values(self.state.config, card_key, frozen), persist=True, render=False)
-        rolls.set_frame_override(self.session.repo, roll_id, rolls.unforked_hash(self.state.current_file_hash), card_key, locked)
+        self._set_active_card_lock(roll_id, card_key, locked)
         if not locked:
             asset = self.state.uploaded_files[self.state.selected_file_idx]
             self.apply_config(self.session.config_for_asset(asset), persist=False)
@@ -6648,7 +6656,7 @@ class AppController(QObject):
                 continue
             half = int(f.get("half") or 0)
             load_or_promote(repo, f["hash"], f["path"], half=half)  # rehome or promote, so the row exists
-            sidecar = sidecar_from_repo(repo, f["hash"])
+            sidecar = sidecar_from_repo(repo, f["hash"], f["path"])
             if sidecar is None:
                 continue  # never edited: nothing to carry
             try:

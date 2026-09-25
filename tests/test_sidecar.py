@@ -117,12 +117,13 @@ def test_write_payload_is_envelope_around_to_dict_json(tmp_path):
     _write(src, cfg, saved_at=123.5, source_hash="h7", mark="keeper")
     with open(sidecar_path_for(src), "r", encoding="utf-8") as f:
         data = json.load(f)
-    assert data["sidecar_format"] == 2
+    assert data["sidecar_format"] == 3
     assert data["saved_at"] == 123.5
     assert data["source_hash"] == "h7"
     assert data["mark"] == "keeper"
     assert data["edit"] == json.loads(json.dumps(cfg.to_dict(), default=str))
     assert data["work_prints"] == {}
+    assert data["roll_locks"] is None
 
 
 def test_format1_bare_config_still_loads(tmp_path):
