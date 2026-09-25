@@ -5,7 +5,9 @@ Format 3 is an envelope: ``saved_at`` (the DB row's ``updated_at``, so a sidecar
 machine mirrored compares equal to its row, not newer), ``source_hash``, ``mark``, the
 ``edit`` (flat config), named ``work_prints`` and ``roll_locks``, the cards the frame
 keeps locked in its folder roll. A format-2 file has no ``roll_locks``. A format-1 file
-is a bare flat config and has no timestamp, so it only ever fills a DB miss.
+is a bare flat config and has no timestamp, so it only ever fills a DB miss. Roll ids are
+per machine, so a baseline source naming the frame's folder roll is written ``roll:`` and
+read back as the folder roll here.
 
 The roll file carries what a folder roll holds for all its frames (defaults, scenes,
 baselines, section pushes, half-frame mode), stamped with the roll's ``updated_at``.
@@ -15,7 +17,7 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, NamedTuple, Optional
 
 from negpy.domain.models import WorkspaceConfig
@@ -26,6 +28,7 @@ from negpy.services.assets.rolls import unforked_hash
 logger = get_logger(__name__)
 
 SIDECAR_EXT = ".negpy"
+FOLDER_ROLL_SOURCE = "roll:"
 SIDECAR_FORMAT = 3
 ROLL_SIDECAR_NAME = ".negpy-roll"
 ROLL_SIDECAR_FORMAT = 1
@@ -170,6 +173,12 @@ def _restore_roll_locks(repo, file_hash: str, source_path: str, sidecar: Sidecar
         rolls.set_frame_locks(repo, roll_id, file_hash, cards)
 
 
+def _rebind_source(config: WorkspaceConfig, old: str, new: str) -> WorkspaceConfig:
+    if config.process.baseline_source != old:
+        return config
+    return replace(config, process=replace(config.process, baseline_source=new))
+
+
 def sidecar_from_repo(repo, file_hash: str, source_path: str = "") -> Optional[Sidecar]:
     """This hash's saved edit, mark, work prints and folder-roll locks as a sidecar. None
     with no saved edit."""
@@ -177,26 +186,35 @@ def sidecar_from_repo(repo, file_hash: str, source_path: str = "") -> Optional[S
     if record is None:
         return None
     config, updated_at = record
+    roll_id = _folder_roll(repo, source_path)
+
+    def portable(cfg: WorkspaceConfig) -> WorkspaceConfig:
+        return _rebind_source(cfg, f"roll:{roll_id}", FOLDER_ROLL_SOURCE) if roll_id else cfg
+
     return Sidecar(
-        config=config,
+        config=portable(config),
         saved_at=updated_at,
         source_hash=file_hash,
         mark=repo.load_file_mark(file_hash),
-        work_prints={name: SidecarWorkPrint(created_at, cfg) for name, created_at, cfg in repo.load_work_prints(file_hash)},
+        work_prints={name: SidecarWorkPrint(created_at, portable(cfg)) for name, created_at, cfg in repo.load_work_prints(file_hash)},
         roll_locks=_roll_locks(repo, file_hash, source_path),
     )
 
 
 def promote_sidecar(repo, file_hash: str, source_path: str, sidecar: Sidecar) -> WorkspaceConfig:
     """Make the sidecar this hash's saved edit and its folder-roll locks. Work prints merge
-    by name; local ones stay."""
-    repo.save_file_settings(file_hash, sidecar.config, file_path=source_path, updated_at=sidecar.saved_at or time.time())
+    by name; local ones stay. A folder-roll baseline source binds to the folder roll here,
+    or to none without one."""
+    roll_id = _folder_roll(repo, source_path)
+    local = f"roll:{roll_id}" if roll_id else ""
+    config = _rebind_source(sidecar.config, FOLDER_ROLL_SOURCE, local)
+    repo.save_file_settings(file_hash, config, file_path=source_path, updated_at=sidecar.saved_at or time.time())
     if sidecar.saved_at is not None:
         repo.save_file_mark(file_hash, sidecar.mark, file_path=source_path)
     for name, wp in sidecar.work_prints.items():
-        repo.save_work_print(file_hash, name, wp.config, created_at=wp.created_at or None)
+        repo.save_work_print(file_hash, name, _rebind_source(wp.config, FOLDER_ROLL_SOURCE, local), created_at=wp.created_at or None)
     _restore_roll_locks(repo, file_hash, source_path, sidecar)
-    return sidecar.config
+    return config
 
 
 def newer_sidecar(repo, file_hash: str, source_path: str, half: int = 0) -> Optional[Sidecar]:
