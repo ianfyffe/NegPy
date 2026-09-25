@@ -383,3 +383,21 @@ def test_a_forks_work_print_stays_with_the_fork(tmp_path):
     assert a.repo.load_file_record("h2")[1] == 5.0
     assert sidecar_from_repo(a.repo, "h2", asset["path"]).work_prints == {}
     assert a.repo.list_work_prints(fork) == ["Print 1"]
+
+
+def test_a_folder_opened_again_after_its_roll_was_deleted_is_offered_its_roll_file(tmp_path):
+    """Delete forgets the roll here only; the file stays for the other computers."""
+    a = _machine(tmp_path, "a")
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    export_roll_sidecar(a.repo, a.roll_id)
+
+    rolls.delete_roll(a.repo, a.roll_id)
+    roll_id = rolls.recognize_folder(a.repo, a.folder)
+    offer = read_roll_sidecar(a.repo, roll_id)
+
+    assert os.path.exists(roll_sidecar_path(a.folder))
+    assert isinstance(offer, RollSidecarOffer)
+    assert rolls.roll_defaults(a.repo, roll_id) == {}
+    decline_sidecar_offers(a.repo, [offer])
+    assert read_roll_sidecar(a.repo, roll_id) is None
+    assert rolls.roll_defaults(a.repo, roll_id) == {}

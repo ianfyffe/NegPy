@@ -353,7 +353,7 @@ def adopt_roll_sidecar(repo, roll_id: str, sidecar: RollSidecar) -> None:
 
 
 def read_roll_sidecar(repo, roll_id: str, any_age: bool = False) -> Optional[RollSidecarOffer]:
-    """Adopt the folder's roll file when this roll holds nothing here yet. Otherwise offer
+    """Adopt the folder's roll file when ``rolls.adopts_roll_file``. Otherwise offer
     it when saved after the state here and not declined; *any_age* offers any version
     other than the one held here, declined or not."""
     entry = rolls.roll_for_id(repo, roll_id)
@@ -363,7 +363,7 @@ def read_roll_sidecar(repo, roll_id: str, any_age: bool = False) -> Optional[Rol
     if sidecar is None:
         return None
     local = rolls.roll_updated_at(repo, roll_id)
-    if local is None and not rolls.has_portable_state(repo, roll_id):
+    if rolls.adopts_roll_file(repo, roll_id):
         adopt_roll_sidecar(repo, roll_id, sidecar)
         return None
     offer = RollSidecarOffer(roll_id, entry.get("name") or "", sidecar)

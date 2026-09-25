@@ -83,6 +83,13 @@ def has_portable_state(repo: Any, roll_id: str) -> bool:
     return any(entry.get(k) for k in PORTABLE_FIELDS) or (isinstance(by_roll, dict) and roll_id in by_roll)
 
 
+def adopts_roll_file(repo: Any, roll_id: str) -> bool:
+    """Whether the roll takes its folder's roll file without asking: it holds nothing here
+    yet, and its folder's roll was not deleted here before."""
+    entry = roll_for_id(repo, roll_id) or {}
+    return roll_updated_at(repo, roll_id) is None and not has_portable_state(repo, roll_id) and not entry.get("recognized_after_delete")
+
+
 def replace_portable_state(repo: Any, roll_id: str, values: Dict[str, Any], half_frame_mode: bool, updated_at: float) -> None:
     """Replace what a roll file carries, stamped with the file's time so it reads as current."""
     store = _read(repo)
@@ -140,7 +147,8 @@ def folder_rolls_holding(repo: Any, paths: List[str]) -> List[str]:
 
 def recognize_folder(repo: Any, path: str, name: str = "") -> str:
     """Mark *path* as a recognized folder roll. Idempotent: returns the existing id
-    when the folder is already recognized, without touching its stored name."""
+    when the folder is already recognized, without touching its stored name. A folder
+    whose roll was deleted is offered its roll file rather than taking it."""
     dismissed = _dismissed_folders(repo)
     kept = [p for p in dismissed if _folder_key(p) != _folder_key(path)]
     if kept != dismissed:
@@ -157,6 +165,8 @@ def recognize_folder(repo: Any, path: str, name: str = "") -> str:
         "extra_paths": [],
         "created_at": time.time(),
     }
+    if kept != dismissed:
+        store[roll_id]["recognized_after_delete"] = True
     _write(repo, store)
     return roll_id
 
