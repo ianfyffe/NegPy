@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from dataclasses import replace
 
 import pytest
@@ -716,7 +717,29 @@ def test_marked_at_backfilled_from_the_edit_for_marks_from_before_the_column(tmp
         conn.execute("INSERT INTO file_settings VALUES ('ed', ?, '/p/ed.NEF', 42.0)", (json.dumps(_rich_config().to_dict(), default=str),))
         conn.execute("CREATE TABLE file_marks (file_hash TEXT PRIMARY KEY, mark TEXT NOT NULL, file_path TEXT)")
         conn.executemany("INSERT INTO file_marks VALUES (?, 'keeper', '')", (("ed",), ("bare",)))
+    before = time.time()
     repo = StorageRepository(edits, str(tmp_path / "settings.db"))
     repo.initialize()
     assert repo.load_mark_record("ed") == ("keeper", 42.0)
-    assert repo.load_mark_record("bare") == ("keeper", 0.0)
+    bare = repo.load_mark_record("bare")
+    assert bare is not None and bare[0] == "keeper" and bare[1] >= before
+
+    src = str(tmp_path / "bare.NEF")
+    _write(src, _rich_config(), saved_at=100.0, mark="excluded", mark_at=100.0)
+    assert read_frame_sidecars(repo, [{"name": "b", "path": src, "hash": "bare"}]) == (["bare"], [])
+    assert repo.load_file_mark("bare") == "keeper"
+
+
+def test_a_null_mark_in_a_file_without_mark_at_leaves_the_mark_here(tmp_path, repo):
+    """A file from a build before mark_at never saw the mark here, so its null is not a clear."""
+    src = str(tmp_path / "IMG_n.NEF")
+    repo.save_file_settings("h_n", WorkspaceConfig(), file_path=src, updated_at=10.0)
+    repo.save_file_mark("h_n", "keeper", file_path=src, marked_at=10.0)
+    payload = {"sidecar_format": 3, "saved_at": 200.0, "source_hash": "h_n", "mark": None, "edit": WorkspaceConfig().to_dict()}
+    with open(sidecar_path_for(src), "w", encoding="utf-8") as f:
+        json.dump(payload, f, default=str)
+
+    loaded = load_sidecar(src)
+    assert loaded is not None and (loaded.mark, loaded.mark_at) == (None, None)
+    read_frame_sidecars(repo, [{"name": "n", "path": src, "hash": "h_n"}])
+    assert repo.load_file_mark("h_n") == "keeper"

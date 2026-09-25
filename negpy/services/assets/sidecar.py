@@ -6,7 +6,7 @@ machine mirrored compares equal to its row, not newer), ``source_hash``, ``mark`
 ``mark_at`` (the mark's own time), the ``edit`` (flat config), named ``work_prints`` and
 ``roll_locks``, the cards the frame keeps locked in its folder roll. A frame with a mark or
 work prints but no saved edit has a null ``edit`` and ``saved_at``. A file without
-``mark_at`` dates its mark by ``saved_at``; a format-2 file has no ``roll_locks``. A
+``mark_at`` dates a mark by ``saved_at`` and carries no clear; a format-2 file has no ``roll_locks``. A
 format-1 file is a bare flat config and has no timestamp, so it only ever fills a DB miss.
 Roll ids are per machine, so a baseline source naming the frame's folder roll is written
 ``roll:`` and read back as the folder roll here.
@@ -137,7 +137,8 @@ def _from_payload(data: Dict[str, Any]) -> Optional[Sidecar]:
         saved_at=saved_at if edit is not None else None,
         source_hash=str(data.get("source_hash") or ""),
         mark=mark if mark in _MARKS else None,
-        mark_at=float(mark_at) if isinstance(mark_at, (int, float)) else saved_at,
+        # A file without mark_at dates a mark by saved_at; its null mark says nothing.
+        mark_at=float(mark_at) if isinstance(mark_at, (int, float)) else saved_at if mark in _MARKS else None,
         work_prints=work_prints,
         roll_locks=tuple(str(c) for c in locks) if isinstance(locks, list) else None,
     )
