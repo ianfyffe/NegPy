@@ -32,6 +32,7 @@ IMPORT_SOURCES_KEY = "roll_import_sources"
 DISMISSED_FOLDERS_KEY = "dismissed_folder_rolls"
 ROLL_PATH_SEP = "/"
 DISCOVERY_FILTERS_KEY = "roll_discovery_filters"
+HALF_FRAME_MODE_KEY = "half_frame_mode_by_roll"
 DEFAULT_DISCOVERY_FILTERS = ("export",)
 _FORK_SEP = "#roll:"
 
@@ -43,6 +44,60 @@ def _read(repo: Any) -> Dict[str, dict]:
 
 def _write(repo: Any, store: Dict[str, dict]) -> None:
     repo.save_global_setting(ROLLS_KEY, store)
+
+
+def _stamp(entry: dict, when: Optional[float] = None) -> None:
+    """Date a change to what the roll file carries; compared against the file's ``saved_at``."""
+    entry["updated_at"] = when if when is not None else time.time()
+
+
+def touch_roll(repo: Any, roll_id: str, when: Optional[float] = None) -> None:
+    """Date a change to roll state stored outside the roll entry (its half-frame mode)."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is not None:
+        _stamp(entry, when)
+        _write(repo, store)
+
+
+def roll_updated_at(repo: Any, roll_id: str) -> Optional[float]:
+    """When this machine last changed what the roll file carries; None before any change."""
+    entry = roll_for_id(repo, roll_id)
+    stamp = entry.get("updated_at") if entry else None
+    return float(stamp) if isinstance(stamp, (int, float)) else None
+
+
+# The roll entry fields a roll file carries. Paths, forks, locks and the id stay local.
+PORTABLE_FIELDS = ("defaults", "normalization", "scenes", "section_pushes")
+
+
+def roll_half_frame_mode(repo: Any, roll_id: str) -> bool:
+    by_roll = repo.get_global_setting(HALF_FRAME_MODE_KEY, default=None)
+    return bool(by_roll.get(roll_id, False)) if isinstance(by_roll, dict) else False
+
+
+def has_portable_state(repo: Any, roll_id: str) -> bool:
+    """Whether the roll holds anything its roll file would replace."""
+    entry = roll_for_id(repo, roll_id) or {}
+    by_roll = repo.get_global_setting(HALF_FRAME_MODE_KEY, default=None)
+    return any(entry.get(k) for k in PORTABLE_FIELDS) or (isinstance(by_roll, dict) and roll_id in by_roll)
+
+
+def replace_portable_state(repo: Any, roll_id: str, values: Dict[str, Any], half_frame_mode: bool, updated_at: float) -> None:
+    """Replace what a roll file carries, stamped with the file's time so it reads as current."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return
+    for key in PORTABLE_FIELDS:
+        if values.get(key):
+            entry[key] = values[key]
+        else:
+            entry.pop(key, None)
+    _stamp(entry, updated_at)
+    _write(repo, store)
+    by_roll = repo.get_global_setting(HALF_FRAME_MODE_KEY, default=None)
+    repo.save_global_setting(HALF_FRAME_MODE_KEY, {**(by_roll if isinstance(by_roll, dict) else {}), roll_id: bool(half_frame_mode)})
 
 
 def saved_rolls(repo: Any) -> Dict[str, dict]:
@@ -487,6 +542,7 @@ def set_roll_defaults(repo: Any, roll_id: str, **fields: Any) -> None:
     defaults = dict(entry.get("defaults", {}))
     defaults.update(fields)
     entry["defaults"] = defaults
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -598,6 +654,7 @@ def set_section_push(repo: Any, roll_id: str, section_key: str, values: Dict[str
     pushes = dict(entry.get("section_pushes", {}))
     pushes[section_key] = {**pushes.get(section_key, {}), **values}
     entry["section_pushes"] = pushes
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -642,6 +699,7 @@ def set_roll_normalization(
     if entry is None:
         return
     entry["normalization"] = {"floors": list(floors), "ceils": list(ceils), "cast": list(cast), "outliers": list(outliers), "axis": axis}
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -672,6 +730,7 @@ def _edit_scenes(repo: Any, roll_id: str, edit) -> Any:
     scenes = dict(entry.get("scenes", {}))
     result = edit(scenes)
     entry["scenes"] = scenes
+    _stamp(entry)
     _write(repo, store)
     return result
 
