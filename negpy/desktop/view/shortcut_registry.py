@@ -268,6 +268,7 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "undo": ShortcutEntry("Ctrl+Z", "Undo", "Actions"),
     "redo": ShortcutEntry("Ctrl+Y", "Redo", "Actions"),
     "live_view_scan": ShortcutEntry("S", "Scan this frame, or stop the scan", "Live View", LIVE_VIEW_SCOPE),
+    "live_view_focus": ShortcutEntry("F", "Run the camera's autofocus once", "Live View", LIVE_VIEW_SCOPE),
     "live_view_retake": ShortcutEntry("R", "Retake the current frame", "Live View", LIVE_VIEW_SCOPE),
     "show_shortcuts": ShortcutEntry("?", "Show shortcuts", "Help"),
     "show_analysis_help": ShortcutEntry("", "Analysis panel guide", "Help"),

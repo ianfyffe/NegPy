@@ -12,7 +12,9 @@ from unittest.mock import MagicMock
 import pytest
 from PyQt6.QtWidgets import QApplication
 
+from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.scanlight import ScanlightSidebar
+from negpy.desktop.view.styles.templates import wrap_tooltip
 from negpy.infrastructure.capture.settings import ScanlightSettings, WhiteCaptureMode
 from negpy.services.capture.presets import ScanlightPreset
 
@@ -185,7 +187,8 @@ def test_focus_button_enables_only_once_the_body_reports_a_drive():
     w._autofocus_available = True
     w._apply_gating()
     assert w.lv_window.focus_btn.isEnabled()
-    assert "shortcut: F" in w.lv_window.focus_btn.toolTip()
+    btn = w.lv_window.focus_btn
+    assert btn.toolTip() == wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, "live_view_focus"))
 
 
 def test_builtin_white_preset_sets_white_mode():

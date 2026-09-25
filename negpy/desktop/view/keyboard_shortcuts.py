@@ -307,6 +307,7 @@ class ShortcutManager:
             "preset_apply": controls.presets_sidebar.apply_btn.click,
             "preset_save": controls.presets_sidebar.save_btn.click,
             "live_view_scan": live_view.scan_btn.click,
+            "live_view_focus": live_view.focus_btn.click,
             "live_view_retake": live_view.retake_btn.click,
         }
 
