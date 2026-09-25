@@ -755,7 +755,7 @@ class DesktopSessionManager(QObject):
     history_changed = pyqtSignal()  # Emitted when undo/redo/persist happens
     work_prints_changed = pyqtSignal()  # A named version was saved, renamed or deleted
     settings_saved = pyqtSignal()
-    marks_changed = pyqtSignal(list)  # The assets whose triage mark was just written
+    marks_changed = pyqtSignal(list)  # The shared (unforked) assets whose triage mark was just written
     frames_saved = pyqtSignal(list)  # Non-active assets whose edit was just written by a roll action
     locks_changed = pyqtSignal(list)  # Assets whose roll locks in their folder roll just changed
     active_file_changing = pyqtSignal()  # Outgoing file about to be replaced — last chance to snapshot it
@@ -1322,12 +1322,12 @@ class DesktopSessionManager(QObject):
             if set_all:
                 f[other] = False
             self.repo.save_file_mark(unforked_hash(f["hash"]), mark if set_all else None, file_path=f.get("path", ""))
-            # The sidecar's saved_at is the row's updated_at, so a mark must advance it to
-            # reach a machine that has the frame. Marks and sidecars both key by unforked hash.
+            # A mark belongs to the scan, not a roll's fork: it advances the shared row, whose
+            # updated_at is its sidecar's saved_at, so it reaches a machine that has the frame.
             self.repo.touch_file_settings(unforked_hash(f["hash"]))
         self.asset_model.refresh()
         self.files_changed.emit()
-        self.marks_changed.emit([state.uploaded_files[i] for i in targets])
+        self.marks_changed.emit([{**state.uploaded_files[i], "hash": unforked_hash(state.uploaded_files[i]["hash"])} for i in targets])
 
     def _stamp_scenes(self) -> None:
         by_hash = rolls.scene_by_hash(self.repo, self.state.active_roll_id)
@@ -1761,7 +1761,8 @@ class DesktopSessionManager(QObject):
         self._work_prints_changed()
 
     def _work_prints_changed(self) -> None:
-        # The sidecar's saved_at is the row's updated_at; see toggle_mark.
+        # Work prints belong to the edit they were saved from: a fork's stay with the fork,
+        # which never mirrors, and a shared edit's advance the row its sidecar is dated by.
         self.repo.touch_file_settings(self.state.current_file_hash)
         self.work_prints_changed.emit()
 

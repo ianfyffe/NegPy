@@ -21,6 +21,7 @@ from negpy.services.assets.sidecar import (
     decline_sidecar_offers,
     export_roll_sidecar,
     load_roll_sidecar,
+    load_sidecar,
     pending_sidecar_offers,
     promote_sidecar,
     promote_unedited,
@@ -347,3 +348,38 @@ def test_exporting_a_roll_with_undated_state_leaves_an_existing_file_to_the_offe
     assert export_roll_sidecar(b.repo, b.roll_id) is None
     assert rolls.roll_updated_at(b.repo, b.roll_id) is None
     assert load_roll_sidecar(b.folder).state["defaults"] == {"hue_trim": 2.0}
+
+
+def test_marking_a_forked_frame_mirrors_the_shared_sidecar(tmp_path):
+    a = _machine(tmp_path, "a")
+    asset = a.assets[1]
+    a.repo.save_file_settings("h2", _cfg(), file_path=asset["path"], updated_at=5.0)
+    fork = rolls.fork_edit(a.repo, a.roll_id, "h2", asset["path"], _cfg(hue_trim=7.0))
+    a.session.state.uploaded_files = [{**asset, "hash": fork}]
+    a.session.state.selected_file_idx = 0
+    a.session.asset_model = SimpleNamespace(refresh=lambda: None)
+    mirror = SidecarMirror(a.repo)
+    a.session.marks_changed.connect(lambda assets: [mirror.mark_dirty(f["hash"], f["path"]) for f in assets])
+
+    a.session.toggle_mark("keeper")
+    mirror.flush()
+
+    stamp = a.repo.load_file_record("h2")[1]
+    assert stamp > 5.0
+    sidecar = load_sidecar(asset["path"])
+    assert (sidecar.mark, sidecar.saved_at) == ("keeper", stamp)
+
+
+def test_a_forks_work_print_stays_with_the_fork(tmp_path):
+    a = _machine(tmp_path, "a")
+    asset = a.assets[1]
+    a.repo.save_file_settings("h2", _cfg(), file_path=asset["path"], updated_at=5.0)
+    fork = rolls.fork_edit(a.repo, a.roll_id, "h2", asset["path"], _cfg(hue_trim=7.0))
+    a.session.state.current_file_hash = fork
+    a.session.state.config = _cfg(hue_trim=7.0)
+
+    a.session.save_work_print("Print 1")
+
+    assert a.repo.load_file_record("h2")[1] == 5.0
+    assert sidecar_from_repo(a.repo, "h2", asset["path"]).work_prints == {}
+    assert a.repo.list_work_prints(fork) == ["Print 1"]
