@@ -439,16 +439,14 @@ class LibraryTree(QWidget):
             warn_invalid_roll_name(self, "Rename Roll")
             return
 
-        if rename_folder:
-            if not self.controller.request_rename_roll(roll_id, name, True):
-                QMessageBox.warning(
-                    self,
-                    "Rename Roll",
-                    "Could not rename the folder on disk — check that no other folder already has that name, "
-                    "and that you have permission to rename it here.",
-                )
-                return
-        rolls.rename_roll(self.repo, roll_id, f"{prefix}{rolls.ROLL_PATH_SEP}{name}" if prefix else name)
+        if not self.controller.request_rename_roll(roll_id, name, rename_folder, prefix=prefix):
+            QMessageBox.warning(
+                self,
+                "Rename Roll",
+                "Could not rename the folder on disk — check that no other folder already has that name, "
+                "and that you have permission to rename it here.",
+            )
+            return
 
         self.reload()
         self.rolls_changed.emit()

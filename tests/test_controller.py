@@ -6195,6 +6195,7 @@ class TestLibrarySearch(unittest.TestCase):
         self.controller.session.rehome_folder_paths.assert_not_called()
 
     def test_request_rename_roll_also_renames_the_folder_when_not_active(self):
+        """Loaded frames follow the folder whichever roll is open."""
         self._dict_repo()
         from negpy.services.assets.rolls import recognize_folder, roll_for_id
 
@@ -6211,7 +6212,35 @@ class TestLibrarySearch(unittest.TestCase):
             self.assertTrue(os.path.isdir(new_path))
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["folder_path"], new_path)
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["name"], "roll_b")
-            self.controller.session.rehome_folder_paths.assert_not_called()
+            self.controller.session.rehome_folder_paths.assert_called_once_with(old_path, new_path)
+
+    def test_request_rename_roll_keeps_the_folder_rows_prefix(self):
+        self._dict_repo()
+        from negpy.services.assets.rolls import recognize_folder, roll_for_id
+
+        with tempfile.TemporaryDirectory() as d:
+            old_path = os.path.join(d, "roll_a")
+            os.mkdir(old_path)
+            roll_id = recognize_folder(self.controller.session.repo, old_path, name="2026/roll_a")
+
+            self.assertTrue(self.controller.request_rename_roll(roll_id, "roll_b", True, prefix="2026"))
+
+            self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["name"], "2026/roll_b")
+            self.assertTrue(os.path.isdir(os.path.join(d, "roll_b")))
+
+    def test_request_rename_roll_writes_queued_sidecars_before_the_folder_moves(self):
+        self._dict_repo()
+        from negpy.services.assets.rolls import recognize_folder
+
+        with tempfile.TemporaryDirectory() as d:
+            old_path = os.path.join(d, "roll_a")
+            os.mkdir(old_path)
+            roll_id = recognize_folder(self.controller.session.repo, old_path)
+            seen = []
+            with patch.object(self.controller, "flush_sidecars", side_effect=lambda: seen.append(os.path.isdir(old_path))):
+                self.controller.request_rename_roll(roll_id, "roll_b", True)
+
+            self.assertEqual(seen[0], True)
 
     def test_request_rename_roll_rehomes_the_active_rolls_paths(self):
         self._dict_repo()
