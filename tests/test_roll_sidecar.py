@@ -855,3 +855,27 @@ def test_a_roll_file_that_cannot_be_read_is_never_written_over(tmp_path):
 
     with open(path, "rb") as f:
         assert f.read() == good[: len(good) // 2]
+
+
+def test_a_roll_on_a_share_that_is_offline_never_follows_a_local_copy(tmp_path):
+    """The share is not mounted, so the old folder's parent is gone too: the roll is offline,
+    not moved, even though a folder with its roll file sits under the library."""
+    a, b = _nas(tmp_path)
+    _share_roll_uid(a, b)
+    local = tmp_path / "local" / "roll"
+    shutil.copytree(a.folder, local)
+    os.unlink(tmp_path / "b_mount")
+
+    assert find_moved_folder(b.repo, b.roll_id, [str(tmp_path / "local")]) is None
+    assert recognize_roll_folder(b.repo, str(local)) is None
+    assert rolls.roll_for_id(b.repo, b.roll_id)["folder_path"] == b.folder
+
+
+def test_a_roll_without_a_uid_searches_only_its_old_folders_siblings(tmp_path, monkeypatch):
+    a, b = _nas(tmp_path)
+    os.rename(a.folder, a.folder + "_gone")
+    walked = []
+    monkeypatch.setattr(rolls, "iter_roll_folders", lambda root, _filters: walked.append(root) or iter(()))
+
+    assert find_moved_folder(b.repo, b.roll_id, [str(tmp_path / "b_mount")]) is None
+    assert walked == []
