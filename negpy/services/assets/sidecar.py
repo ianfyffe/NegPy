@@ -3,8 +3,9 @@ and one ``.negpy-roll`` file per folder roll.
 
 Format 3 is an envelope: ``saved_at`` (the DB row's ``updated_at``, so a sidecar this
 machine mirrored compares equal to its row, not newer), ``source_hash``, ``mark`` and
-``mark_at`` (the mark's own time), the ``edit`` (flat config), named ``work_prints`` and
-``roll_locks``, the cards the frame keeps locked in its folder roll. A frame with a mark or
+``mark_at`` (the mark's own time), the ``edit`` (flat config), named ``work_prints`` with
+their ``updated_at``, ``deleted_work_prints`` (name: deletion time) and ``roll_locks``, the
+cards the frame keeps locked in its folder roll. A frame with a mark or
 work prints but no saved edit has a null ``edit`` and ``saved_at``. A file without
 ``mark_at`` dates a mark by ``saved_at`` and carries no clear; a format-2 file has no ``roll_locks``. A
 format-1 file is a bare flat config and has no timestamp, so it only ever fills a DB miss.
@@ -41,6 +42,12 @@ DECLINED_KEY = "sidecar_offers_declined"
 class SidecarWorkPrint(NamedTuple):
     created_at: float
     config: WorkspaceConfig
+    updated_at: Optional[float] = None
+
+    @property
+    def stamp(self) -> float:
+        """When the print was last saved or renamed, which its name's tombstone is compared against."""
+        return self.updated_at if self.updated_at is not None else self.created_at
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,7 @@ class Sidecar:
     mark: Optional[str] = None
     mark_at: Optional[float] = None
     work_prints: Dict[str, SidecarWorkPrint] = field(default_factory=dict)
+    deleted_work_prints: Dict[str, float] = field(default_factory=dict)
     # None when the file does not say: format 2, no folder roll, or a frame forked in it.
     roll_locks: Optional[tuple] = None
 
@@ -107,7 +115,11 @@ def _to_payload(sidecar: Sidecar) -> Dict[str, Any]:
         "mark": sidecar.mark,
         "mark_at": sidecar.mark_at,
         "edit": sidecar.config.to_dict() if sidecar.config is not None else None,
-        "work_prints": {name: {"created_at": wp.created_at, "edit": wp.config.to_dict()} for name, wp in sidecar.work_prints.items()},
+        "work_prints": {
+            name: {"created_at": wp.created_at, "updated_at": wp.stamp, "edit": wp.config.to_dict()}
+            for name, wp in sidecar.work_prints.items()
+        },
+        "deleted_work_prints": dict(sidecar.deleted_work_prints),
         "roll_locks": list(sidecar.roll_locks) if sidecar.roll_locks is not None else None,
     }
 
@@ -127,8 +139,11 @@ def _from_payload(data: Dict[str, Any]) -> Optional[Sidecar]:
     for name, entry in (data.get("work_prints") or {}).items():
         if isinstance(entry, dict) and isinstance(entry.get("edit"), dict):
             try:
+                updated = entry.get("updated_at")
                 work_prints[str(name)] = SidecarWorkPrint(
-                    float(entry.get("created_at") or 0.0), WorkspaceConfig.from_flat_dict(entry["edit"])
+                    float(entry.get("created_at") or 0.0),
+                    WorkspaceConfig.from_flat_dict(entry["edit"]),
+                    float(updated) if isinstance(updated, (int, float)) else None,
                 )
             except Exception as exc:
                 logger.warning("Skipping work print %r in sidecar: %s", name, exc)
@@ -140,6 +155,9 @@ def _from_payload(data: Dict[str, Any]) -> Optional[Sidecar]:
         # A file without mark_at dates a mark by saved_at; its null mark says nothing.
         mark_at=float(mark_at) if isinstance(mark_at, (int, float)) else saved_at if mark in _MARKS else None,
         work_prints=work_prints,
+        deleted_work_prints={
+            str(name): float(t) for name, t in (data.get("deleted_work_prints") or {}).items() if isinstance(t, (int, float))
+        },
         roll_locks=tuple(str(c) for c in locks) if isinstance(locks, list) else None,
     )
 
@@ -195,8 +213,10 @@ def sidecar_from_repo(repo, file_hash: str, source_path: str = "") -> Optional[S
     record = repo.load_file_record(file_hash)
     mark_record = repo.load_mark_record(file_hash)
     saved_prints = repo.load_work_prints(file_hash)
-    if record is None and mark_record is None and not saved_prints:
+    tombstones = repo.load_work_print_tombstones(file_hash)
+    if record is None and mark_record is None and not saved_prints and not tombstones:
         return None
+    stamps = repo.load_work_print_stamps(file_hash)
     roll_id = _folder_roll(repo, source_path)
 
     def portable(cfg: WorkspaceConfig) -> WorkspaceConfig:
@@ -208,28 +228,50 @@ def sidecar_from_repo(repo, file_hash: str, source_path: str = "") -> Optional[S
         source_hash=file_hash,
         mark=mark_record[0] if mark_record else None,
         mark_at=mark_record[1] if mark_record else None,
-        work_prints={name: SidecarWorkPrint(created_at, portable(cfg)) for name, created_at, cfg in saved_prints},
+        work_prints={name: SidecarWorkPrint(created_at, portable(cfg), stamps.get(name)) for name, created_at, cfg in saved_prints},
+        deleted_work_prints=tombstones,
         roll_locks=_roll_locks(repo, file_hash, source_path) if record else None,
     )
 
 
+def _latest(print_at: Optional[float], deleted_at: Optional[float]) -> Optional[tuple[float, bool]]:
+    """(time, deleted) of the last thing that happened to one work-print name on one side.
+    A deletion wins a tie with a save."""
+    if deleted_at is not None and (print_at is None or deleted_at >= print_at):
+        return deleted_at, True
+    return (print_at, False) if print_at is not None else None
+
+
 def merge_sidecar_extras(repo, file_hash: str, source_path: str, sidecar: Sidecar) -> bool:
-    """Take the sidecar's mark when dated after the mark here, and each work print this
-    frame lacks or holds an older save of. Never touches the edit. True when either changed."""
+    """Take the sidecar's mark when dated after the mark here, and for each work-print name
+    whatever happened to it last on either side: a save, or a deletion or rename away (a
+    tombstone). Never touches the edit. True when the mark or the prints here changed."""
     changed = False
     local = repo.load_mark_record(file_hash)
     newer = sidecar.mark_at is not None and (sidecar.mark_at > local[1] if local else sidecar.mark is not None)
     if newer:
         repo.save_file_mark(file_hash, sidecar.mark, file_path=source_path, marked_at=sidecar.mark_at)
         changed = (local[0] if local else None) != sidecar.mark
-    roll_id = _folder_roll(repo, source_path)
-    local_bind = f"roll:{roll_id}" if roll_id else ""
-    held = {name: created_at for name, created_at, _ in repo.load_work_prints(file_hash)}
-    for name, wp in sidecar.work_prints.items():
-        if name not in held or wp.created_at > held[name]:
-            repo.save_work_print(
-                file_hash, name, _rebind_source(wp.config, FOLDER_ROLL_SOURCE, local_bind), created_at=wp.created_at or None
-            )
+    if not sidecar.work_prints and not sidecar.deleted_work_prints:
+        return changed
+    held = repo.load_work_print_stamps(file_hash)
+    gone = repo.load_work_print_tombstones(file_hash)
+    local_bind: Optional[str] = None
+    for name in {*sidecar.work_prints, *sidecar.deleted_work_prints}:
+        wp = sidecar.work_prints.get(name)
+        theirs = _latest(wp.stamp if wp else None, sidecar.deleted_work_prints.get(name))
+        mine = _latest(held.get(name), gone.get(name))
+        if theirs is None or (mine is not None and theirs <= mine):
+            continue
+        if theirs[1]:
+            repo.delete_work_print(file_hash, name, deleted_at=theirs[0])
+            changed = changed or name in held
+        elif wp is not None:
+            if local_bind is None:
+                roll_id = _folder_roll(repo, source_path)
+                local_bind = f"roll:{roll_id}" if roll_id else ""
+            config = _rebind_source(wp.config, FOLDER_ROLL_SOURCE, local_bind)
+            repo.save_work_print(file_hash, name, config, created_at=wp.created_at or None, updated_at=wp.stamp)
             changed = True
     return changed
 
