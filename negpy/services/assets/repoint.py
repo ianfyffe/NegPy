@@ -8,6 +8,7 @@ import os
 from typing import Any, Callable, Dict, Iterable, Iterator, Optional
 
 from negpy.services.assets import rolls
+from negpy.services.assets.rolls import moved_path
 from negpy.services.assets.composites import COMPOSITES_KEY
 from negpy.services.assets.sidecar import claim_copy, is_copy_of, load_roll_sidecar, roll_sidecar_path, take_roll_file_identity
 
@@ -19,21 +20,6 @@ LIBRARY_ROOTS_KEY = "library_roots"
 # Flat config keys that hold a source path, and those that hold lists of them.
 _CONFIG_PATH = ("green_path", "blue_path")
 _CONFIG_LISTS = ("stitch_paths", "hdr_paths", "stitch_triplets")
-
-
-def moved_path(path: str, old: str, new: str) -> str:
-    """*path* rebased from folder *old* onto *new* when it is *old* or under it, compared as
-    ``rolls._folder_key`` compares folders; any other path comes back unchanged."""
-    if not path or not old:
-        return path
-    norm, base = os.path.normpath(path), os.path.normpath(old)
-    key, base_key = os.path.normcase(norm), os.path.normcase(base)
-    if key == base_key:
-        return new
-    prefix = base_key.rstrip(os.sep) + os.sep
-    if key.startswith(prefix):
-        return os.path.join(new, norm[len(prefix) :])
-    return path
 
 
 def _moved_list(values: Any, old: str, new: str) -> Any:
@@ -116,7 +102,7 @@ def repoint_folder(repo: Any, old: str, new: str) -> None:
         _repoint_setting(repo, key, old, new)
     name = os.path.basename(os.path.normpath(old))
     repo.repoint_file_paths(name, lambda path: moved_path(path, old, new))
-    repo.repoint_saved_configs(json.dumps(name)[1:-1], lambda data: _moved_config(data, old, new))
+    repo.repoint_saved_configs(json.dumps(os.path.normpath(old))[1:-1], lambda data: _moved_config(data, old, new))
 
 
 MOVED, COPY, UNSURE = "moved", "copy", "unsure"

@@ -132,10 +132,12 @@ def sidecar_path_for(source_path: str, half: int = 0) -> str:
     return os.path.join(os.path.dirname(source_path), base + suffix + SIDECAR_EXT)
 
 
-def write_sidecar(source_path: str, sidecar: Sidecar, half: int = 0) -> str:
-    """Write the sidecar as JSON next to the source, atomically. Returns the path written."""
+def write_sidecar(source_path: str, sidecar: Sidecar, half: int = 0) -> Optional[str]:
+    """Write the sidecar as JSON next to the source, atomically. Returns the path written, or
+    None when the source's folder is gone: a sidecar never creates a folder."""
     path = sidecar_path_for(source_path, half)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.isdir(os.path.dirname(path) or "."):
+        return None
     _write_json(path, _to_payload(sidecar))
     return path
 
@@ -846,6 +848,10 @@ class SidecarMirror:
 
     def pending(self) -> int:
         return len(self._dirty) + len(self._dirty_rolls)
+
+    def rehome_pending(self, old: str, new: str) -> None:
+        """Point the frames waiting for a flush under folder *old* at *new*."""
+        self._dirty = {h: (rolls.moved_path(path, old, new), half) for h, (path, half) in self._dirty.items()}
 
     def flush(self) -> tuple[int, int]:
         """Write every dirty frame and roll. Returns (written, failed); a folder that

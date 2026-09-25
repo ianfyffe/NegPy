@@ -6257,6 +6257,14 @@ class TestLibrarySearch(unittest.TestCase):
 
             self.assertEqual(search.call_count, 1)
 
+    def test_following_a_folder_repoints_sidecars_waiting_to_be_written(self):
+        self._dict_repo()
+        self.controller._sidecar_mirror.mark_dirty("h1", "/nas/roll_a/a.tif")
+
+        self.controller._on_folder_followed("/nas/roll_a", "/nas/roll_b")
+
+        self.assertEqual(self.controller._sidecar_mirror._dirty, {"h1": ("/nas/roll_b/a.tif", 0)})
+
     def test_restoring_a_session_follows_a_folder_that_moved(self):
         self._dict_repo()
         from negpy.services.assets.rolls import roll_for_id
