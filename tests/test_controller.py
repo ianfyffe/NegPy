@@ -6242,6 +6242,21 @@ class TestLibrarySearch(unittest.TestCase):
             self.assertEqual(discovery.call_args.args[0], [new_path])
             self.assertEqual(self.controller.state.active_roll_id, roll_id)
 
+    def test_a_missing_folder_searched_for_in_vain_is_not_searched_again(self):
+        self._dict_repo()
+        from negpy.services.assets.rolls import recognize_folder
+
+        with tempfile.TemporaryDirectory() as d:
+            roll_id = recognize_folder(self.controller.session.repo, os.path.join(d, "gone"))
+            with (
+                patch("negpy.desktop.controller.repoint.find_moved_folder", return_value=None) as search,
+                patch.object(self.controller, "request_asset_discovery"),
+            ):
+                self.controller.open_roll(roll_id)
+                self.controller.open_roll(roll_id)
+
+            self.assertEqual(search.call_count, 1)
+
     def test_restoring_a_session_follows_a_folder_that_moved(self):
         self._dict_repo()
         from negpy.services.assets.rolls import roll_for_id

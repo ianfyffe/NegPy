@@ -124,9 +124,10 @@ MOVED, COPY, UNSURE = "moved", "copy", "unsure"
 
 def roll_moved_to(repo: Any, folder: str) -> Optional[tuple[str, str]]:
     """The roll here that *folder*'s roll file names, when *folder* is not yet its own, and
-    ``MOVED`` (the roll's folder is gone), ``COPY`` (both folders hold its file) or ``UNSURE``
-    (another path to one folder, or a folder that cannot be told apart yet). The file names
-    the roll by ``roll_uid``, or by a former folder name in the same parent. None otherwise."""
+    ``MOVED`` (its folder is gone from a parent that is there), ``COPY`` (both folders hold its
+    file) or ``UNSURE`` (another path to one folder, an offline share, a folder that cannot be
+    told apart yet). The file names the roll by ``roll_uid``, or by a former folder name in the
+    same parent. None otherwise."""
     if rolls.folder_roll_id_for_path(repo, folder) is not None:
         return None
     sidecar = load_roll_sidecar(folder)
@@ -137,7 +138,7 @@ def roll_moved_to(repo: Any, folder: str) -> Optional[tuple[str, str]]:
         old = (rolls.roll_for_id(repo, roll_id) or {}).get("folder_path") or ""
         if is_copy_of(old, folder, sidecar.roll_uid):
             return roll_id, COPY
-        return roll_id, UNSURE if os.path.isdir(old) else MOVED
+        return roll_id, MOVED if _moved_away(old) else UNSURE
     parent = os.path.dirname(os.path.normpath(folder))
     for name in reversed(sidecar.former_names):
         old = os.path.join(parent, name)
@@ -145,6 +146,12 @@ def roll_moved_to(repo: Any, folder: str) -> Optional[tuple[str, str]]:
         if roll_id is not None and not os.path.isdir(old) and rolls.roll_uid(repo, roll_id) in ("", sidecar.roll_uid):
             return roll_id, MOVED
     return None
+
+
+def _moved_away(old: str) -> bool:
+    """Whether folder *old* is gone while its parent is there: a rename or a move, not a share
+    that is offline."""
+    return bool(old) and not os.path.isdir(old) and os.path.isdir(os.path.dirname(os.path.normpath(old)))
 
 
 def _followed_name(repo: Any, name: str, old: str, new: str) -> Optional[str]:
@@ -205,19 +212,19 @@ def _candidates(old: str, roots: Iterable[str], filters: list) -> Iterator[str]:
         names = []
     yield from (os.path.join(parent, n) for n in names if not n.startswith(".") and os.path.isdir(os.path.join(parent, n)))
     for root in roots:
-        yield from rolls.discover_roll_folders(root, filters)
+        yield from rolls.iter_roll_folders(root, filters)
 
 
 def find_moved_folder(repo: Any, roll_id: str, roots: Iterable[str]) -> Optional[str]:
-    """Where the folder roll's missing folder went: a sibling of the old folder, else a roll
-    folder under *roots*, whose roll file names this roll. Reads only roll files. None when
-    the folder is still there or nothing names the roll."""
+    """Where the folder roll's folder went: a sibling of the old folder, else, for a roll with a
+    uid, a roll folder under *roots*, whose roll file names this roll. Reads only roll files.
+    None unless the folder is gone from a parent that is there, or when nothing names it."""
     entry = rolls.roll_for_id(repo, roll_id) or {}
     old = entry.get("folder_path") or ""
-    if entry.get("kind") != "folder" or not old or os.path.isdir(old):
+    if entry.get("kind") != "folder" or not _moved_away(old):
         return None
     seen: set = set()
-    for folder in _candidates(old, roots, rolls.discovery_filters(repo)):
+    for folder in _candidates(old, roots if entry.get("roll_uid") else (), rolls.discovery_filters(repo)):
         key = os.path.normcase(os.path.normpath(folder))
         if key not in seen and os.path.isfile(roll_sidecar_path(folder)) and roll_moved_to(repo, folder) == (roll_id, MOVED):
             return folder

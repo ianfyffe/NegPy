@@ -18,7 +18,7 @@ import time
 import uuid
 from dataclasses import replace
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 from negpy.features.metadata.models import GEAR_FIELDS, PROCESS_FIELDS, SCANNING_FIELDS
 from negpy.features.process.models import neutral_axis_tuple, with_film_fields
@@ -261,14 +261,17 @@ def discover_roll_folders(parent_path: str, filters: Sequence[str]) -> List[str]
     The walk does not enter a roll folder, so its own subfolders (export output, for
     one) never become rolls. Hidden folders and folders matching *filters* are skipped.
     """
-    found = []
+    return list(iter_roll_folders(parent_path, filters))
+
+
+def iter_roll_folders(parent_path: str, filters: Sequence[str]) -> Iterator[str]:
+    """``discover_roll_folders``, walked only as far as it is read."""
     for dirpath, dirnames, _filenames in os.walk(os.path.normpath(parent_path)):
         if folder_counts(dirpath)[0]:
-            found.append(dirpath)
+            yield dirpath
             dirnames[:] = []
         else:
             dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and not matches_discovery_filter(d, filters))
-    return found
 
 
 def import_subfolders_as_rolls(

@@ -946,6 +946,7 @@ class AppController(QObject):
         self.session.locks_changed.connect(self._mirror_sidecars_for)
         self.session.active_file_changing.connect(self.flush_sidecars)
         self._pending_roll_offers: Dict[str, RollSidecarOffer] = {}
+        self._missing_folder_not_found: set[str] = set()
 
     def generate_missing_thumbnails(self) -> None:
         missing = [f for f in self.state.uploaded_files if asset_thumbnail_key(f) not in self.state.thumbnails]
@@ -1606,11 +1607,16 @@ class AppController(QObject):
         return roll_id
 
     def _follow_missing_folder(self, roll_id: Optional[str]) -> Optional[str]:
-        """Find where a folder roll's missing folder went and follow it; the new path, or None."""
+        """Find where a folder roll's missing folder went and follow it; the new path, or None.
+        A roll searched for in vain is not searched again this session."""
+        if not roll_id or roll_id in self._missing_folder_not_found:
+            return None
         repo = self.session.repo
-        new_path = repoint.find_moved_folder(repo, roll_id, [*rolls.import_sources(repo), *self.library_roots()]) if roll_id else None
-        if roll_id and new_path:
-            self._on_folder_followed(repoint.follow_folder(repo, roll_id, new_path), new_path)
+        new_path = repoint.find_moved_folder(repo, roll_id, [*rolls.import_sources(repo), *self.library_roots()])
+        if new_path is None:
+            self._missing_folder_not_found.add(roll_id)
+            return None
+        self._on_folder_followed(repoint.follow_folder(repo, roll_id, new_path), new_path)
         return new_path
 
     def _on_folder_followed(self, old_path: str, new_path: str) -> None:
