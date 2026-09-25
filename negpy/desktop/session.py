@@ -13,11 +13,13 @@ from negpy.desktop.sticky import (
     ALWAYS_STICKY_PROCESS,
     DESCRIPTION_FIELDS_KEY,
     EXPORT_REMAINDER,
+    SIDECARS_ENABLED_KEY,
     STICKY_CONFIG_KEY,
     load_sticky_config,
     load_sticky_rows,
     migrate_legacy,
     migrate_legacy_export_destination,
+    migrate_sidecars_enabled_preference,
     sticky_snapshot,
 )
 from negpy.desktop.view.canvas.crop_guides import CropGuide
@@ -191,6 +193,10 @@ class AppState:
     # and the canvas context menu is unreachable while the removal is on. Off, a right-click
     # opens that menu and its Exclude item does the same job in one more step.
     right_click_excludes: bool = False
+
+    # App-wide: mirror every edit, mark and work print to a .negpy sidecar next to its
+    # source. A preference, not a per-frame field, so a frame reset never stops the mirror.
+    sidecars_enabled: bool = False
 
     # Crop tool composition guide (CropGuide value); display-only, so not in GeometryConfig
     crop_guide: str = "thirds"
@@ -781,6 +787,7 @@ class DesktopSessionManager(QObject):
 
         migrate_legacy(self.repo)
         migrate_legacy_export_destination(self.repo)
+        migrate_sidecars_enabled_preference(self.repo)
 
         # Load global hardware settings
         saved_gpu = self.repo.get_global_setting("gpu_enabled")
@@ -819,6 +826,10 @@ class DesktopSessionManager(QObject):
         saved_right_click_excludes = self.repo.get_global_setting("right_click_excludes")
         if saved_right_click_excludes is not None:
             self.state.right_click_excludes = bool(saved_right_click_excludes)
+
+        saved_sidecars = self.repo.get_global_setting(SIDECARS_ENABLED_KEY)
+        if saved_sidecars is not None:
+            self.state.sidecars_enabled = bool(saved_sidecars)
 
         saved_guide = self.repo.get_global_setting("crop_guide")
         if saved_guide in set(CropGuide):
@@ -971,6 +982,12 @@ class DesktopSessionManager(QObject):
             self.state.right_click_excludes = enabled
             self.repo.save_global_setting("right_click_excludes", enabled)
             self.state_changed.emit()
+
+    def set_sidecars_enabled(self, enabled: bool) -> None:
+        """Updates and persists the app-wide sidecar mirror toggle."""
+        if self.state.sidecars_enabled != enabled:
+            self.state.sidecars_enabled = enabled
+            self.repo.save_global_setting(SIDECARS_ENABLED_KEY, enabled)
 
     def set_invert_zoom_scroll(self, enabled: bool) -> None:
         """Updates and persists whether the wheel zoom direction is reversed."""

@@ -758,11 +758,14 @@ class TestAppController(unittest.TestCase):
         state.selected_file_idx = 0
         state.current_file_hash = "hash1"
 
-        state.config = replace(state.config, export=ExportConfig(sidecars_enabled=False))
+        state.sidecars_enabled = False
         self.controller._mirror_current_sidecar()
         self.assertEqual(self.controller._sidecar_mirror.pending(), 0)
 
-        state.config = replace(state.config, export=ExportConfig(sidecars_enabled=True))
+        # The mirror reads the app-wide preference, not the per-frame config: a frame reset
+        # never stops it.
+        state.config = replace(state.config, export=ExportConfig())
+        state.sidecars_enabled = True
         self.controller._mirror_current_sidecar()
         self.assertEqual(self.controller._sidecar_mirror.pending(), 1)
         self.assertTrue(self.controller._sidecar_flush_timer.isActive())

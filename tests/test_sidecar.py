@@ -291,8 +291,14 @@ def test_pending_offers_use_half_naming(tmp_path, repo):
     assert len(offers) == 1
 
 
-def test_legacy_toggle_key_migrates():
-    assert WorkspaceConfig.from_flat_dict({"export_sidecars_enabled": True}).export.sidecars_enabled is True
+def test_legacy_toggle_keys_are_dropped():
+    # The mirror toggle is an app-wide preference now, so both its current name and its
+    # pre-rename spelling are dropped from a saved edit rather than warned about.
+    export = WorkspaceConfig().export
+    assert not hasattr(export, "sidecars_enabled")
+    for legacy in ("sidecars_enabled", "export_sidecars_enabled"):
+        cfg = WorkspaceConfig.from_flat_dict({legacy: True})
+        assert not hasattr(cfg.export, legacy)
 
 
 def test_mirror_writes_row_time_and_dedups(tmp_path, repo):
