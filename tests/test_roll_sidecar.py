@@ -15,7 +15,7 @@ from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
 from negpy.infrastructure.storage.repository import StorageRepository
 from negpy.services.assets import rolls
 from negpy.services.assets.composites import remember_composites, restore_maps
-from negpy.services.assets.repoint import find_moved_folder, follow_folder, recognize_roll_folder, repoint_folder
+from negpy.services.assets.repoint import find_moved_folder, follow_folder, recognize_roll_folder
 from negpy.services.assets.sidecar import (
     ROLL_SIDECAR_NAME,
     RollSidecarOffer,
@@ -619,16 +619,24 @@ def test_a_name_the_file_does_not_date_never_replaces_one(tmp_path):
 
 
 def _rename_folder_on(m, new_name: str, keep_current: bool = True) -> None:
-    """Rename the roll and its folder through the controller, on computer *m*."""
+    """Rename the roll and its folder on computer *m* through the controller's own rename,
+    mirror gate and repoint, with Keep Current set as given."""
+    from functools import partial
+    from unittest.mock import MagicMock
+
     from negpy.desktop.controller import AppController
 
-    mirror = SidecarMirror(m.repo)
+    m.session.state.sidecars_enabled = keep_current
     controller = SimpleNamespace(
         session=m.session,
-        flush_sidecars=mirror.flush,
-        repoint_folder=lambda old, new: repoint_folder(m.repo, old, new),
-        _mirror_roll=lambda roll_id: mirror.mark_roll_dirty(roll_id) if keep_current else None,
+        state=m.session.state,
+        _sidecar_mirror=SidecarMirror(m.repo),
+        _sidecar_flush_timer=MagicMock(),
+        invalidate_library_walk=lambda: None,
     )
+    for name in ("flush_sidecars", "repoint_folder", "_mirror_roll", "_mirror_sidecars_for"):
+        setattr(controller, name, partial(getattr(AppController, name), controller))
+    controller._mirror_sidecars_for([m.assets[0]])
     assert AppController.request_rename_roll(controller, m.roll_id, new_name, True, prefix="photos")
     m.folder = rolls.roll_for_id(m.repo, m.roll_id)["folder_path"]
     m.assets = [{**a, "path": os.path.join(m.folder, a["name"])} for a in m.assets]
@@ -670,9 +678,11 @@ def test_a_folder_renamed_on_one_computer_is_followed_on_the_other(tmp_path):
     picks = rolls.create_virtual_roll(b.repo, "Picks", [b.assets[0]["path"]])
     rolls_before = set(rolls.saved_rolls(b.repo))
     old_b_folder = b.folder
+    a.repo.save_file_settings("h1", _cfg(), file_path=a.assets[0]["path"])
 
     _rename_folder_on(a, "roll_best")
     file_after_rename = _file(a)
+    assert load_sidecar(a.assets[0]["path"]) is not None
     _refresh_library(b)
 
     new_b_folder = os.path.join(os.path.dirname(old_b_folder), "roll_best")
@@ -758,6 +768,7 @@ def test_with_keep_current_off_nothing_is_written(tmp_path):
     a, b = _nas(tmp_path)
     _share_roll_uid(a, b)
     file_before = _file(a)
+    a.repo.save_file_settings("h1", _cfg(), file_path=a.assets[0]["path"])
 
     rolls.rename_roll(a.repo, a.roll_id, "Portra 400")
     _rename_folder_on(a, "roll_best", keep_current=False)
