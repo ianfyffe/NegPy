@@ -314,3 +314,36 @@ def test_undo_that_relocks_a_card_bumps_the_row(tmp_path):
 
     assert rolls.frame_override_cards(a.repo, a.roll_id, "h1") == {"sensor"}
     assert a.repo.load_file_record("h1")[1] > 5.0
+
+
+def test_no_writer_replaces_a_roll_file_saved_after_the_state_here(pair):
+    """B closed the offer for A's newer file; its export and mirror leave that file alone
+    until B changes the roll itself."""
+    a, b = pair
+    rolls.touch_roll(b.repo, b.roll_id, 50.0)
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=4.0)
+    rolls.touch_roll(a.repo, a.roll_id, 100.0)
+    export_roll_sidecar(a.repo, a.roll_id)
+    _copy_sidecars(a, b)
+
+    assert export_roll_sidecar(b.repo, b.roll_id) is None
+    _mirror(b)
+    assert load_roll_sidecar(b.folder).saved_at == 100.0
+    assert isinstance(read_roll_sidecar(b.repo, b.roll_id), RollSidecarOffer)
+
+    rolls.set_roll_defaults(b.repo, b.roll_id, hue_trim=6.0)
+    rolls.touch_roll(b.repo, b.roll_id, 200.0)
+    assert export_roll_sidecar(b.repo, b.roll_id) is not None
+    assert load_roll_sidecar(b.folder).state["defaults"] == {"hue_trim": 6.0}
+
+
+def test_exporting_a_roll_with_undated_state_leaves_an_existing_file_to_the_offer(tmp_path):
+    a, b = _machine(tmp_path, "a"), _machine(tmp_path, "b")
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    export_roll_sidecar(a.repo, a.roll_id)
+    _copy_sidecars(a, b)
+    b.repo.save_global_setting(rolls.ROLLS_KEY, {b.roll_id: {**rolls.roll_for_id(b.repo, b.roll_id), "defaults": {"hue_trim": 9.0}}})
+
+    assert export_roll_sidecar(b.repo, b.roll_id) is None
+    assert rolls.roll_updated_at(b.repo, b.roll_id) is None
+    assert load_roll_sidecar(b.folder).state["defaults"] == {"hue_trim": 2.0}
