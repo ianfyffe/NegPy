@@ -20,7 +20,7 @@ from negpy.services.assets.sidecar import (
     newer_sidecar,
     pending_sidecar_offers,
     promote_sidecar,
-    promote_unedited,
+    read_frame_sidecars,
     sidecar_from_repo,
     sidecar_path_for,
     write_sidecar,
@@ -184,6 +184,7 @@ def test_promote_stamps_row_with_sidecar_time_and_merges_work_prints(repo):
         config=replace(_rich_config(), exposure=ExposureConfig(density=0.5)),
         saved_at=20.0,
         mark="excluded",
+        mark_at=20.0,
         work_prints={"theirs": SidecarWorkPrint(2.0, _rich_config())},
     )
     promote_sidecar(repo, "h_p", "/p/b.NEF", theirs)
@@ -274,13 +275,13 @@ def test_promote_unedited_fills_only_frames_with_no_edit_here(tmp_path, repo):
         {"name": "stitched", "path": stitched, "hash": "h_st", "stitch_paths": [fresh]},
     ]
 
-    assert promote_unedited(repo, assets) == ["h_fresh", "h_fresh#2"]
+    assert read_frame_sidecars(repo, assets) == (["h_fresh", "h_fresh#2"], [])
 
     assert repo.load_file_record("h_fresh") == (_rich_config(), 200.0)
     assert repo.load_file_settings("h_edit") == WorkspaceConfig()
     assert repo.load_file_settings("h_moved_new") is None
     assert repo.load_file_settings("h_st") is None
-    assert promote_unedited(repo, assets) == []
+    assert read_frame_sidecars(repo, assets) == ([], [])
 
 
 def test_pending_offers_use_half_naming(tmp_path, repo):
@@ -339,7 +340,8 @@ def test_roll_fork_never_reads_or_writes_the_sidecar(tmp_path, repo):
     fork = {"name": "f", "path": src, "hash": "h_f#roll:r1"}
     assert pending_sidecar_offers(repo, [fork]) == []
     repo.delete_file_settings("h_f#roll:r1")
-    assert promote_unedited(repo, [fork]) == []
+    assert read_frame_sidecars(repo, [fork]) == ([], [])
+    assert repo.load_file_record("h_f#roll:r1") is None
 
 
 def test_touch_file_settings_advances_updated_at_only(tmp_path, repo):
@@ -355,27 +357,25 @@ def test_touch_file_settings_advances_updated_at_only(tmp_path, repo):
     assert repo.load_file_record("missing") is None
 
 
-def test_mark_change_bumps_row_so_sidecar_propagates(tmp_path, repo):
+def test_mark_change_travels_on_its_own_time(tmp_path, repo):
     src = str(tmp_path / "IMG_p.NEF")
     repo.save_file_settings("h_p", _rich_config(), file_path=src, updated_at=10.0)
+    repo.save_file_mark("h_p", "excluded", file_path=src, marked_at=30.0)
     mirror = SidecarMirror(repo)
     mirror.mark_dirty("h_p", src)
     mirror.flush()
     loaded = load_sidecar(src)
-    assert loaded is not None and loaded.saved_at == 10.0
-
-    # A mark lives in its own table, so the row is touched for the re-mirrored sidecar to
-    # read as newer on a machine still at 10.0.
-    repo.save_file_mark("h_p", "excluded", file_path=src)
-    repo.touch_file_settings("h_p", updated_at=30.0)
-    mirror.mark_dirty("h_p", src)
-    mirror.flush()
+    assert loaded is not None and (loaded.saved_at, loaded.mark, loaded.mark_at) == (10.0, "excluded", 30.0)
 
     other = StorageRepository(str(tmp_path / "other_edits.db"), str(tmp_path / "other_settings.db"))
     other.initialize()
     other.save_file_settings("h_p", _rich_config(), file_path=src, updated_at=10.0)
-    offer = newer_sidecar(other, "h_p", src)
-    assert offer is not None and offer.saved_at == 30.0 and offer.mark == "excluded"
+    asset = {"name": "p", "path": src, "hash": "h_p"}
+    # The edit is not newer, so nothing is offered; the mark is, so it loads on discovery.
+    assert pending_sidecar_offers(other, [asset]) == []
+    assert read_frame_sidecars(other, [asset]) == ([], ["h_p"])
+    assert other.load_mark_record("h_p") == ("excluded", 30.0)
+    assert read_frame_sidecars(other, [asset]) == ([], [])
 
 
 def test_mirror_gives_up_on_unwritable_folder(tmp_path, repo, monkeypatch):
@@ -580,3 +580,143 @@ def test_updated_at_backfilled_for_rows_from_before_the_column(tmp_path):
     stamped = record[1]
     repo.initialize()
     assert repo.load_file_record("old")[1] == stamped
+
+
+# --- Marks and work prints without a saved edit ---------------------------------------
+
+
+def test_a_mark_without_an_edit_round_trips_with_a_null_edit(tmp_path, repo):
+    src = str(tmp_path / "IMG_k.NEF")
+    repo.save_file_mark("h_k", "keeper", file_path=src, marked_at=40.0)
+    sc = sidecar_from_repo(repo, "h_k", src)
+    assert sc is not None and (sc.config, sc.saved_at, sc.mark, sc.mark_at, sc.roll_locks) == (None, None, "keeper", 40.0, None)
+
+    write_sidecar(src, sc)
+    with open(sidecar_path_for(src), encoding="utf-8") as f:
+        data = json.load(f)
+    assert (data["edit"], data["saved_at"], data["mark_at"]) == (None, None, 40.0)
+    assert load_sidecar(src) == sc
+
+
+def test_a_frame_with_no_edit_mark_or_work_print_has_no_sidecar(repo):
+    assert sidecar_from_repo(repo, "h_none") is None
+    repo.save_work_print("h_wp", "v1", _rich_config(), created_at=3.0)
+    sc = sidecar_from_repo(repo, "h_wp")
+    assert sc is not None and sc.config is None and list(sc.work_prints) == ["v1"]
+
+
+def test_a_sidecar_without_an_edit_never_creates_or_replaces_one(tmp_path, repo):
+    fresh = str(tmp_path / "fresh.NEF")
+    edited = str(tmp_path / "edited.NEF")
+    repo.save_file_settings("h_ed", WorkspaceConfig(), file_path=edited, updated_at=5.0)
+    wp = {"v1": SidecarWorkPrint(7.0, _rich_config())}
+    for path in (fresh, edited):
+        write_sidecar(path, Sidecar(config=None, mark="excluded", mark_at=50.0, work_prints=wp))
+
+    assert load_or_promote(repo, "h_fr", fresh) is None
+    assert repo.load_file_record("h_fr") is None
+    assert repo.load_file_mark("h_fr") == "excluded"
+    assert repo.list_work_prints("h_fr") == ["v1"]
+
+    assets = [{"name": "e", "path": edited, "hash": "h_ed"}]
+    assert pending_sidecar_offers(repo, assets) == []
+    assert read_frame_sidecars(repo, assets) == ([], ["h_ed"])
+    assert repo.load_file_record("h_ed") == (WorkspaceConfig(), 5.0)
+    assert repo.load_file_mark("h_ed") == "excluded"
+
+
+def test_a_newer_mark_loads_from_a_sidecar_whose_edit_is_older(tmp_path, repo):
+    src = str(tmp_path / "IMG_o.NEF")
+    mine = replace(_rich_config(), exposure=ExposureConfig(density=0.9))
+    repo.save_file_settings("h_o", mine, file_path=src, updated_at=100.0)
+    repo.save_file_mark("h_o", "keeper", file_path=src, marked_at=10.0)
+    _write(src, _rich_config(), saved_at=50.0, mark="excluded", mark_at=60.0)
+    asset = {"name": "o", "path": src, "hash": "h_o"}
+
+    assert pending_sidecar_offers(repo, [asset]) == []
+    assert read_frame_sidecars(repo, [asset]) == ([], ["h_o"])
+    assert repo.load_file_record("h_o") == (mine, 100.0)
+    assert repo.load_mark_record("h_o") == ("excluded", 60.0)
+
+
+def test_an_older_mark_or_clear_in_a_sidecar_loses_to_the_mark_here(tmp_path, repo):
+    src = str(tmp_path / "IMG_q.NEF")
+    repo.save_file_mark("h_q", "keeper", file_path=src, marked_at=80.0)
+    _write(src, _rich_config(), saved_at=50.0, mark="excluded", mark_at=50.0)
+    assert read_frame_sidecars(repo, [{"name": "q", "path": src, "hash": "h_q"}]) == (["h_q"], [])
+    assert repo.load_mark_record("h_q") == ("keeper", 80.0)
+
+
+def test_a_cleared_mark_travels(tmp_path, repo):
+    src = str(tmp_path / "IMG_c.NEF")
+    repo.save_file_mark("h_c", "keeper", file_path=src, marked_at=10.0)
+    repo.save_file_mark("h_c", None, file_path=src, marked_at=20.0)
+    assert repo.load_file_marks() == {} and repo.load_file_marks_by_path() == {}
+    assert repo.database_stats()["file_marks"] == 0
+    sc = sidecar_from_repo(repo, "h_c", src)
+    assert sc is not None and (sc.mark, sc.mark_at) == (None, 20.0)
+
+    other = StorageRepository(str(tmp_path / "o_edits.db"), str(tmp_path / "o_settings.db"))
+    other.initialize()
+    other.save_file_mark("h_c", "keeper", file_path=src, marked_at=10.0)
+    write_sidecar(src, sc)
+    assert read_frame_sidecars(other, [{"name": "c", "path": src, "hash": "h_c"}]) == ([], ["h_c"])
+    assert other.load_file_mark("h_c") is None
+
+
+def test_work_prints_merge_by_name_and_save_time(tmp_path, repo):
+    src = str(tmp_path / "IMG_w.NEF")
+    older, newer = (
+        replace(_rich_config(), exposure=ExposureConfig(density=0.1)),
+        replace(_rich_config(), exposure=ExposureConfig(density=0.2)),
+    )
+    repo.save_work_print("h_w", "same", older, created_at=5.0)
+    repo.save_work_print("h_w", "kept", newer, created_at=9.0)
+    theirs = {
+        "same": SidecarWorkPrint(6.0, newer),
+        "kept": SidecarWorkPrint(1.0, older),
+        "new": SidecarWorkPrint(2.0, older),
+    }
+    write_sidecar(src, Sidecar(config=None, work_prints=theirs))
+    assert read_frame_sidecars(repo, [{"name": "w", "path": src, "hash": "h_w"}]) == ([], ["h_w"])
+    assert {name: cfg.exposure.density for name, _, cfg in repo.load_work_prints("h_w")} == {"same": 0.2, "kept": 0.2, "new": 0.1}
+
+
+def test_a_file_without_mark_at_dates_its_mark_by_saved_at(tmp_path):
+    src = str(tmp_path / "IMG_2.NEF")
+    with open(sidecar_path_for(src), "w", encoding="utf-8") as f:
+        json.dump({"sidecar_format": 2, "saved_at": 12.0, "edit": _rich_config().to_dict(), "mark": "keeper"}, f, default=str)
+    loaded = load_sidecar(src)
+    assert loaded is not None and (loaded.mark, loaded.mark_at) == ("keeper", 12.0)
+
+
+def test_mirror_writes_a_mark_only_frame_and_keeps_an_edit_its_file_holds(tmp_path, repo):
+    bare = str(tmp_path / "bare.NEF")
+    held = str(tmp_path / "held.NEF")
+    repo.save_file_mark("h_bare", "keeper", file_path=bare, marked_at=30.0)
+    repo.save_file_mark("h_held", "excluded", file_path=held, marked_at=30.0)
+    _write(held, _rich_config(), saved_at=20.0, mark=None, mark_at=20.0)
+    mirror = SidecarMirror(repo)
+    mirror.mark_dirty("h_bare", bare)
+    mirror.mark_dirty("h_held", held)
+    assert mirror.flush() == (2, 0)
+
+    loaded = load_sidecar(bare)
+    assert loaded is not None and (loaded.config, loaded.mark) == (None, "keeper")
+    loaded = load_sidecar(held)
+    assert loaded is not None and (loaded.config, loaded.saved_at, loaded.mark, loaded.mark_at) == (_rich_config(), 20.0, "excluded", 30.0)
+
+
+def test_marked_at_backfilled_from_the_edit_for_marks_from_before_the_column(tmp_path):
+    import sqlite3
+
+    edits = str(tmp_path / "edits.db")
+    with sqlite3.connect(edits) as conn:
+        conn.execute("CREATE TABLE file_settings (file_hash TEXT PRIMARY KEY, settings_json TEXT, file_path TEXT, updated_at REAL)")
+        conn.execute("INSERT INTO file_settings VALUES ('ed', ?, '/p/ed.NEF', 42.0)", (json.dumps(_rich_config().to_dict(), default=str),))
+        conn.execute("CREATE TABLE file_marks (file_hash TEXT PRIMARY KEY, mark TEXT NOT NULL, file_path TEXT)")
+        conn.executemany("INSERT INTO file_marks VALUES (?, 'keeper', '')", (("ed",), ("bare",)))
+    repo = StorageRepository(edits, str(tmp_path / "settings.db"))
+    repo.initialize()
+    assert repo.load_mark_record("ed") == ("keeper", 42.0)
+    assert repo.load_mark_record("bare") == ("keeper", 0.0)

@@ -645,7 +645,7 @@ A **work print** is a named version of this frame, like the test prints kept on 
 *   **Click** one to make it live. That is an edit, so **Ctrl+Z** restores the previous state.
 *   **Right-click** for **Export This Version…**, **Rename…** or **Delete**. Delete asks first; an empty name is ignored.
 
-Work prints are **never pruned and never thrown away by a later edit**, unlike the undo history, which keeps the last 100 steps and drops the branch above you when you edit after stepping back. The list appears once you save one. Work prints belong to the frame (a preset is a look for other images). They are stored in NegPy's database and travel in `.negpy` sidecars with the edit.
+Work prints are **never pruned and never thrown away by a later edit**, unlike the undo history, which keeps the last 100 steps and drops the branch above you when you edit after stepping back. The list appears once you save one. Work prints belong to the frame (a preset is a look for other images). They are stored in NegPy's database and travel in `.negpy` sidecars, added by name to the other computer's.
 
 ### Edit history
 
@@ -983,9 +983,9 @@ The printer's record for this frame: the numbered dodge/burn masks and a card wi
 <!-- panel:export_sidecars -->
 #### Sidecars
 
-A `.negpy` sidecar is a plain-file copy of one frame's edit, mark and work prints, next to the source. **Keep Current** is an app-wide switch that mirrors every change to it; it survives a frame reset. **Export Sidecars** writes one now for every visible frame with a saved edit and reports failures in read-only folders. Edits always stay in the database too. Undo history, stitches, HDR merges, a roll's own copy of a frame, flat-field profiles and presets do not travel in a sidecar.
+A `.negpy` sidecar is a plain-file copy of one frame's edit, mark and work prints, next to the source. **Keep Current** is an app-wide switch that mirrors every change to it; it survives a frame reset. **Export Sidecars** writes one now for every visible frame with a saved edit, mark or work print and reports failures in read-only folders. Edits always stay in the database too. Undo history, stitches, HDR merges, a roll's own copy of a frame, flat-field profiles and presets do not travel in a sidecar.
 
-Sidecars carry an edit between computers. A frame with no edit here loads its sidecar on open, and the status bar reports how many did. When a folder holds sidecars saved after the edits here, one dialog lists them: **Load Selected** replaces those edits, **Keep Mine** leaves them and does not ask again for those versions. **Reload from Sidecar** (right-click the canvas) loads the frame's sidecar whatever its age, after offering the folder's roll file when it differs from the roll here. The newer copy wins by its saved time, so keep both computers' clocks close.
+Sidecars carry an edit between computers. A frame with no edit here loads its sidecar on open, and the status bar reports how many did. A mark or work print travels on its own, with or without an edit: each time the folder loads, a mark set after the one here and a work print missing here load without asking. When a folder holds sidecars saved after the edits here, one dialog lists them: **Load Selected** replaces those edits, **Keep Mine** leaves them and does not ask again for those versions. **Reload from Sidecar** (right-click the canvas) loads the edit in the frame's sidecar whatever its age, after offering the folder's roll file when it differs from the roll here. The newer copy wins by its saved time, so keep both computers' clocks close.
 
 A folder roll also has a `.negpy-roll` file in its folder with its card defaults, scenes, Roll Analysis baselines and Half Frame setting. Keep Current and Export Sidecars write it, and each frame's sidecar records which cards the frame locks, so the roll looks the same on the other computer. The file is read each time the roll's frames load, a restored session included. A roll new to a computer takes the file without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
 

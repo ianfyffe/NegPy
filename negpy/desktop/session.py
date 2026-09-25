@@ -1335,10 +1335,8 @@ class DesktopSessionManager(QObject):
             f[mark] = set_all
             if set_all:
                 f[other] = False
+            # A mark belongs to the scan, not a roll's fork, and travels in the shared sidecar.
             self.repo.save_file_mark(unforked_hash(f["hash"]), mark if set_all else None, file_path=f.get("path", ""))
-            # A mark belongs to the scan, not a roll's fork: it advances the shared row, whose
-            # updated_at is its sidecar's saved_at, so it reaches a machine that has the frame.
-            self.repo.touch_file_settings(unforked_hash(f["hash"]))
         self.asset_model.refresh()
         self.files_changed.emit()
         self.marks_changed.emit([{**state.uploaded_files[i], "hash": unforked_hash(state.uploaded_files[i]["hash"])} for i in targets])
@@ -1776,8 +1774,7 @@ class DesktopSessionManager(QObject):
 
     def _work_prints_changed(self) -> None:
         # Work prints belong to the edit they were saved from: a fork's stay with the fork,
-        # which never mirrors, and a shared edit's advance the row its sidecar is dated by.
-        self.repo.touch_file_settings(self.state.current_file_hash)
+        # which never mirrors.
         self.work_prints_changed.emit()
 
     def jump_to_step(self, index: int) -> None:
