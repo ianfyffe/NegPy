@@ -52,6 +52,7 @@ from negpy.desktop.workers.render import (
     ThumbnailWorker,
 )
 from negpy.desktop.workers.embedding import EmbeddingWorker
+from negpy.desktop.workers.sidecar_scan import SidecarScanWorker
 from negpy.desktop.workers.scan_worker import BatchRequest, MeterRequest, PrescanRequest, RollPreviewRequest, ScanRequest, ScanWorker
 from negpy.desktop.workers.library import LibrarySearchTask, LibrarySearchWorker
 from negpy.desktop.workers.hdr import HdrTask, HdrWorker
@@ -107,16 +108,15 @@ from negpy.services.export.templating import path_safe, render_export_filename
 from negpy.services.assets.sidecar import (
     RollSidecarOffer,
     SidecarMirror,
-    SidecarReader,
     adopt_roll_sidecar,
     decline_sidecar_offers,
     export_roll_sidecar,
     load_or_promote,
     load_sidecar,
     merge_sidecar_extras,
-    pending_sidecar_offers,
     promote_sidecar,
-    read_frame_sidecars,
+    apply_sidecar_plan,
+    offers_from_plan,
     read_roll_sidecar,
     sidecar_from_repo,
     sidecar_path_for,
@@ -403,6 +403,7 @@ class AppController(QObject):
     thumbnail_cancel_requested = pyqtSignal()
     thumbnail_update_requested = pyqtSignal(ThumbnailUpdateTask)
     embedding_requested = pyqtSignal(list)
+    sidecar_scan_requested = pyqtSignal(int, list)  # generation, assets
     thumbnail_activity_changed = pyqtSignal(str)
     tool_sync_requested = pyqtSignal()
     config_updated = pyqtSignal()
@@ -595,6 +596,10 @@ class AppController(QObject):
         # and neither should ever run while the other is walking the disk.
         self.library_worker = LibrarySearchWorker()
         self.library_worker.moveToThread(self.discovery_thread)
+        # Shares the discovery thread: it reads the folder a discovery just walked, and the
+        # next discovery waits behind at most one file of a scan it supersedes.
+        self.sidecar_scan_worker = SidecarScanWorker(self.session.repo)
+        self.sidecar_scan_worker.moveToThread(self.discovery_thread)
         self.discovery_thread.start()
 
         self.preview_load_thread = QThread()
@@ -925,7 +930,12 @@ class AppController(QObject):
         self.session.files_changed.connect(self._render_debounce.start)
 
         self._sidecar_mirror = SidecarMirror(self.session.repo, on_merged=self._on_sidecar_extras_merged)
-        self._sidecar_reader = SidecarReader()
+        self._sidecar_scan_generation = 0
+        # Assets of the scan in flight, carried into the next scan when a discovery supersedes it.
+        self._sidecar_scan_assets: list = []
+        self.sidecar_scan_requested.connect(self.sidecar_scan_worker.scan)
+        self.sidecar_scan_worker.planned.connect(self._on_sidecar_scan_planned)
+        self.session.session_emptied.connect(self._drop_sidecar_scan)
         self._sidecar_flush_timer = QTimer()
         self._sidecar_flush_timer.setSingleShot(True)
         self._sidecar_flush_timer.setInterval(SIDECAR_FLUSH_MS)
@@ -1390,6 +1400,7 @@ class AppController(QObject):
         self.thumb_worker.cancel_pending()
         self.thumbnail_cancel_requested.emit()
         self._announce_rgb = announce_rgb
+        self._supersede_sidecar_scan()
         self._read_roll_sidecars(rolls.folder_rolls_holding(self.session.repo, paths))
         active_roll_id = self.state.active_roll_id
         request = _DiscoveryRequest(
@@ -2109,11 +2120,9 @@ class AppController(QObject):
             # so dedup-by-hash doesn't drop a regrouped red, then reselect the active frame.
             self.session.state.uploaded_files.clear()
             self.session.state.rendered_thumbnails.clear()
-            sidecar_filled = self._load_sidecars_of_unedited(valid_assets)
             self.session.add_files([], validated_info=valid_assets)
-            self._offer_newer_sidecars(valid_assets)
+            self._request_sidecar_scan(valid_assets)
             self.generate_missing_thumbnails()
-            self.refresh_thumbnails_for(sidecar_filled)
             if not self._thumbnail_queue_active:
                 # Nothing queued, so no idle transition will arrive to start the
                 # embeddings pass (already-cached thumbnails are exactly what a
@@ -2143,11 +2152,9 @@ class AppController(QObject):
         selected_pending_scan = False
         if valid_assets:
             first_new_idx = len(self.session.state.uploaded_files)
-            sidecar_filled = self._load_sidecars_of_unedited(valid_assets)
             self.session.add_files([], validated_info=valid_assets)
-            self._offer_newer_sidecars(valid_assets)
+            self._request_sidecar_scan(valid_assets)
             self.generate_missing_thumbnails()
-            self.refresh_thumbnails_for(sidecar_filled)
             if not self._thumbnail_queue_active:
                 # Nothing queued, so no idle transition will arrive to start the
                 # embeddings pass (already-cached thumbnails are exactly what a
@@ -2166,6 +2173,7 @@ class AppController(QObject):
             self.set_status("No supported assets found", 3000, kind="warning")
             self.status_progress_requested.emit(0, 0)
             self._hot_folder_sequence_active = False
+            self._request_sidecar_scan([])
 
         if pending_scan:
             pending_key = _capture_import_key(pending_scan)
@@ -6784,17 +6792,51 @@ class AppController(QObject):
         self.session.reload_current_file()
         self.set_status("Loaded edit from sidecar", 3000)
 
-    def _load_sidecars_of_unedited(self, assets: List[Dict]) -> list[str]:
-        """Fill frames that have no edit here from their sidecars, and take newer marks and
-        work prints, before the session hydrates them. Returns the hashes whose edit was
-        filled; their filmstrip thumbnails predate the edit."""
-        filled, merged = read_frame_sidecars(self.session.repo, assets, self._sidecar_reader)
-        loaded = [count_of(len(filled), "edit")] if filled else []
+    def _supersede_sidecar_scan(self) -> None:
+        """Stop the scan in flight; its assets join the next scan."""
+        self._sidecar_scan_generation += 1
+        self.sidecar_scan_worker.supersede(self._sidecar_scan_generation)
+
+    def _drop_sidecar_scan(self) -> None:
+        """The session emptied: no scan in flight may apply to what loads next."""
+        self._supersede_sidecar_scan()
+        self._sidecar_scan_assets = []
+
+    def _request_sidecar_scan(self, assets: List[Dict]) -> None:
+        """Scan the loaded frames' sidecars on the discovery thread, together with any a
+        superseded scan left unread. The result applies in ``_on_sidecar_scan_planned``."""
+        self._supersede_sidecar_scan()
+        loaded = {f.get("hash") for f in self.state.uploaded_files}
+        wanted: Dict[str, Dict] = {}
+        for asset in [*self._sidecar_scan_assets, *assets]:
+            if asset.get("hash") in loaded:
+                wanted[asset["hash"]] = {k: asset.get(k) for k in ("name", "path", "hash", "half", "hdr_paths", "stitch_paths")}
+        self._sidecar_scan_assets = list(wanted.values())
+        self.sidecar_scan_requested.emit(self._sidecar_scan_generation, list(self._sidecar_scan_assets))
+
+    def _on_sidecar_scan_planned(self, generation: int, plan) -> None:
+        """Write a scan's fills and merges, then offer the newer roll files and edits in one
+        dialog. A result from a superseded scan, or for a frame no longer loaded, is dropped."""
+        if generation != self._sidecar_scan_generation:
+            return
+        self._sidecar_scan_assets = []
+        loaded = {f.get("hash") for f in self.state.uploaded_files}
+        for entries in (plan.fill, plan.merge, plan.offer):
+            entries[:] = [(asset, sidecar) for asset, sidecar in entries if asset.get("hash") in loaded]
+        filled, merged = apply_sidecar_plan(self.session.repo, plan)
+        loaded_what = [count_of(len(filled), "edit")] if filled else []
         if merged:
-            loaded.append(f"the marks or work prints of {count_of(len(merged), 'frame')}")
-        if loaded:
-            self.set_status(f"Loaded {' and '.join(loaded)} from sidecars", 4000)
-        return filled
+            loaded_what.append(f"the marks or work prints of {count_of(len(merged), 'frame')}")
+        if loaded_what:
+            self.set_status(f"Loaded {' and '.join(loaded_what)} from sidecars", 4000)
+            self.session.refresh_marks()
+            if rolls.unforked_hash(self.state.current_file_hash or "") in merged:
+                self.session.work_prints_changed.emit()
+            self.refresh_thumbnails_for(filled)
+        offers = [*self._pending_roll_offers.values(), *offers_from_plan(self.session.repo, plan)]
+        self._pending_roll_offers = {}
+        if offers:
+            QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))
 
     def _read_roll_sidecars(self, roll_ids: List[str]) -> None:
         """Read each folder roll's file before discovery, which its half-frame mode steers. A
@@ -6807,15 +6849,6 @@ class AppController(QObject):
                 self._pending_roll_offers[roll_id] = offer
         if half_before is not None and self.half_frame_mode_for_roll(active) != half_before:
             self.half_frame_mode_changed.emit(not half_before)
-
-    def _offer_newer_sidecars(self, assets: List[Dict]) -> None:
-        """Once per folder open: newer roll files, and frames whose sidecar was saved after
-        their edit here, get one dialog. A declined version is not offered again; a closed
-        dialog asks next time."""
-        offers = [*self._pending_roll_offers.values(), *pending_sidecar_offers(self.session.repo, assets, self._sidecar_reader)]
-        self._pending_roll_offers = {}
-        if offers:
-            QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))
 
     def _show_sidecar_offers(self, offers: list) -> bool:
         """Ask about *offers*; True when the loaded ones started a re-discovery."""
