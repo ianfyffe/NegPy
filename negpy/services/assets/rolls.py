@@ -123,6 +123,21 @@ def folder_roll_id_for_path(repo: Any, path: str) -> Optional[str]:
     return None
 
 
+def folder_rolls_holding(repo: Any, paths: List[str]) -> List[str]:
+    """The folder rolls recognizing each path, or the folder a file path is in, once each."""
+    by_folder = {
+        _folder_key(entry["folder_path"]): roll_id
+        for roll_id, entry in _read(repo).items()
+        if entry.get("kind") == "folder" and entry.get("folder_path")
+    }
+    found: Dict[str, None] = {}
+    for path in paths:
+        roll_id = by_folder.get(_folder_key(path if os.path.isdir(path) else os.path.dirname(path)))
+        if roll_id is not None:
+            found[roll_id] = None
+    return list(found)
+
+
 def recognize_folder(repo: Any, path: str, name: str = "") -> str:
     """Mark *path* as a recognized folder roll. Idempotent: returns the existing id
     when the folder is already recognized, without touching its stored name."""

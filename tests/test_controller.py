@@ -858,18 +858,73 @@ class TestAppController(unittest.TestCase):
 
         export.assert_called_once_with(repo, roll_id)
 
+    def _roll_folder_with_file(self, folder: str, saved_at: float, half_frame_mode: bool = False) -> str:
+        from negpy.services.assets.sidecar import RollSidecar, write_roll_sidecar
+
+        roll_id = rolls.recognize_folder(self.controller.session.repo, folder)
+        state = {"defaults": {"hue_trim": 2.0}}
+        write_roll_sidecar(folder, RollSidecar(saved_at=saved_at, half_frame_mode=half_frame_mode, state=state))
+        for name in ("a.tif", "b.tif"):
+            open(os.path.join(folder, name), "wb").close()
+        return roll_id
+
+    def _discover(self, open_paths) -> list:
+        """Run *open_paths* up to the discovery request it makes; returns those requests."""
+        requests = []
+        with patch.object(self.controller, "_start_asset_discovery", side_effect=requests.append):
+            open_paths()
+        return requests
+
     def test_opening_a_folder_reads_its_roll_file_before_discovery(self):
         """The roll file's half-frame mode decides which assets discovery makes."""
         self._wire_repo_store()
-        order = []
-        with (
-            tempfile.TemporaryDirectory() as folder,
-            patch("negpy.desktop.controller.read_roll_sidecar", side_effect=lambda repo, roll_id: order.append("roll")),
-            patch.object(self.controller, "request_asset_discovery", side_effect=lambda *a, **k: order.append("discover")),
-        ):
-            self.controller.open_library_folders([folder])
+        seen = []
+        self.controller.half_frame_mode_changed.connect(seen.append)
+        with tempfile.TemporaryDirectory() as folder:
+            roll_id = self._roll_folder_with_file(folder, saved_at=10.0, half_frame_mode=True)
+            requests = self._discover(lambda: self.controller.open_library_folders([folder]))
 
-        self.assertEqual(order, ["roll", "discover"])
+        self.assertEqual(self.controller.state.active_roll_id, roll_id)
+        self.assertTrue(requests[0].half_frame)
+        self.assertEqual(seen[-1], True)
+        self.assertEqual(rolls.roll_defaults(self.controller.session.repo, roll_id), {"hue_trim": 2.0})
+
+    def test_restoring_the_session_reads_its_roll_file_before_discovery(self):
+        store = self._wire_repo_store()
+        with tempfile.TemporaryDirectory() as folder:
+            roll_id = self._roll_folder_with_file(folder, saved_at=10.0, half_frame_mode=True)
+            store["session_files"] = [os.path.join(folder, n) for n in ("a.tif", "b.tif")]
+            requests = self._discover(self.controller.restore_session)
+
+        self.assertEqual(self.controller.state.active_roll_id, roll_id)
+        self.assertTrue(requests[0].half_frame)
+        self.assertEqual(rolls.roll_defaults(self.controller.session.repo, roll_id), {"hue_trim": 2.0})
+
+    def test_adding_a_folder_to_the_session_joins_its_newer_roll_file_to_the_offer(self):
+        """A roll with its own state here is offered the file, not replaced by it; each added
+        folder's offer waits for the next sidecar dialog."""
+        from negpy.services.assets.sidecar import RollSidecarOffer
+
+        self._wire_repo_store()
+        repo = self.controller.session.repo
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            roll_ids = [self._roll_folder_with_file(f, saved_at=10.0) for f in (first, second)]
+            for roll_id in roll_ids:
+                rolls.set_roll_defaults(repo, roll_id, hue_trim=9.0)
+                rolls.touch_roll(repo, roll_id, 5.0)
+            self._discover(lambda: self.controller.request_asset_discovery([first], auto_open=True))
+            self._discover(lambda: self.controller.request_asset_discovery([os.path.join(second, "a.tif")]))
+            with (
+                patch("negpy.desktop.controller.pending_sidecar_offers", return_value=[]),
+                patch("negpy.desktop.controller.QTimer.singleShot", side_effect=lambda _ms, fn: fn()),
+                patch.object(self.controller, "_show_sidecar_offers") as show,
+            ):
+                self.controller._offer_newer_sidecars([])
+
+        offers = show.call_args.args[0]
+        self.assertTrue(all(isinstance(o, RollSidecarOffer) for o in offers))
+        self.assertEqual([o.roll_id for o in offers], roll_ids)
+        self.assertEqual([rolls.roll_defaults(repo, r) for r in roll_ids], [{"hue_trim": 9.0}] * 2)
 
     def test_a_newer_roll_file_leads_the_next_offer_once(self):
         from negpy.services.assets.sidecar import RollSidecar, RollSidecarOffer, Sidecar, SidecarOffer
