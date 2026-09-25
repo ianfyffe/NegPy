@@ -17,6 +17,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _no_hash_cache():
+    """Keeps the fingerprint cache out of the user folder. A test of the cache sets its own path."""
+    from negpy.kernel.system.config import APP_CONFIG
+
+    APP_CONFIG.hash_cache_db_path = ""
+
+
+@pytest.fixture(scope="session", autouse=True)
 def qapp():
     from PyQt6.QtWidgets import QApplication
     import sys
