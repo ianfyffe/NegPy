@@ -14,8 +14,8 @@ Roll ids are per machine, so a baseline source naming the frame's folder roll is
 
 The roll file carries what a folder roll holds for all its frames (defaults, scenes,
 baselines, section pushes, half-frame mode), stamped with the roll's ``updated_at``, and
-the roll's identity: ``roll_uid``, the same on every computer, and the ``name`` with its
-own time, ``name_at``. A format-2 file with a null ``saved_at`` carries the identity alone.
+the roll's identity: ``roll_uid``, the same on every computer, and the ``name`` (its leaf,
+without the folder rows each computer puts above it) with its own time, ``name_at``. A format-2 file with a null ``saved_at`` carries the identity alone.
 """
 
 import json
@@ -625,7 +625,7 @@ def plan_roll_file_write(repo, roll_id: str, on_disk: Optional[Dict[str, Any]]) 
     file_uid = str(file.get("roll_uid") or "") if file else ""
     uid = (entry.get("roll_uid") if entry.get("roll_uid_unwritten") else "") or file_uid or entry.get("roll_uid") or uuid.uuid4().hex
     former = tuple(dict.fromkeys([*_names(file.get("former_names") if file else None), *rolls.former_folder_names(repo, roll_id)]))
-    name, name_at = entry.get("name") or "", rolls.name_updated_at(repo, roll_id)
+    name, name_at = rolls.name_leaf(entry.get("name") or ""), rolls.name_updated_at(repo, roll_id)
     file_name_at = _time(file.get("name_at")) if file else None
     copy = bool(entry.get("roll_uid_unwritten"))
     if file is not None and not copy and file_name_at is not None and (name_at is None or file_name_at > name_at):
@@ -707,8 +707,9 @@ def claim_copy(repo, roll_id: str) -> None:
 
 
 def take_roll_file_identity(repo, roll_id: str, sidecar: RollSidecar) -> bool:
-    """Take the file's uid, unless another roll here holds it, and its name when dated after
-    the name here; a copy keeps its own of both until written. True when the name changed."""
+    """Take the file's uid, unless another roll here holds it, and its name, as the leaf of the
+    name here, when dated later; a copy keeps its own of both until written. True when the
+    name changed."""
     entry = rolls.roll_for_id(repo, roll_id)
     if entry is None:
         return False
@@ -726,8 +727,9 @@ def take_roll_file_identity(repo, roll_id: str, sidecar: RollSidecar) -> bool:
         return False
     if local_at is not None and sidecar.name_at <= local_at:
         return False
-    rolls.rename_roll(repo, roll_id, sidecar.name, when=sidecar.name_at)
-    return sidecar.name != entry.get("name")
+    name = rolls.with_leaf(entry.get("name") or "", rolls.name_leaf(sidecar.name))
+    rolls.rename_roll(repo, roll_id, name, when=sidecar.name_at)
+    return name != entry.get("name")
 
 
 def adopt_roll_sidecar(repo, roll_id: str, sidecar: RollSidecar) -> None:
