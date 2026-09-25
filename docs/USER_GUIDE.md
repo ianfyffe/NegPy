@@ -140,7 +140,7 @@ NegPy never creates, renames, moves or deletes anything in the folder. Reorganiz
 Right-click a roll for:
 
 *   **Rename…**: renames the roll, not the folder rows above it. A folder roll also offers **Also rename the folder on disk** (unticked by default, asked each time). NegPy refuses with a warning if a sibling has that name or permission is missing. Inside a cloud-sync folder (Dropbox, iCloud, OneDrive), the sync can treat a rename as delete and re-upload.
-*   **Delete…**: forgets the roll record only; folder, images and edits stay. **↻** does not bring it back; **Import Folder as a Roll…** restores it. **Clear Library** in *Manage Database* forgets all rolls.
+*   **Delete…**: forgets the roll record only; folder, images, edits and its `.negpy-roll` file stay. **↻** does not bring it back; **Import Folder as a Roll…** restores it, and the roll file is then offered rather than taken. **Clear Library** in *Manage Database* forgets all rolls.
 *   **Roll Analysis** (**loaded** roll only): runs Roll Analysis on every frame outside a scene ([§10.5](#105-roll-analysis)) and stores it as the roll's baseline, for any frame's **Use average** toggles, in this roll or another.
 
 #### Rolls that are not folders
