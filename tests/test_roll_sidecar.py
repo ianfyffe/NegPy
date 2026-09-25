@@ -194,6 +194,39 @@ def test_scenes_and_their_baselines_match_by_hash(pair):
     assert rolls.resolve_roll_baseline(b.repo, b.roll_id, "h2", riding).process.locked_floors == (0.0, 0.0, 0.0)
 
 
+def _with_baseline(source: str):
+    cfg = _cfg()
+    return replace(cfg, process=replace(cfg.process, locked_floors=(0.1,) * 3, locked_ceils=(0.9,) * 3, baseline_source=source))
+
+
+def test_a_baseline_from_the_folder_roll_names_the_roll_here(pair, tmp_path):
+    """Roll ids are per machine; scene ids travel in the roll file."""
+    a, b = pair
+    scene_id = rolls.create_scene(a.repo, a.roll_id, "Beach", ["h3"])
+    sources = (f"roll:{a.roll_id}", "roll:elsewhere", f"scene:{scene_id}")
+    for asset, source in zip(a.assets, sources):
+        a.repo.save_file_settings(asset["hash"], _with_baseline(source), file_path=asset["path"])
+    a.repo.save_work_print("h1", "Print 1", _with_baseline(sources[0]))
+    _mirror(a)
+    _copy_sidecars(a, b)
+    _open_on(b)
+
+    with open(sidecar_path_for(b.assets[0]["path"]), encoding="utf-8") as f:
+        assert a.roll_id not in f.read()
+    on_b = [b.repo.load_file_settings(h).process.baseline_source for _, h in _FRAMES]
+    assert on_b == [f"roll:{b.roll_id}", "roll:elsewhere", f"scene:{scene_id}"]
+    assert [cfg.process.baseline_source for _, _, cfg in b.repo.load_work_prints("h1")] == [f"roll:{b.roll_id}"]
+    assert rolls.baseline_label(b.repo, b.repo.load_file_settings("h3").process) == "Scene “Beach”"
+
+    promote_sidecar(a.repo, "h1", a.assets[0]["path"], sidecar_from_repo(a.repo, "h1", a.assets[0]["path"]))
+    assert a.repo.load_file_settings("h1").process.baseline_source == f"roll:{a.roll_id}"
+
+    stray = tmp_path / "stray.tif"
+    stray.write_bytes(b"x")
+    promote_sidecar(b.repo, "h9", str(stray), sidecar_from_repo(a.repo, "h1", a.assets[0]["path"]))
+    assert b.repo.load_file_settings("h9").process.baseline_source == ""
+
+
 def test_a_forked_frame_writes_no_locks_and_the_roll_file_no_forks(pair):
     a, _ = pair
     rolls.fork_edit(a.repo, a.roll_id, "h2", a.assets[1]["path"], _cfg(hue_trim=7.0))
