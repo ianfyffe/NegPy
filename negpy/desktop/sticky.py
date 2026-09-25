@@ -26,6 +26,10 @@ from negpy.desktop.settings_catalog import (
 STICKY_CONFIG_KEY = "sticky_config"
 STICKY_ROWS_KEY = "sticky_rows"
 
+# App-wide sidecar mirror toggle. It was a per-frame export field, so a frame reset
+# silently stopped the mirror; it is one preference now and survives a reset.
+SIDECARS_ENABLED_KEY = "sidecars_enabled"
+
 _CATALOG_EXPORT_FIELDS = frozenset(f for title, rows in CATALOG if title == "Export" for r in rows for f in r.fields)
 
 # Export fields the catalog deliberately does not list: the output folder, ICC paths and
@@ -130,6 +134,25 @@ def migrate_legacy(repo: IRepository) -> None:
         return
     known = {f for r in all_rows() for f in r.fields}
     repo.save_global_setting(STICKY_CONFIG_KEY, {k: v for k, v in flat.items() if k in known})
+
+
+def migrate_sidecars_enabled_preference(repo: IRepository) -> None:
+    """Seed the app-wide sidecar mirror preference from the toggle users last saved, once.
+
+    The toggle used to ride in the per-frame export config, so its last value sits in the
+    saved export snapshot under its current or pre-rename name. A user who never set it
+    starts off.
+    """
+    if repo.get_global_setting(SIDECARS_ENABLED_KEY) is not None:
+        return
+    for store_key in ("last_export_config", STICKY_CONFIG_KEY):
+        stored = repo.get_global_setting(store_key)
+        if not isinstance(stored, dict):
+            continue
+        for field in ("sidecars_enabled", "export_sidecars_enabled"):
+            if field in stored:
+                repo.save_global_setting(SIDECARS_ENABLED_KEY, bool(stored[field]))
+                return
 
 
 _EXPORT_DESTINATION_MIGRATED_KEY = "export_destination_migrated_v1"

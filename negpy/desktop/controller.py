@@ -6369,7 +6369,7 @@ class AppController(QObject):
         if len(files) > 1 and not self._confirm_bulk_export(f"Export {count_of(len(files), 'frame')}?"):
             return
 
-        if self.state.config.export.sidecars_enabled:
+        if self.state.sidecars_enabled:
             self._write_edit_sidecars(files)
 
         flat = self.state.flat_output
@@ -6503,7 +6503,7 @@ class AppController(QObject):
             ):
                 return
 
-        if self.state.config.export.sidecars_enabled:
+        if self.state.sidecars_enabled:
             self._write_edit_sidecars(files)
 
         tasks = self._build_preset_export_tasks(files, presets)
@@ -6645,9 +6645,16 @@ class AppController(QObject):
         if asset is not None and asset.get("hash") == self.state.current_file_hash:
             self._mirror_sidecars_for([asset])
 
+    def set_sidecars_enabled(self, enabled: bool) -> None:
+        """Toggle the app-wide sidecar mirror. Enabling mirrors the current frame now, so
+        the toggle carries the frame on screen without waiting for the next edit."""
+        self.session.set_sidecars_enabled(enabled)
+        if enabled:
+            self._mirror_current_sidecar()
+
     def _mirror_sidecars_for(self, assets: list) -> None:
         """Queue these frames' sidecars for the next flush, when the mirror is on."""
-        if not self.state.config.export.sidecars_enabled:
+        if not self.state.sidecars_enabled:
             return
         for asset in assets:
             if asset.get("hdr_paths") or asset.get("stitch_paths"):

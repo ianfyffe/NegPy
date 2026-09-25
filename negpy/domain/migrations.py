@@ -43,8 +43,6 @@ KEY_RENAMES: Dict[str, str] = {
     "auto_crop_enabled": "crop_from_auto",
     # Lens distortion moved from the rig's flat-field profile to the per-image geometry.
     "k1": "distortion_k1",
-    # Sidecars are mirrored on every edit, not only on export.
-    "export_sidecars_enabled": "sidecars_enabled",
 }
 
 # Fields removed over time. Old saves still carry them, so drop them silently and
@@ -78,6 +76,10 @@ DROPPED_KEYS: frozenset[str] = frozenset(
         # Slide Normalize (a metered stretch through the print curve) was retired: every slide
         # renders through the transfer curve (migrate_flat_config reads it before this pop).
         "e6_normalize",
+        # The sidecar mirror toggle became an app-wide preference, so it no longer rides
+        # in the edit. Both the current name and its pre-rename spelling are dropped.
+        "sidecars_enabled",
+        "export_sidecars_enabled",
     }
 )
 

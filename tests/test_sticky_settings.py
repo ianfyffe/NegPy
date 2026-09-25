@@ -13,11 +13,13 @@ from negpy.desktop.settings_catalog import (
 from negpy.desktop.sticky import (
     ALWAYS_STICKY_PROCESS,
     EXPORT_REMAINDER,
+    SIDECARS_ENABLED_KEY,
     STICKY_CONFIG_KEY,
     STICKY_ROWS_KEY,
     load_sticky_rows,
     migrate_legacy,
     migrate_legacy_export_destination,
+    migrate_sidecars_enabled_preference,
     save_sticky_rows,
     sticky_snapshot,
 )
@@ -180,6 +182,28 @@ class TestAlwaysSticky(unittest.TestCase):
         catalog_fields = {f for r in all_rows() for f in r.fields}
         for _key, field in ALWAYS_STICKY_PROCESS:
             self.assertNotIn(field, catalog_fields)
+
+
+class TestSidecarsEnabledSeed(unittest.TestCase):
+    def test_seeds_from_last_export_config(self):
+        repo = _repo({"last_export_config": {"sidecars_enabled": True}})
+        migrate_sidecars_enabled_preference(repo)
+        self.assertIs(repo.store[SIDECARS_ENABLED_KEY], True)
+
+    def test_reads_pre_rename_key(self):
+        repo = _repo({STICKY_CONFIG_KEY: {"export_sidecars_enabled": True}})
+        migrate_sidecars_enabled_preference(repo)
+        self.assertIs(repo.store[SIDECARS_ENABLED_KEY], True)
+
+    def test_no_seed_on_a_fresh_install(self):
+        repo = _repo()
+        migrate_sidecars_enabled_preference(repo)
+        self.assertNotIn(SIDECARS_ENABLED_KEY, repo.store)
+
+    def test_runs_once(self):
+        repo = _repo({SIDECARS_ENABLED_KEY: False, "last_export_config": {"sidecars_enabled": True}})
+        migrate_sidecars_enabled_preference(repo)
+        self.assertIs(repo.store[SIDECARS_ENABLED_KEY], False)
 
 
 if __name__ == "__main__":
