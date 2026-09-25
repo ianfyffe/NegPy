@@ -341,6 +341,42 @@ def test_roll_fork_never_reads_or_writes_the_sidecar(tmp_path, repo):
     assert promote_unedited(repo, [fork]) == []
 
 
+def test_touch_file_settings_advances_updated_at_only(tmp_path, repo):
+    src = str(tmp_path / "IMG_t.NEF")
+    cfg = _rich_config()
+    repo.save_file_settings("h_t", cfg, file_path=src, updated_at=10.0)
+    repo.touch_file_settings("h_t", updated_at=20.0)
+    record = repo.load_file_record("h_t")
+    assert record is not None and record[1] == 20.0
+    assert record[0].to_dict()["density"] == cfg.to_dict()["density"]
+    # No row: a no-op, not a stub row.
+    repo.touch_file_settings("missing")
+    assert repo.load_file_record("missing") is None
+
+
+def test_mark_change_bumps_row_so_sidecar_propagates(tmp_path, repo):
+    src = str(tmp_path / "IMG_p.NEF")
+    repo.save_file_settings("h_p", _rich_config(), file_path=src, updated_at=10.0)
+    mirror = SidecarMirror(repo)
+    mirror.mark_dirty("h_p", src)
+    mirror.flush()
+    loaded = load_sidecar(src)
+    assert loaded is not None and loaded.saved_at == 10.0
+
+    # A mark lives in its own table, so the row is touched for the re-mirrored sidecar to
+    # read as newer on a machine still at 10.0.
+    repo.save_file_mark("h_p", "excluded", file_path=src)
+    repo.touch_file_settings("h_p", updated_at=30.0)
+    mirror.mark_dirty("h_p", src)
+    mirror.flush()
+
+    other = StorageRepository(str(tmp_path / "other_edits.db"), str(tmp_path / "other_settings.db"))
+    other.initialize()
+    other.save_file_settings("h_p", _rich_config(), file_path=src, updated_at=10.0)
+    offer = newer_sidecar(other, "h_p", src)
+    assert offer is not None and offer.saved_at == 30.0 and offer.mark == "excluded"
+
+
 def test_mirror_gives_up_on_unwritable_folder(tmp_path, repo, monkeypatch):
     src = str(tmp_path / "ro" / "IMG_r.NEF")
     repo.save_file_settings("h_r", _rich_config(), file_path=src)
