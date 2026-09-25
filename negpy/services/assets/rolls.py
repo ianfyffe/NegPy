@@ -5,8 +5,8 @@ folder roll that are not physically in that folder).
 
 Edits are not stored here and are not scoped by roll by default: they stay in the edits
 DB under each frame's own content hash, exactly as if no Roll existed. A Roll only
-decides which files show up when you open it -- with two exceptions. A path a user has
-explicitly forked (``forked_paths``) gets its own edit identity for that roll alone,
+decides which files show up when you open it -- with two exceptions. A frame a user has
+explicitly forked (``forked_hashes``) gets its own edit identity for that roll alone,
 suffixed onto the frame's content hash (``roll_edit_hash``), the same convention
 half-frame scans already use for their two halves. And roll-wide defaults, below, hold
 a handful of film, rig and scanning facts that describe the roll rather than one
@@ -67,8 +67,37 @@ def roll_updated_at(repo: Any, roll_id: str) -> Optional[float]:
     return float(stamp) if isinstance(stamp, (int, float)) else None
 
 
-# The roll entry fields a roll file carries. Paths, forks, locks and the id stay local.
+# The roll entry fields a roll file carries. Paths, forks, locks and the id stay local; the
+# file also carries the name and ``roll_uid``, the id every computer knows the roll by.
 PORTABLE_FIELDS = ("defaults", "normalization", "scenes", "section_pushes")
+
+
+def roll_uid(repo: Any, roll_id: str) -> str:
+    """The roll's id in its roll file; empty before the roll has written or read one."""
+    entry = roll_for_id(repo, roll_id)
+    return str(entry.get("roll_uid") or "") if entry else ""
+
+
+def set_roll_uid(repo: Any, roll_id: str, uid: str) -> None:
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is not None and entry.get("roll_uid") != uid:
+        entry["roll_uid"] = uid
+        _write(repo, store)
+
+
+def roll_id_for_uid(repo: Any, uid: str) -> Optional[str]:
+    """The folder roll known here by *uid*, or None."""
+    if not uid:
+        return None
+    return next((rid for rid, entry in _read(repo).items() if entry.get("kind") == "folder" and entry.get("roll_uid") == uid), None)
+
+
+def name_updated_at(repo: Any, roll_id: str) -> Optional[float]:
+    """When the roll was last renamed, here or by a roll file; None before either."""
+    entry = roll_for_id(repo, roll_id)
+    stamp = entry.get("name_updated_at") if entry else None
+    return float(stamp) if isinstance(stamp, (int, float)) else None
 
 
 def roll_half_frame_mode(repo: Any, roll_id: str) -> bool:
@@ -388,10 +417,13 @@ def rolls_containing_path(repo: Any, path: str) -> List[str]:
     return out
 
 
-def rename_roll(repo: Any, roll_id: str, name: str) -> None:
+def rename_roll(repo: Any, roll_id: str, name: str, when: Optional[float] = None) -> None:
+    """Rename the roll, dated *when* (now by default). The date decides which name a roll
+    file carries; it is not a change to the roll's state, so it does not stamp it."""
     store = _read(repo)
     if roll_id in store:
         store[roll_id]["name"] = name
+        store[roll_id]["name_updated_at"] = when if when is not None else time.time()
         _write(repo, store)
 
 

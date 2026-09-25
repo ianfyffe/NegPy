@@ -442,3 +442,172 @@ def test_export_sidecars_writes_a_frame_that_has_only_a_mark(tmp_path):
     sidecar = load_sidecar(a.assets[1]["path"])
     assert sidecar is not None and (sidecar.config, sidecar.mark) == (None, "keeper")
     assert not os.path.exists(sidecar_path_for(a.assets[0]["path"]))
+
+
+# --- One folder on a NAS share, mounted at a different path on each computer ----------
+
+
+def _nas(tmp_path):
+    """Two computers, one shared folder: A mounts the share at ``nas``, B at ``b_mount``."""
+    if not hasattr(os, "symlink"):
+        pytest.skip("needs symlinks")
+    folder = tmp_path / "nas" / "photos" / "roll"
+    folder.mkdir(parents=True)
+    for file_name, _ in _FRAMES:
+        (folder / file_name).write_bytes(b"x")
+    try:
+        os.symlink(tmp_path / "nas", tmp_path / "b_mount", target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create a symlink here")
+    return [_on(tmp_path, name, str(mount / "photos" / "roll")) for name, mount in (("a", tmp_path / "nas"), ("b", tmp_path / "b_mount"))]
+
+
+def _on(tmp_path, name: str, folder: str):
+    root = tmp_path / f"db_{name}"
+    root.mkdir()
+    repo = StorageRepository(str(root / "edits.db"), str(root / "settings.db"))
+    repo.initialize()
+    session = DesktopSessionManager(repo)
+    roll_id = rolls.recognize_folder(repo, folder)
+    assets = [{"name": n, "path": os.path.join(folder, n), "hash": h} for n, h in _FRAMES]
+    return SimpleNamespace(repo=repo, session=session, folder=folder, roll_id=roll_id, assets=assets)
+
+
+def _mirror_roll(m) -> None:
+    """What Keep Current does after a roll change here."""
+    mirror = SidecarMirror(m.repo)
+    mirror.mark_roll_dirty(m.roll_id)
+    mirror.flush()
+
+
+def _file(m) -> dict:
+    with open(roll_sidecar_path(m.folder), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _name(m) -> str:
+    return rolls.roll_for_id(m.repo, m.roll_id)["name"]
+
+
+def test_the_first_roll_file_write_gives_the_roll_a_uid_that_the_other_computer_learns(tmp_path):
+    a, b = _nas(tmp_path)
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    _mirror_roll(a)
+    uid = rolls.roll_uid(a.repo, a.roll_id)
+
+    assert uid and _file(a)["roll_uid"] == uid
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=3.0)
+    _mirror_roll(a)
+    assert _file(a)["roll_uid"] == uid
+
+    read_roll_sidecar(b.repo, b.roll_id)
+    assert rolls.roll_uid(b.repo, b.roll_id) == uid
+    assert b.roll_id != a.roll_id
+
+
+def test_a_name_only_rename_travels_without_a_settings_offer(tmp_path):
+    a, b = _nas(tmp_path)
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    _mirror_roll(a)
+    read_roll_sidecar(b.repo, b.roll_id)
+    stamp = rolls.roll_updated_at(a.repo, a.roll_id)
+
+    rolls.rename_roll(a.repo, a.roll_id, "Portra 400")
+    _mirror_roll(a)
+
+    assert rolls.roll_updated_at(a.repo, a.roll_id) == stamp
+    assert _file(a)["saved_at"] == stamp and _file(a)["name"] == "Portra 400"
+    assert read_roll_sidecar(b.repo, b.roll_id) is None
+    assert _name(b) == "Portra 400"
+
+
+def test_a_declined_settings_offer_does_not_block_a_newer_name(tmp_path):
+    a, b = _nas(tmp_path)
+    rolls.set_roll_defaults(b.repo, b.roll_id, hue_trim=9.0)
+    rolls.touch_roll(b.repo, b.roll_id, 10.0)
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    rolls.touch_roll(a.repo, a.roll_id, 20.0)
+    _mirror_roll(a)
+    decline_sidecar_offers(b.repo, [read_roll_sidecar(b.repo, b.roll_id)])
+
+    rolls.rename_roll(a.repo, a.roll_id, "Portra 400")
+    _mirror_roll(a)
+
+    assert read_roll_sidecar(b.repo, b.roll_id) is None
+    assert _name(b) == "Portra 400"
+    assert rolls.roll_defaults(b.repo, b.roll_id) == {"hue_trim": 9.0}
+
+
+def test_the_later_rename_wins_on_both_computers(tmp_path):
+    a, b = _nas(tmp_path)
+    rolls.rename_roll(a.repo, a.roll_id, "First", when=100.0)
+    rolls.rename_roll(b.repo, b.roll_id, "Second", when=200.0)
+    _mirror_roll(a)
+    _mirror_roll(b)
+    read_roll_sidecar(a.repo, a.roll_id)
+    assert (_name(a), _name(b), _file(a)["name"]) == ("Second", "Second", "Second")
+
+    rolls.rename_roll(a.repo, a.roll_id, "Third", when=300.0)
+    rolls.rename_roll(b.repo, b.roll_id, "Stale", when=250.0)
+    _mirror_roll(a)
+    _mirror_roll(b)
+    read_roll_sidecar(b.repo, b.roll_id)
+    assert (_name(a), _name(b), _file(b)["name"]) == ("Third", "Third", "Third")
+
+
+def test_a_rename_of_a_roll_without_settings_writes_its_identity_alone(tmp_path):
+    a, b = _nas(tmp_path)
+    rolls.rename_roll(a.repo, a.roll_id, "Portra 400")
+    _mirror_roll(a)
+
+    payload = _file(a)
+    assert payload["saved_at"] is None and payload["name"] == "Portra 400" and payload["roll_uid"]
+    assert load_roll_sidecar(a.folder).state == {}
+    assert read_roll_sidecar(b.repo, b.roll_id) is None
+    assert _name(b) == "Portra 400"
+    assert rolls.roll_updated_at(b.repo, b.roll_id) is None and rolls.adopts_roll_file(b.repo, b.roll_id)
+
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    _mirror_roll(a)
+    read_roll_sidecar(b.repo, b.roll_id)
+    assert rolls.roll_defaults(b.repo, b.roll_id) == {"hue_trim": 2.0}
+
+
+def test_a_roll_file_without_a_uid_gets_one_without_losing_newer_state(tmp_path):
+    a, b = _nas(tmp_path)
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    rolls.touch_roll(a.repo, a.roll_id, 100.0)
+    legacy = {
+        "roll_sidecar_format": 1,
+        "saved_at": 100.0,
+        "name": "roll",
+        "half_frame_mode": True,
+        "defaults": {"hue_trim": 2.0},
+        "normalization": None,
+        "scenes": None,
+        "section_pushes": None,
+    }
+    with open(roll_sidecar_path(a.folder), "w", encoding="utf-8") as f:
+        json.dump(legacy, f)
+    rolls.set_roll_defaults(b.repo, b.roll_id, hue_trim=6.0)
+    rolls.touch_roll(b.repo, b.roll_id, 50.0)
+
+    _mirror_roll(b)
+
+    uid = rolls.roll_uid(b.repo, b.roll_id)
+    assert uid and _file(b) == {**legacy, "roll_uid": uid, "name_at": None}
+    read_roll_sidecar(a.repo, a.roll_id)
+    assert rolls.roll_uid(a.repo, a.roll_id) == uid
+
+
+def test_a_name_the_file_does_not_date_never_replaces_one(tmp_path):
+    a, b = _nas(tmp_path)
+    rolls.touch_roll(a.repo, a.roll_id, 100.0)
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    with open(roll_sidecar_path(a.folder), "w", encoding="utf-8") as f:
+        json.dump({"roll_sidecar_format": 1, "saved_at": 100.0, "name": "Old Name", "defaults": {"hue_trim": 2.0}}, f)
+
+    read_roll_sidecar(b.repo, b.roll_id)
+
+    assert _name(b) == "roll"
+    assert rolls.roll_defaults(b.repo, b.roll_id) == {"hue_trim": 2.0}
