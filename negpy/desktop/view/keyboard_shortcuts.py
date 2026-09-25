@@ -7,6 +7,8 @@ from negpy.desktop.session import ToolMode
 from negpy.desktop.view.confirm import confirm_reset_frames
 from negpy.desktop.view.widgets.granular_settings_dialog import open_paste_dialog, open_sticky_dialog, open_sync_bounds_dialog
 from negpy.desktop.view.shortcut_registry import (
+    LIVE_VIEW_SCOPE,
+    MAIN_SCOPE,
     REGISTRY,
     load_bindings,
     load_slider_steps,
@@ -123,6 +125,7 @@ class ShortcutManager:
         self.bindings = load_bindings(window.controller.session.repo)
         self.slider_steps = load_slider_steps(window.controller.session.repo)
         self._shortcuts: list[QShortcut] = []
+        self._scoped_windows = {LIVE_VIEW_SCOPE: window.right_panel.scanlight_sidebar.lv_window}
         self._actions = self._build_actions()
         self.apply_bindings(self.bindings)
 
@@ -156,6 +159,7 @@ class ShortcutManager:
         toolbar = self.window.toolbar
         controls = self.window.controls_panel
         right = self.window.right_panel
+        live_view = right.scanlight_sidebar.lv_window
 
         actions: dict[str, Callable[[], None]] = {
             "prev_file": controller.session.prev_file,
@@ -302,6 +306,8 @@ class ShortcutManager:
             "toggle_auto_grade": controls.tone_sidebar.auto_grade_action.trigger,
             "preset_apply": controls.presets_sidebar.apply_btn.click,
             "preset_save": controls.presets_sidebar.save_btn.click,
+            "live_view_scan": live_view.scan_btn.click,
+            "live_view_retake": live_view.retake_btn.click,
         }
 
         widgets = slider_widget_map(controls)
@@ -323,13 +329,20 @@ class ShortcutManager:
             shortcut.setParent(None)
         self._shortcuts.clear()
 
+        scoped: dict[str, dict[str, Callable[[], None]]] = {scope: {} for scope in self._scoped_windows}
         for action_id, callback in self._actions.items():
             key = self.bindings.get(action_id, "")
             if not key:
                 continue
+            scope = REGISTRY[action_id].scope
+            if scope != MAIN_SCOPE:
+                scoped[scope][key] = callback
+                continue
             shortcut = QShortcut(QKeySequence(key), self.window)
             shortcut.activated.connect(callback)
             self._shortcuts.append(shortcut)
+        for scope, target in self._scoped_windows.items():
+            target.set_shortcuts(scoped[scope])
 
         self.window.controls_panel.apply_shortcut_tooltips()
         self.window.right_panel.apply_shortcut_tooltips()

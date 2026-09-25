@@ -7,6 +7,7 @@ from negpy.desktop.view.shortcut_registry import (
     default_bindings,
     default_slider_steps,
     display_key,
+    duplicate_binding,
     label_with_shortcut,
     load_bindings,
     load_slider_steps,
@@ -143,9 +144,14 @@ def test_category_editor_rows_merge_slider_pairs():
 
 
 def test_no_two_actions_claim_the_same_default_key():
-    # Two actions on one key makes Qt fire activatedAmbiguously and both go dead.
-    keys = [key for key in default_bindings().values() if key]
-    assert len(keys) == len(set(keys))
+    # Two actions on one key in one window makes Qt fire activatedAmbiguously and both go dead.
+    assert duplicate_binding(default_bindings()) is None
+
+
+def test_a_key_may_repeat_across_scopes_but_not_within_one():
+    assert duplicate_binding({"grade_down": "S", "live_view_scan": "S"}) is None
+    assert duplicate_binding({"grade_down": "S", "grade_up": "S"}) == ("grade_down", "grade_up")
+    assert duplicate_binding({"live_view_scan": "S", "live_view_retake": "S"}) == ("live_view_scan", "live_view_retake")
 
 
 def test_every_slider_action_has_a_group():
