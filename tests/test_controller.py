@@ -702,6 +702,50 @@ class TestAppController(unittest.TestCase):
         self.mock_session_manager.config_for_asset.assert_not_called()
         mock_write.assert_called_once_with("/tmp/c.dng", row, half=2)
 
+    def test_write_edit_sidecars_skips_roll_fork(self):
+        """A roll-forked edit shares its source path with the shared frame. Writing it would
+        clobber the shared sidecar, and load_or_promote would rehome the shared edit onto the
+        fork, so the writer both Export and Export Sidecars use skips it, as the mirror does."""
+        from negpy.services.assets.sidecar import Sidecar
+
+        fork = {"name": "e.dng", "path": "/tmp/e.dng", "hash": "hash5#roll:r1"}
+        saved = {"name": "c.dng", "path": "/tmp/c.dng", "hash": "hash3"}
+        row = Sidecar(config=WorkspaceConfig(), saved_at=5.0, source_hash="hash3")
+
+        with (
+            patch("negpy.desktop.controller.load_or_promote", return_value=None) as mock_promote,
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.write_sidecar") as mock_write,
+        ):
+            written, failed = self.controller._write_edit_sidecars([fork, saved])
+
+        self.assertEqual((written, failed), (1, 0))
+        mock_write.assert_called_once_with("/tmp/c.dng", row, half=0)
+        # The fork never reaches load_or_promote, so the shared edit is not rehomed onto it.
+        self.assertNotIn("hash5#roll:r1", [c.args[1] for c in mock_promote.call_args_list])
+
+    def test_export_sidecars_action_skips_roll_fork(self):
+        """The Export Sidecars button drives the same fork-safe writer."""
+        from negpy.services.assets.sidecar import Sidecar
+
+        state = self.mock_session_manager.state
+        state.uploaded_files = [
+            {"name": "e.dng", "path": "/tmp/e.dng", "hash": "hash5#roll:r1"},
+            {"name": "c.dng", "path": "/tmp/c.dng", "hash": "hash3"},
+        ]
+        self.mock_session_manager.asset_model = MagicMock()
+        self.mock_session_manager.asset_model.visible_actual_indices_ordered.return_value = [0, 1]
+        row = Sidecar(config=WorkspaceConfig(), saved_at=5.0, source_hash="hash3")
+
+        with (
+            patch("negpy.desktop.controller.load_or_promote", return_value=None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.write_sidecar") as mock_write,
+        ):
+            self.controller.export_edit_sidecars()
+
+        mock_write.assert_called_once_with("/tmp/c.dng", row, half=0)
+
     def test_mirror_queues_current_frame_only_when_enabled(self):
         from negpy.domain.models import ExportConfig
 
