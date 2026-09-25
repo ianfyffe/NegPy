@@ -26,7 +26,6 @@ from negpy.desktop.settings_catalog import (
 STICKY_CONFIG_KEY = "sticky_config"
 STICKY_ROWS_KEY = "sticky_rows"
 
-# App-wide sidecar mirror toggle; a frame reset leaves it alone.
 SIDECARS_ENABLED_KEY = "sidecars_enabled"
 
 _CATALOG_EXPORT_FIELDS = frozenset(f for title, rows in CATALOG if title == "Export" for r in rows for f in r.fields)
