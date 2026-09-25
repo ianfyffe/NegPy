@@ -394,6 +394,7 @@ class AppController(QObject):
     library_index_scan_requested = pyqtSignal(list)  # library_roots(), for whole-library indexing
     library_search_finished = pyqtSignal(int)  # frames found (0 = nothing matched)
     library_cleared = pyqtSignal()  # roots forgotten elsewhere — the panel must re-read them
+    rolls_updated = pyqtSignal()  # a roll file renamed a roll, or a roll followed its folder
     first_scene_created = pyqtSignal()  # the loaded roll's first scene: the Film Strip sorts by scene
     stitch_requested = pyqtSignal(object)
     hdr_requested = pyqtSignal(object)
@@ -1579,6 +1580,8 @@ class AppController(QObject):
                 return False
             self.repoint_folder(old_path, new_path)
         rolls.rename_roll(repo, roll_id, f"{prefix}{rolls.ROLL_PATH_SEP}{new_name}" if prefix else new_name)
+        self._mirror_roll(roll_id)
+        self.flush_sidecars()
         return True
 
     def repoint_folder(self, old_path: str, new_path: str) -> None:
@@ -6827,12 +6830,16 @@ class AppController(QObject):
         roll new here adopts it; a newer one waits for the next sidecar offer."""
         active = self.state.active_roll_id
         half_before = self.half_frame_mode_for_roll(active) if active in roll_ids else None
+        repo = self.session.repo
+        names_before = [(rolls.roll_for_id(repo, roll_id) or {}).get("name") for roll_id in roll_ids]
         for roll_id in roll_ids:
-            offer = read_roll_sidecar(self.session.repo, roll_id)
+            offer = read_roll_sidecar(repo, roll_id)
             if offer is not None:
                 self._pending_roll_offers[roll_id] = offer
         if half_before is not None and self.half_frame_mode_for_roll(active) != half_before:
             self.half_frame_mode_changed.emit(not half_before)
+        if names_before != [(rolls.roll_for_id(repo, roll_id) or {}).get("name") for roll_id in roll_ids]:
+            self.rolls_updated.emit()
 
     def _show_sidecar_offers(self, offers: list) -> bool:
         """Ask about *offers*; True when the loaded ones started a re-discovery."""

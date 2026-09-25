@@ -6173,6 +6173,39 @@ class TestLibrarySearch(unittest.TestCase):
             new_path = os.path.join(d, "roll_b")
             self.controller.session.rehome_folder_paths.assert_called_once_with(old_path, new_path)
 
+    def test_request_rename_roll_writes_the_name_to_the_roll_file_only_with_keep_current(self):
+        self._dict_repo()
+        from negpy.services.assets.rolls import recognize_folder
+        from negpy.services.assets.sidecar import load_roll_sidecar, roll_sidecar_path
+
+        with tempfile.TemporaryDirectory() as d:
+            roll_id = recognize_folder(self.controller.session.repo, d)
+            self.controller.state.sidecars_enabled = False
+            self.controller.request_rename_roll(roll_id, "Portra", False)
+            self.assertFalse(os.path.exists(roll_sidecar_path(d)))
+
+            self.controller.state.sidecars_enabled = True
+            self.controller.request_rename_roll(roll_id, "Portra 400", False)
+            self.assertEqual(load_roll_sidecar(d).name, "Portra 400")
+            self.assertIsNone(load_roll_sidecar(d).saved_at)
+
+    def test_a_name_read_from_a_roll_file_reloads_the_library(self):
+        self._dict_repo()
+        from negpy.services.assets.rolls import recognize_folder, roll_for_id
+        from negpy.services.assets.sidecar import RollSidecar, write_roll_sidecar
+
+        with tempfile.TemporaryDirectory() as d:
+            roll_id = recognize_folder(self.controller.session.repo, d)
+            write_roll_sidecar(d, RollSidecar(None, "Portra 400", roll_uid="u1", name_at=5.0))
+            emitted = []
+            self.controller.rolls_updated.connect(lambda: emitted.append(True))
+
+            self.controller._read_roll_sidecars([roll_id])
+            self.controller._read_roll_sidecars([roll_id])
+
+            self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["name"], "Portra 400")
+            self.assertEqual(emitted, [True])
+
     def test_request_rename_roll_disk_failure_leaves_the_display_name_alone(self):
         self._dict_repo()
         from negpy.services.assets.rolls import recognize_folder, roll_for_id
