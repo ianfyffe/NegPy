@@ -6726,14 +6726,18 @@ class AppController(QObject):
 
     def reload_sidecar(self) -> None:
         """Load the current frame's sidecar over its saved edit, whatever its age. A roll file
-        in its folder that differs from the roll here is offered first."""
+        in its folder that differs from the roll here is offered first; loading one that
+        changes Half Frame ends there, since the frame on screen is then re-discovered."""
         asset = self._current_asset()
         if asset is None or asset.get("hdr_paths") or asset.get("stitch_paths"):
             return
+        if rolls.unforked_hash(asset["hash"]) != asset["hash"]:
+            self.set_status("This frame has its own edit in this roll; its sidecar holds the shared edit", 4000, kind="warning")
+            return
         roll_id = rolls.folder_roll_id_for_path(self.session.repo, os.path.dirname(asset["path"]))
         roll_offer = read_roll_sidecar(self.session.repo, roll_id, any_age=True) if roll_id else None
-        if roll_offer is not None:
-            self._show_sidecar_offers([roll_offer])
+        if roll_offer is not None and self._show_sidecar_offers([roll_offer]):
+            return
         sidecar = load_sidecar(asset["path"], int(asset.get("half") or 0))
         if sidecar is None:
             self.set_status("No sidecar next to this frame", 3000, kind="warning")
@@ -6772,19 +6776,21 @@ class AppController(QObject):
         if offers:
             QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))
 
-    def _show_sidecar_offers(self, offers: list) -> None:
+    def _show_sidecar_offers(self, offers: list) -> bool:
+        """Ask about *offers*; True when the loaded ones started a re-discovery."""
         from negpy.desktop.view.widgets.sidecar_reload_dialog import SidecarReloadDialog
 
         dlg = SidecarReloadDialog(offers)
         dlg.exec()
         if dlg.decision is None:
-            return
+            return False
         load = dlg.selected_offers() if dlg.decision == "load" else []
-        self.apply_sidecar_offers(load, [o for o in offers if not any(o is chosen for chosen in load)])
+        return self.apply_sidecar_offers(load, [o for o in offers if not any(o is chosen for chosen in load)])
 
-    def apply_sidecar_offers(self, load: list, keep: list) -> None:
+    def apply_sidecar_offers(self, load: list, keep: list) -> bool:
         """Load the chosen offers and decline the rest. Roll files load first, so a frame
-        whose sidecar does not carry its locks compares against the loaded roll."""
+        whose sidecar does not carry its locks compares against the loaded roll. True when a
+        loaded Half Frame change started a re-discovery of the loaded assets."""
         roll_load = [o for o in load if isinstance(o, RollSidecarOffer)]
         frame_load = [o for o in load if not isinstance(o, RollSidecarOffer)]
         rediscover = False
@@ -6798,7 +6804,7 @@ class AppController(QObject):
             promote_sidecar(self.session.repo, offer.asset["hash"], offer.asset["path"], offer.sidecar)
         decline_sidecar_offers(self.session.repo, keep)
         if not load:
-            return
+            return False
         self.session.refresh_marks()
         if roll_load:
             self.session.refresh_scene_marks()
@@ -6812,6 +6818,7 @@ class AppController(QObject):
         edits = count_of(len(frame_load), "edit")
         what = f"roll settings and {edits}" if roll_load and frame_load else "roll settings" if roll_load else edits
         self.set_status(f"Loaded {what} from sidecars", 4000)
+        return rediscover
 
     def export_edit_sidecars(self) -> None:
         """Write a sidecar for every visible frame with a saved edit (ignores the mirror toggle)."""

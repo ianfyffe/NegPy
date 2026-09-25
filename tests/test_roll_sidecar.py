@@ -401,3 +401,14 @@ def test_a_folder_opened_again_after_its_roll_was_deleted_is_offered_its_roll_fi
     decline_sidecar_offers(a.repo, [offer])
     assert read_roll_sidecar(a.repo, roll_id) is None
     assert rolls.roll_defaults(a.repo, roll_id) == {}
+
+
+def test_a_fork_hash_neither_writes_nor_restores_roll_locks(pair):
+    a, _ = pair
+    fork = rolls.fork_edit(a.repo, a.roll_id, "h2", a.assets[1]["path"], _cfg(hue_trim=7.0))
+    before = rolls.roll_for_id(a.repo, a.roll_id).get("frame_overrides")
+
+    assert sidecar_from_repo(a.repo, fork, a.assets[1]["path"]).roll_locks is None
+    promote_sidecar(a.repo, fork, a.assets[1]["path"], sidecar_from_repo(a.repo, "h1", a.assets[0]["path"]))
+
+    assert rolls.roll_for_id(a.repo, a.roll_id).get("frame_overrides") == before
