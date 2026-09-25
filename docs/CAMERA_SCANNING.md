@@ -75,7 +75,7 @@ automatically. There is no address to type, no login and no pairing.
 camera's *hardware* focus magnifier at that spot. Click again to return to the full frame.
 **Focus** (or `F`) drives the camera's autofocus once and reports whether it locked. A
 tethered body ignores its own shutter button, so this is the way to autofocus without
-unplugging. The button is greyed on a body that offers no autofocus over USB.
+unplugging. The button is grayed on a body that offers no autofocus over USB.
 In white-light and normal (camera-only) scanning, you can set ISO, shutter and aperture
 live from the toolbar. With a calibrated RGB preset those controls are hidden and locked to
 the preset instead (see **Presets**), so the scan cannot drift. A control the body cannot
@@ -174,7 +174,7 @@ is film-dye crosstalk, which the density-domain **Crosstalk** matrix handles (se
   `autofocusdrive`, one write per cycle; Nikon reports "out of focus" as a failure, which
   NegPy shows as a status and keeps the session. Sony exposes `autofocus`, a shutter
   half-press that NegPy holds briefly and releases. Olympus and Panasonic offer only manual
-  drives, so the button stays greyed. Only the Nikon path is verified (D7100); it needs the
+  drives, so the button stays grayed. Only the Nikon path is verified (D7100); it needs the
   lens and the body on AF and the live-view focus mode on AF-S.
 - **The focus magnifier depends on the vendor.** Sony packs the zoom ratio and the target
   point into one property, so a click both magnifies *and* aims. Canon (`eoszoom`) and
