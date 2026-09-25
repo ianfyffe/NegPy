@@ -304,30 +304,45 @@ def _latest(print_at: Optional[float], deleted_at: Optional[float]) -> Optional[
     return (print_at, False) if print_at is not None else None
 
 
+def _extras_to_take(repo, file_hash: str, sidecar: "Sidecar | SidecarScan") -> tuple[bool, Optional[str], dict]:
+    """What of the sidecar's mark and work prints is newer than here, read-only: whether the
+    file's mark wins, the mark here, and {name: ((time, deleted), held here)} for each
+    work-print name whose last save or tombstone in the file beats the one here."""
+    local = repo.load_mark_record(file_hash)
+    mark_wins = sidecar.mark_at is not None and (sidecar.mark_at > local[1] if local else sidecar.mark is not None)
+    take: dict = {}
+    stamps = sidecar.work_print_stamps
+    if stamps or sidecar.deleted_work_prints:
+        held = repo.load_work_print_stamps(file_hash)
+        gone = repo.load_work_print_tombstones(file_hash)
+        for name in {*stamps, *sidecar.deleted_work_prints}:
+            theirs = _latest(stamps.get(name), sidecar.deleted_work_prints.get(name))
+            mine = _latest(held.get(name), gone.get(name))
+            if theirs is not None and (mine is None or theirs > mine):
+                take[name] = (theirs, name in held)
+    return mark_wins, (local[0] if local else None), take
+
+
+def extras_newer(repo, file_hash: str, sidecar: "Sidecar | SidecarScan") -> bool:
+    """Whether ``merge_sidecar_extras`` has anything to take. Reads only."""
+    mark_wins, _, take = _extras_to_take(repo, file_hash, sidecar)
+    return mark_wins or bool(take)
+
+
 def merge_sidecar_extras(repo, file_hash: str, source_path: str, sidecar: "Sidecar | SidecarScan") -> bool:
     """Take the sidecar's mark when dated after the mark here, and for each work-print name
     whatever happened to it last on either side: a save, or a deletion or rename away (a
     tombstone). Never touches the edit. True when the mark or the prints here changed."""
+    mark_wins, local_mark, take = _extras_to_take(repo, file_hash, sidecar)
     changed = False
-    local = repo.load_mark_record(file_hash)
-    newer = sidecar.mark_at is not None and (sidecar.mark_at > local[1] if local else sidecar.mark is not None)
-    if newer:
+    if mark_wins:
         repo.save_file_mark(file_hash, sidecar.mark, file_path=source_path, marked_at=sidecar.mark_at)
-        changed = (local[0] if local else None) != sidecar.mark
-    stamps = sidecar.work_print_stamps
-    if not stamps and not sidecar.deleted_work_prints:
-        return changed
-    held = repo.load_work_print_stamps(file_hash)
-    gone = repo.load_work_print_tombstones(file_hash)
+        changed = local_mark != sidecar.mark
     local_bind: Optional[str] = None
-    for name in {*stamps, *sidecar.deleted_work_prints}:
-        theirs = _latest(stamps.get(name), sidecar.deleted_work_prints.get(name))
-        mine = _latest(held.get(name), gone.get(name))
-        if theirs is None or (mine is not None and theirs <= mine):
-            continue
-        if theirs[1]:
-            repo.delete_work_print(file_hash, name, deleted_at=theirs[0])
-            changed = changed or name in held
+    for name, ((when, deleted), held) in take.items():
+        if deleted:
+            repo.delete_work_print(file_hash, name, deleted_at=when)
+            changed = changed or held
         elif (wp := sidecar.work_print(name)) is not None:
             if local_bind is None:
                 roll_id = _folder_roll(repo, source_path)
@@ -378,22 +393,7 @@ def _is_composite(asset: Dict[str, Any]) -> bool:
 
 def pending_sidecar_offers(repo, assets, reader: Optional["SidecarReader"] = None) -> list[SidecarOffer]:
     """Frames whose sidecar edit was saved after their edit here, minus declined versions."""
-    reader = reader if reader is not None else SidecarReader()
-    declined = repo.get_global_setting(DECLINED_KEY, default=None) or {}
-    offers = []
-    for asset in assets:
-        file_hash, path = asset.get("hash") or "", asset.get("path") or ""
-        if not file_hash or not path or _is_composite(asset) or unforked_hash(file_hash) != file_hash:
-            continue
-        local = repo.load_file_updated_at(file_hash)
-        if local is None:
-            continue
-        scan = reader.scan(path, int(asset.get("half") or 0))
-        if scan is None or not scan.has_edit or scan.saved_at is None or scan.saved_at <= local:
-            continue
-        if declined.get(file_hash) != scan.saved_at and (sidecar := _built(scan, path)) is not None:
-            offers.append(SidecarOffer(asset, sidecar))
-    return offers
+    return offers_from_plan(repo, plan_frame_sidecars(repo, assets, reader if reader is not None else SidecarReader()))
 
 
 def _built(scan: SidecarScan, source_path: str) -> Optional[Sidecar]:
@@ -405,13 +405,11 @@ def _built(scan: SidecarScan, source_path: str) -> Optional[Sidecar]:
 
 
 class SidecarReader:
-    """Sidecar scans for discovery, kept for the session. A file whose (mtime_ns, size) has
-    not changed since it was last read is served from memory, and its mark and work prints
-    are not merged again."""
+    """Sidecar scans kept for the session: a file whose (mtime_ns, size) has not changed
+    since it was last read is served from memory. One thread owns an instance."""
 
     def __init__(self) -> None:
         self._scans: Dict[str, tuple[tuple[int, int], Optional[SidecarScan]]] = {}
-        self._merged: Dict[str, tuple[int, int]] = {}
 
     def scan(self, source_path: str, half: int = 0) -> Optional[SidecarScan]:
         path = sidecar_path_for(source_path, half)
@@ -433,17 +431,88 @@ class SidecarReader:
         self._scans[path] = (stamp, scan)
         return scan
 
-    def merge_due(self, source_path: str, half: int = 0) -> bool:
-        """Whether the scanned file changed since its mark and work prints were last merged."""
-        path = sidecar_path_for(source_path, half)
-        hit = self._scans.get(path)
-        return hit is None or self._merged.get(path) != hit[0]
 
-    def merged(self, source_path: str, half: int = 0) -> None:
-        path = sidecar_path_for(source_path, half)
-        hit = self._scans.get(path)
-        if hit is not None:
-            self._merged[path] = hit[0]
+@dataclass
+class SidecarPlan:
+    """What a folder's sidecars hold that this computer lacks, as (asset, sidecar) pairs:
+    edits to fill, newer marks or work prints to merge, newer edits to offer. Found without
+    a DB write, so it can be built off the UI thread; ``apply_sidecar_plan`` and
+    ``offers_from_plan`` check each entry again against the DB."""
+
+    fill: list[tuple[Dict[str, Any], Sidecar]] = field(default_factory=list)
+    merge: list[tuple[Dict[str, Any], Sidecar]] = field(default_factory=list)
+    offer: list[tuple[Dict[str, Any], Sidecar]] = field(default_factory=list)
+
+
+def plan_frame_sidecars(repo, assets, reader: SidecarReader, is_cancelled: Callable[[], bool] = lambda: False) -> Optional[SidecarPlan]:
+    """Read each frame's sidecar and compare it with the DB, reading only. None when
+    *is_cancelled* turns true. Builds a config only for an entry of the plan.
+
+    A frame with no edit here fills from its file, except where a path match resolves it
+    first. Any other frame, a roll fork included, merges into the shared hash; a frame with
+    an older edit here is offered the file's. A composite has no sidecar of its own.
+    """
+    plan = SidecarPlan()
+    for asset in assets:
+        if is_cancelled():
+            return None
+        file_hash, path = asset.get("hash") or "", asset.get("path") or ""
+        if not file_hash or not path or _is_composite(asset):
+            continue
+        half = int(asset.get("half") or 0)
+        scan = reader.scan(path, half)
+        if scan is None:
+            continue
+        shared = unforked_hash(file_hash)
+        local_at = repo.load_file_updated_at(file_hash) if shared == file_hash else None
+        unedited = shared == file_hash and local_at is None
+        if unedited and not half and repo.has_settings_for_path(path):
+            continue
+        if unedited and scan.has_edit:
+            if (sidecar := _built(scan, path)) is not None:
+                plan.fill.append((asset, sidecar))
+            continue
+        newer_edit = local_at is not None and scan.has_edit and scan.saved_at is not None and scan.saved_at > local_at
+        takes_extras = extras_newer(repo, shared, scan)
+        if (newer_edit or takes_extras) and (sidecar := _built(scan, path)) is not None:
+            if takes_extras:
+                plan.merge.append((asset, sidecar))
+            if newer_edit:
+                plan.offer.append((asset, sidecar))
+    return plan
+
+
+def apply_sidecar_plan(repo, plan: SidecarPlan) -> tuple[list[str], list[str]]:
+    """Write the plan's fills and merges. Returns (hashes whose edit was filled, hashes that
+    took only a newer mark or work print). A frame that took an edit since the plan was
+    made, as opening it does, merges instead of filling; a merge that is no longer newer
+    writes nothing."""
+    filled: list[str] = []
+    merged: list[str] = []
+    for asset, sidecar in plan.fill:
+        file_hash, path = asset["hash"], asset["path"]
+        if repo.load_file_updated_at(file_hash) is None:
+            promote_sidecar(repo, file_hash, path, sidecar)
+            filled.append(file_hash)
+        elif merge_sidecar_extras(repo, file_hash, path, sidecar):
+            merged.append(file_hash)
+    for asset, sidecar in plan.merge:
+        shared = unforked_hash(asset["hash"])
+        if merge_sidecar_extras(repo, shared, asset["path"], sidecar) and shared not in merged:
+            merged.append(shared)
+    return filled, merged
+
+
+def offers_from_plan(repo, plan: SidecarPlan) -> list[SidecarOffer]:
+    """The plan's newer edits still newer than the edit here, minus declined versions."""
+    declined = repo.get_global_setting(DECLINED_KEY, default=None) or {}
+    offers = []
+    for asset, sidecar in plan.offer:
+        local = repo.load_file_updated_at(asset["hash"])
+        saved_at = sidecar.saved_at
+        if local is not None and saved_at is not None and saved_at > local and declined.get(asset["hash"]) != saved_at:
+            offers.append(SidecarOffer(asset, sidecar))
+    return offers
 
 
 def _offer_key(offer) -> str:
@@ -568,39 +637,9 @@ def read_roll_sidecar(repo, roll_id: str, any_age: bool = False) -> Optional[Rol
 
 
 def read_frame_sidecars(repo, assets, reader: Optional[SidecarReader] = None) -> tuple[list[str], list[str]]:
-    """Load each frame's sidecar where it cannot overwrite a newer state here. Returns
-    (hashes whose edit was filled, hashes that took only a newer mark or work print).
-
-    A frame with no edit here promotes it, as ``load_or_promote`` would, except where a path
-    match resolves it first. A frame with an edit, or opened through a roll fork, merges the
-    mark and work prints into the shared hash. A composite has no sidecar of its own.
-    """
-    reader = reader if reader is not None else SidecarReader()
-    filled: list[str] = []
-    merged: list[str] = []
-    for asset in assets:
-        file_hash, path = asset.get("hash") or "", asset.get("path") or ""
-        if not file_hash or not path or _is_composite(asset):
-            continue
-        half = int(asset.get("half") or 0)
-        shared = unforked_hash(file_hash)
-        unedited = shared == file_hash and repo.load_file_updated_at(file_hash) is None
-        if unedited and not half and repo.has_settings_for_path(path):
-            continue
-        scan = reader.scan(path, half)
-        if scan is None:
-            continue
-        if unedited and scan.has_edit:
-            sidecar = _built(scan, path)
-            if sidecar is not None:
-                promote_sidecar(repo, file_hash, path, sidecar)
-                filled.append(file_hash)
-                reader.merged(path, half)
-        elif reader.merge_due(path, half):
-            if merge_sidecar_extras(repo, shared, path, scan):
-                merged.append(shared)
-            reader.merged(path, half)
-    return filled, merged
+    """Plan and apply in one call (``plan_frame_sidecars``, ``apply_sidecar_plan``)."""
+    plan = plan_frame_sidecars(repo, assets, reader if reader is not None else SidecarReader())
+    return apply_sidecar_plan(repo, plan) if plan is not None else ([], [])
 
 
 def load_or_promote(
