@@ -835,3 +835,23 @@ def test_a_folder_that_still_seems_to_be_there_waits_for_the_next_refresh(tmp_pa
     stale.rmdir()
     _refresh_library(b)
     assert rolls.folder_roll_id_for_path(b.repo, os.path.join(os.path.dirname(b.folder), "roll_best")) == b.roll_id
+
+
+def test_a_roll_file_that_cannot_be_read_is_never_written_over(tmp_path):
+    """A file mid-sync, cut short or locked may hold newer state than any write here."""
+    a, b = _nas(tmp_path)
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    _mirror_roll(a)
+    path = roll_sidecar_path(a.folder)
+    with open(path, "rb") as f:
+        good = f.read()
+    with open(path, "wb") as f:
+        f.write(good[: len(good) // 2])
+
+    rolls.rename_roll(b.repo, b.roll_id, "B name")
+    rolls.set_roll_defaults(b.repo, b.roll_id, hue_trim=6.0)
+    _mirror_roll(b)
+    assert export_roll_sidecar(b.repo, b.roll_id) is None
+
+    with open(path, "rb") as f:
+        assert f.read() == good[: len(good) // 2]
