@@ -987,7 +987,7 @@ A `.negpy` sidecar is a plain-file copy of one frame's edit, mark and work print
 
 Sidecars carry an edit between computers. A frame with no edit here loads its sidecar on open, and the status bar reports how many did. When a folder holds sidecars saved after the edits here, one dialog lists them: **Load Selected** replaces those edits, **Keep Mine** leaves them and does not ask again for those versions. **Reload from Sidecar** (right-click the canvas) loads the frame's sidecar whatever its age, after offering the folder's roll file when it differs from the roll here. The newer copy wins by its saved time, so keep both computers' clocks close.
 
-A folder roll also has a `.negpy-roll` file in its folder with its card defaults, scenes, Roll Analysis baselines and Half Frame setting. Keep Current and Export Sidecars write it, and each frame's sidecar records which cards the frame locks, so the roll looks the same on the other computer. A roll new to a computer takes the file without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
+A folder roll also has a `.negpy-roll` file in its folder with its card defaults, scenes, Roll Analysis baselines and Half Frame setting. Keep Current and Export Sidecars write it, and each frame's sidecar records which cards the frame locks, so the roll looks the same on the other computer. The file is read each time the roll's frames load, a restored session included. A roll new to a computer takes the file without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
 
 <!-- panel:contact_sheet -->
 #### Contact Sheet

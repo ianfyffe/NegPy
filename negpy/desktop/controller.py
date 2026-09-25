@@ -931,7 +931,7 @@ class AppController(QObject):
         self.session.frames_saved.connect(self._mirror_sidecars_for)
         self.session.locks_changed.connect(self._mirror_sidecars_for)
         self.session.active_file_changing.connect(self.flush_sidecars)
-        self._pending_roll_offers: List[RollSidecarOffer] = []
+        self._pending_roll_offers: Dict[str, RollSidecarOffer] = {}
 
     def generate_missing_thumbnails(self) -> None:
         missing = [f for f in self.state.uploaded_files if asset_thumbnail_key(f) not in self.state.thumbnails]
@@ -1385,6 +1385,7 @@ class AppController(QObject):
         self.thumb_worker.cancel_pending()
         self.thumbnail_cancel_requested.emit()
         self._announce_rgb = announce_rgb
+        self._read_roll_sidecars(rolls.folder_rolls_holding(self.session.repo, paths))
         active_roll_id = self.state.active_roll_id
         request = _DiscoveryRequest(
             paths=tuple(paths),
@@ -1501,7 +1502,6 @@ class AppController(QObject):
             # Recognizing every opened folder is independent of which one, if any,
             # becomes the active roll -- that only makes sense for a single one.
             recognized = [rolls.recognize_folder(self.session.repo, f) for f in present]
-            self._read_roll_sidecars(recognized)
             self.state.active_roll_id = recognized[0] if len(recognized) == 1 else None
             self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(self.state.active_roll_id))
             self._register_library_roots(present)
@@ -1529,7 +1529,6 @@ class AppController(QObject):
         if not paths:
             self.set_status("This roll has no frames", 3000)
             return
-        self._read_roll_sidecars([roll_id])
         self.state.active_roll_id = roll_id
         self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(roll_id))
         self.request_asset_discovery(paths, auto_open=True, replace_existing=True)
@@ -6755,15 +6754,21 @@ class AppController(QObject):
     def _read_roll_sidecars(self, roll_ids: List[str]) -> None:
         """Read each folder roll's file before discovery, which its half-frame mode steers. A
         roll new here adopts it; a newer one waits for the next sidecar offer."""
-        offers = [read_roll_sidecar(self.session.repo, roll_id) for roll_id in roll_ids]
-        self._pending_roll_offers = [o for o in offers if o is not None]
+        active = self.state.active_roll_id
+        half_before = self.half_frame_mode_for_roll(active) if active in roll_ids else None
+        for roll_id in roll_ids:
+            offer = read_roll_sidecar(self.session.repo, roll_id)
+            if offer is not None:
+                self._pending_roll_offers[roll_id] = offer
+        if half_before is not None and self.half_frame_mode_for_roll(active) != half_before:
+            self.half_frame_mode_changed.emit(not half_before)
 
     def _offer_newer_sidecars(self, assets: List[Dict]) -> None:
         """Once per folder open: newer roll files, and frames whose sidecar was saved after
         their edit here, get one dialog. A declined version is not offered again; a closed
         dialog asks next time."""
-        offers = [*self._pending_roll_offers, *pending_sidecar_offers(self.session.repo, assets)]
-        self._pending_roll_offers = []
+        offers = [*self._pending_roll_offers.values(), *pending_sidecar_offers(self.session.repo, assets)]
+        self._pending_roll_offers = {}
         if offers:
             QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))
 
