@@ -33,6 +33,7 @@ DISMISSED_FOLDERS_KEY = "dismissed_folder_rolls"
 ROLL_PATH_SEP = "/"
 DISCOVERY_FILTERS_KEY = "roll_discovery_filters"
 HALF_FRAME_MODE_KEY = "half_frame_mode_by_roll"
+TRICHROME_MODE_KEY = "rgbscan_mode_by_roll"
 DEFAULT_DISCOVERY_FILTERS = ("export",)
 _FORK_SEP = "#roll:"
 
@@ -52,7 +53,7 @@ def _stamp(entry: dict, when: Optional[float] = None) -> None:
 
 
 def touch_roll(repo: Any, roll_id: str, when: Optional[float] = None) -> None:
-    """Date a change to roll state stored outside the roll entry (its half-frame mode)."""
+    """Date a change to roll state stored outside the roll entry (its Half Frame and Trichrome modes)."""
     store = _read(repo)
     entry = store.get(roll_id)
     if entry is not None:
@@ -126,11 +127,21 @@ def roll_half_frame_mode(repo: Any, roll_id: str) -> bool:
     return bool(by_roll.get(roll_id, False)) if isinstance(by_roll, dict) else False
 
 
+def roll_trichrome_mode(repo: Any, roll_id: str) -> bool:
+    by_roll = repo.get_global_setting(TRICHROME_MODE_KEY, default=None)
+    return bool(by_roll.get(roll_id, False)) if isinstance(by_roll, dict) else False
+
+
+def _set_roll_mode(repo: Any, key: str, roll_id: str, enabled: bool) -> None:
+    by_roll = repo.get_global_setting(key, default=None)
+    repo.save_global_setting(key, {**(by_roll if isinstance(by_roll, dict) else {}), roll_id: bool(enabled)})
+
+
 def has_portable_state(repo: Any, roll_id: str) -> bool:
     """Whether the roll holds anything its roll file would replace."""
     entry = roll_for_id(repo, roll_id) or {}
-    by_roll = repo.get_global_setting(HALF_FRAME_MODE_KEY, default=None)
-    return any(entry.get(k) for k in PORTABLE_FIELDS) or (isinstance(by_roll, dict) and roll_id in by_roll)
+    modes = (repo.get_global_setting(key, default=None) for key in (HALF_FRAME_MODE_KEY, TRICHROME_MODE_KEY))
+    return any(entry.get(k) for k in PORTABLE_FIELDS) or any(isinstance(by_roll, dict) and roll_id in by_roll for by_roll in modes)
 
 
 def adopts_roll_file(repo: Any, roll_id: str) -> bool:
@@ -140,8 +151,11 @@ def adopts_roll_file(repo: Any, roll_id: str) -> bool:
     return roll_updated_at(repo, roll_id) is None and not has_portable_state(repo, roll_id) and not entry.get("recognized_after_delete")
 
 
-def replace_portable_state(repo: Any, roll_id: str, values: Dict[str, Any], half_frame_mode: bool, updated_at: float) -> None:
-    """Replace what a roll file carries, stamped with the file's time so it reads as current."""
+def replace_portable_state(
+    repo: Any, roll_id: str, values: Dict[str, Any], half_frame_mode: bool, updated_at: float, trichrome_mode: Optional[bool] = None
+) -> None:
+    """Replace what a roll file carries, stamped with the file's time so it reads as current.
+    A *trichrome_mode* of None is a file that does not carry it, and leaves the mode here."""
     store = _read(repo)
     entry = store.get(roll_id)
     if entry is None:
@@ -153,8 +167,9 @@ def replace_portable_state(repo: Any, roll_id: str, values: Dict[str, Any], half
             entry.pop(key, None)
     _stamp(entry, updated_at)
     _write(repo, store)
-    by_roll = repo.get_global_setting(HALF_FRAME_MODE_KEY, default=None)
-    repo.save_global_setting(HALF_FRAME_MODE_KEY, {**(by_roll if isinstance(by_roll, dict) else {}), roll_id: bool(half_frame_mode)})
+    _set_roll_mode(repo, HALF_FRAME_MODE_KEY, roll_id, half_frame_mode)
+    if trichrome_mode is not None:
+        _set_roll_mode(repo, TRICHROME_MODE_KEY, roll_id, trichrome_mode)
 
 
 def saved_rolls(repo: Any) -> Dict[str, dict]:

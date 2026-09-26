@@ -20,6 +20,7 @@ from negpy.services.assets.sidecar import (
     ROLL_SIDECAR_NAME,
     RollSidecarOffer,
     SidecarMirror,
+    adopt_roll_sidecar,
     decline_sidecar_offers,
     export_roll_sidecar,
     load_roll_sidecar,
@@ -179,6 +180,37 @@ def test_half_frame_mode_crosses_machines(tmp_path):
     read_roll_sidecar(b.repo, b.roll_id)
 
     assert rolls.roll_half_frame_mode(b.repo, b.roll_id)
+
+
+def test_trichrome_mode_crosses_machines(tmp_path):
+    a, b = _machine(tmp_path, "a"), _machine(tmp_path, "b")
+    a.repo.save_global_setting(rolls.TRICHROME_MODE_KEY, {a.roll_id: True})
+    rolls.touch_roll(a.repo, a.roll_id)
+    export_roll_sidecar(a.repo, a.roll_id)
+    _copy_sidecars(a, b)
+
+    read_roll_sidecar(b.repo, b.roll_id)
+
+    assert rolls.roll_trichrome_mode(b.repo, b.roll_id)
+
+
+def test_a_roll_file_without_trichrome_mode_leaves_the_mode_here(tmp_path):
+    a, b = _machine(tmp_path, "a"), _machine(tmp_path, "b")
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    export_roll_sidecar(a.repo, a.roll_id)
+    with open(roll_sidecar_path(a.folder)) as f:
+        data = json.load(f)
+    del data["trichrome_mode"]
+    with open(roll_sidecar_path(b.folder), "w") as f:
+        json.dump(data, f)
+    b.repo.save_global_setting(rolls.TRICHROME_MODE_KEY, {b.roll_id: True})
+
+    offer = read_roll_sidecar(b.repo, b.roll_id, any_age=True)
+    assert offer is not None and offer.sidecar.trichrome_mode is None
+    adopt_roll_sidecar(b.repo, b.roll_id, offer.sidecar)
+
+    assert rolls.roll_defaults(b.repo, b.roll_id) == {"hue_trim": 2.0}
+    assert rolls.roll_trichrome_mode(b.repo, b.roll_id)
 
 
 def test_scenes_and_their_baselines_match_by_hash(pair):

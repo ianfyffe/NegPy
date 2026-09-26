@@ -537,7 +537,8 @@ def decline_sidecar_offers(repo, offers) -> None:
 @dataclass(frozen=True)
 class RollSidecar:
     """One folder roll's ``.negpy-roll`` file. ``state`` holds ``rolls.PORTABLE_FIELDS``;
-    ``saved_at`` is None for a file that carries only the roll's identity and name."""
+    ``saved_at`` is None for a file that carries only the roll's identity and name, and
+    ``trichrome_mode`` None for a file written before it carried one."""
 
     saved_at: Optional[float]
     name: str = ""
@@ -546,6 +547,7 @@ class RollSidecar:
     roll_uid: str = ""
     name_at: Optional[float] = None
     former_names: tuple = ()
+    trichrome_mode: Optional[bool] = None
 
 
 class RollSidecarOffer(NamedTuple):
@@ -571,6 +573,7 @@ def _roll_payload(sidecar: RollSidecar) -> Dict[str, Any]:
         "name_at": sidecar.name_at,
         "former_names": list(sidecar.former_names),
         "half_frame_mode": sidecar.half_frame_mode,
+        **({"trichrome_mode": sidecar.trichrome_mode} if sidecar.trichrome_mode is not None else {}),
         **{key: sidecar.state.get(key) for key in rolls.PORTABLE_FIELDS},
     }
 
@@ -600,6 +603,7 @@ def load_roll_sidecar(folder: str) -> Optional[RollSidecar]:
         roll_uid=str(data.get("roll_uid") or ""),
         name_at=_time(data.get("name_at")),
         former_names=_names(data.get("former_names")),
+        trichrome_mode=data["trichrome_mode"] if saved_at is not None and isinstance(data.get("trichrome_mode"), bool) else None,
     )
 
 
@@ -632,7 +636,8 @@ def plan_roll_file_write(repo, roll_id: str, on_disk: Optional[Dict[str, Any]]) 
         else:
             state = {key: entry[key] for key in rolls.PORTABLE_FIELDS if entry.get(key)}
             half = rolls.roll_half_frame_mode(repo, roll_id)
-            payload = _roll_payload(RollSidecar(local_at, name, half, state, uid, name_at, former))
+            trichrome = rolls.roll_trichrome_mode(repo, roll_id)
+            payload = _roll_payload(RollSidecar(local_at, name, half, state, uid, name_at, former, trichrome))
     else:
         if not copy and (name_at is None or name_at == file_name_at):
             name, name_at = file.get("name"), file.get("name_at")
@@ -732,7 +737,7 @@ def adopt_roll_sidecar(repo, roll_id: str, sidecar: RollSidecar) -> None:
     """Make the file this roll's state, and take its identity and newer name."""
     take_roll_file_identity(repo, roll_id, sidecar)
     if sidecar.saved_at is not None:
-        rolls.replace_portable_state(repo, roll_id, sidecar.state, sidecar.half_frame_mode, sidecar.saved_at)
+        rolls.replace_portable_state(repo, roll_id, sidecar.state, sidecar.half_frame_mode, sidecar.saved_at, sidecar.trichrome_mode)
 
 
 def read_roll_sidecar(repo, roll_id: str, any_age: bool = False) -> Optional[RollSidecarOffer]:

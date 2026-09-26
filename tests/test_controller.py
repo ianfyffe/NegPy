@@ -401,6 +401,19 @@ class TestAppController(unittest.TestCase):
         self.assertEqual(store["rgbscan_mode_by_roll"], {"r1": True})
         self.assertNotIn("rgbscan_mode", store)
 
+    def test_set_rgb_scan_mode_dates_the_roll_only_when_the_mode_changes(self):
+        store = self._fake_settings_store()
+        store["rgbscan_mode_by_roll"] = {"r1": True}
+        self.controller.state.active_roll_id = "r1"
+        self.controller.session.state.uploaded_files = []
+        with patch("negpy.desktop.controller.rolls") as mock_rolls:
+            mock_rolls.TRICHROME_MODE_KEY = "rgbscan_mode_by_roll"
+            self.controller.set_rgb_scan_mode(True)
+            mock_rolls.touch_roll.assert_not_called()
+            self.controller.set_rgb_scan_mode(False)
+            mock_rolls.touch_roll.assert_called_once_with(self.controller.session.repo, "r1")
+        self.assertEqual(store["rgbscan_mode_by_roll"], {"r1": False})
+
     def test_open_roll_emits_and_discovers_with_that_rolls_own_trichrome_state(self):
         store = self._fake_settings_store()
         store["rgbscan_mode"] = True

@@ -1694,7 +1694,7 @@ class AppController(QObject):
         self.session.asset_model.clear_filters()
         self.request_asset_discovery(paths, auto_open=True, replace_existing=True)
 
-    _TRICHROME_MODE_BY_ROLL_KEY = "rgbscan_mode_by_roll"
+    _TRICHROME_MODE_BY_ROLL_KEY = rolls.TRICHROME_MODE_KEY
 
     def trichrome_mode_for_roll(self, roll_id: Optional[str]) -> bool:
         """The Trichrome toggle's state for *roll_id*. Each roll remembers its own, off until
@@ -1708,8 +1708,12 @@ class AppController(QObject):
         roll_id = self.state.active_roll_id
         if roll_id:
             by_roll = dict(self.session.repo.get_global_setting(self._TRICHROME_MODE_BY_ROLL_KEY, default=None) or {})
+            if roll_id in by_roll and by_roll[roll_id] == bool(enabled):
+                return  # every capture saves the mode; an unchanged one must not date the roll file
             by_roll[roll_id] = bool(enabled)
             self.session.repo.save_global_setting(self._TRICHROME_MODE_BY_ROLL_KEY, by_roll)
+            rolls.touch_roll(self.session.repo, roll_id)
+            self._mirror_roll(roll_id)
         else:
             self.session.repo.save_global_setting("rgbscan_mode", bool(enabled))
 
@@ -6911,10 +6915,11 @@ class AppController(QObject):
             QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))
 
     def _read_roll_sidecars(self, roll_ids: List[str]) -> None:
-        """Read each folder roll's file before discovery, which its half-frame mode steers. A
-        roll new here adopts it; a newer one waits for the next sidecar offer."""
+        """Read each folder roll's file before discovery, which its Half Frame and Trichrome
+        modes steer. A roll new here adopts it; a newer one waits for the next sidecar offer."""
         active = self.state.active_roll_id
         half_before = self.half_frame_mode_for_roll(active) if active in roll_ids else None
+        trichrome_before = self.trichrome_mode_for_roll(active) if active in roll_ids else None
         repo = self.session.repo
         names_before = [(rolls.roll_for_id(repo, roll_id) or {}).get("name") for roll_id in roll_ids]
         for roll_id in roll_ids:
@@ -6923,6 +6928,8 @@ class AppController(QObject):
                 self._pending_roll_offers[roll_id] = offer
         if half_before is not None and self.half_frame_mode_for_roll(active) != half_before:
             self.half_frame_mode_changed.emit(not half_before)
+        if trichrome_before is not None and self.trichrome_mode_for_roll(active) != trichrome_before:
+            self.rgb_scan_mode_changed.emit(not trichrome_before)
         if names_before != [(rolls.roll_for_id(repo, roll_id) or {}).get("name") for roll_id in roll_ids]:
             self.rolls_updated.emit()
 
@@ -6940,15 +6947,20 @@ class AppController(QObject):
     def apply_sidecar_offers(self, load: list, keep: list) -> bool:
         """Load the chosen offers and decline the rest. Roll files load first, so a frame
         whose sidecar does not carry its locks compares against the loaded roll. True when a
-        loaded Half Frame change started a re-discovery of the loaded assets."""
+        loaded Half Frame or Trichrome change started a re-discovery of the loaded assets."""
         roll_load = [o for o in load if isinstance(o, RollSidecarOffer)]
         frame_load = [o for o in load if not isinstance(o, RollSidecarOffer)]
         rediscover = False
         for offer in roll_load:
             before = self.half_frame_mode_for_roll(offer.roll_id)
+            trichrome_before = self.trichrome_mode_for_roll(offer.roll_id)
             adopt_roll_sidecar(self.session.repo, offer.roll_id, offer.sidecar)
             if offer.roll_id == self.state.active_roll_id and offer.sidecar.half_frame_mode != before:
                 self.half_frame_mode_changed.emit(offer.sidecar.half_frame_mode)
+                rediscover = True
+            trichrome = self.trichrome_mode_for_roll(offer.roll_id)
+            if offer.roll_id == self.state.active_roll_id and trichrome != trichrome_before:
+                self.rgb_scan_mode_changed.emit(trichrome)
                 rediscover = True
         for offer in frame_load:
             promote_sidecar(self.session.repo, offer.asset["hash"], offer.asset["path"], offer.sidecar)
