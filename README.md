@@ -16,7 +16,7 @@ NegPy turns scans of film negatives and slides into finished pictures. I wrote i
 
 It is written in Python and runs on Linux, macOS and Windows.
 
-![NegPy main window](docs/media/0600.png)
+![NegPy main window](docs/media/0620.png)
 
 The [User Guide](docs/USER_GUIDE.md) covers every panel and control. The same text opens inside the app from the ⓘ on each panel. [PIPELINE.md](docs/PIPELINE.md) explains the math.
 
