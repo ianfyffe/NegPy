@@ -127,6 +127,23 @@ class TestAppController(unittest.TestCase):
         self.assertEqual(args[0], "half_frame_overrides")
         self.assertEqual(args[1], {"h1": {"crop_rect": [0.05, 0.0, 0.95, 1.0], "split_x": 0.42, "gutter_thickness": 0.01}})
 
+    def test_half_frame_override_saves_numpy_crop_values_as_floats(self):
+        import numpy as np
+
+        self.controller.session.repo.get_global_setting.return_value = None
+        self.controller.save_half_frame_override("h1", (np.float32(0.25), 0.0, np.float32(0.75), 1.0), 0.5, 0.0)
+        args, _ = self.controller.session.repo.save_global_setting.call_args
+        self.assertTrue(all(type(v) is float for v in args[1]["h1"]["crop_rect"]))
+
+    def test_half_frame_geometry_reads_a_crop_saved_as_strings(self):
+        self.controller.session.repo.get_global_setting.side_effect = lambda key, default=None: (
+            {"h1": {"crop_rect": ["0.25", 0.0, "0.75", 1.0], "split_x": 0.5, "gutter_thickness": 0.0}}
+            if key == "half_frame_overrides"
+            else None
+        )
+        geom = self.controller._half_frame_geometry_for("h1")
+        self.assertEqual(geom.crop_rect, (0.25, 0.0, 0.75, 1.0))
+
     def test_clear_half_frame_override_only_writes_when_present(self):
         self.controller.session.repo.get_global_setting.return_value = {"h1": {"split_x": 0.4}}
         self.controller.clear_half_frame_override("h1")
@@ -636,6 +653,37 @@ class TestAppController(unittest.TestCase):
         self.controller.request_render.assert_called_once_with()
         self.controller._schedule_prefetch_neighbors.assert_not_called()
         self.assertEqual(self.controller._neighbor_prefetch_generation, self.controller._prefetch_gen)
+
+    def test_vram_capped_message_shown_when_the_setting_is_on(self):
+        self.controller._requested_file_path = "scan.arw"
+        self.controller.session.repo.get_global_setting.return_value = True
+        self.controller.set_status = MagicMock()
+
+        self.controller._on_hq_preview_vram_capped("scan.arw", 6144)
+
+        self.controller.set_status.assert_called_once()
+
+    def test_vram_capped_message_hidden_when_the_setting_is_off(self):
+        """The status message is optional; the downsampling that triggered it (see
+        preview_manager._load_from_open_raw) is not affected by this setting at all."""
+        self.controller._requested_file_path = "scan.arw"
+        self.controller.session.repo.get_global_setting.return_value = False
+        self.controller.set_status = MagicMock()
+
+        self.controller._on_hq_preview_vram_capped("scan.arw", 6144)
+
+        self.controller.set_status.assert_not_called()
+
+    def test_vram_capped_message_hidden_when_gpu_acceleration_is_off(self):
+        """A CPU render never touches the capped GPU texture, so the message is moot."""
+        self.controller._requested_file_path = "scan.arw"
+        self.controller.state.gpu_enabled = False
+        self.controller.session.repo.get_global_setting.return_value = True
+        self.controller.set_status = MagicMock()
+
+        self.controller._on_hq_preview_vram_capped("scan.arw", 6144)
+
+        self.controller.set_status.assert_not_called()
 
     def test_foreground_render_queue_blocks_neighbor_prefetch(self):
         self.controller._foreground_preview_generation = None
@@ -1394,6 +1442,45 @@ class TestAppController(unittest.TestCase):
         self.assertEqual(rolls.roll_defaults(self.controller.session.repo, roll_id)["hue_trim"], 2.5)
         self.assertEqual(rolls.frame_override_cards(self.controller.session.repo, roll_id, "h1"), {"autocrop"})
 
+    def test_cast_removal_is_its_own_roll_card(self):
+        from negpy.services.assets import rolls
+
+        self._wire_repo_store()
+        roll_id = rolls.create_virtual_roll(self.controller.session.repo, "Portra", [])
+        state = self.mock_session_manager.state
+        state.active_roll_id = roll_id
+        state.uploaded_files = [{"name": "a.dng", "path": "/a.dng", "hash": "h1"}]
+        state.current_file_hash = "h1"
+
+        self.controller.set_roll_default("cast_removal", cast_removal_strength=0.3)
+
+        self.assertEqual(rolls.frame_override_cards(self.controller.session.repo, roll_id, "h1"), {"cast_removal"})
+        cfg, _kwargs = self.mock_session_manager.update_config.call_args
+        self.assertEqual(cfg[0].exposure.cast_removal_strength, 0.3)
+
+    def test_pushing_film_mode_carries_the_rolls_cast_removal(self):
+        """The roll's strength overlays after its mode, so a negative's default left in
+        place would reach every frame of a roll pushed to Slide."""
+        from negpy.features.process.models import ProcessMode
+        from negpy.services.assets import rolls
+
+        self._wire_repo_store()
+        repo = self.controller.session.repo
+        roll_id = rolls.create_virtual_roll(repo, "Ektachrome", [])
+        rolls.set_roll_defaults(repo, roll_id, process_mode=ProcessMode.C41, cast_removal_strength=1.0)
+        rolls.set_frame_override(repo, roll_id, "h1", "film", locked=True)
+        state = self.mock_session_manager.state
+        state.active_roll_id = roll_id
+        state.uploaded_files = [{"name": "a.dng", "path": "/a.dng", "hash": "h1"}]
+        state.current_file_hash = "h1"
+        state.config = replace(state.config, process=replace(state.config.process, process_mode=ProcessMode.E6))
+
+        self.controller.apply_roll_card("film")
+
+        defaults = rolls.roll_defaults(repo, roll_id)
+        self.assertEqual(defaults["process_mode"], ProcessMode.E6)
+        self.assertEqual(defaults["cast_removal_strength"], 0.0)
+
     def test_apply_roll_card_refreshes_the_thumbnails_of_frames_that_follow_the_roll(self):
         """A frame locked on the pushed card keeps its own value, so it is neither
         flagged stale nor re-rendered."""
@@ -1757,6 +1844,23 @@ class TestAppController(unittest.TestCase):
 
         self.assertEqual(rolls.frame_override_cards(self.controller.session.repo, roll_id, "h1"), {"sensor"})
         self.assertTrue(self.controller.roll_card_locked("sensor"))
+
+    def test_switching_film_mode_on_a_roll_with_no_frame_loaded(self):
+        """A lock belongs to a physical frame. An active roll holding no loaded frame
+        still reaches every card edit, so the settle must find nothing to lock rather
+        than key a lock on a missing hash."""
+        from negpy.services.assets import rolls
+
+        self._wire_repo_store()
+        roll_id = rolls.create_virtual_roll(self.controller.session.repo, "Portra", [])
+        state = self.mock_session_manager.state
+        state.active_roll_id = roll_id
+        state.current_file_hash = None
+
+        self.controller.set_process_mode("c41")
+        self.controller.set_roll_default("sensor", hue_trim=4.0)
+
+        self.assertEqual(rolls.frame_override_cards(self.controller.session.repo, roll_id, ""), set())
 
     def test_thumbnail_miss_does_not_mark_source_unreadable(self):
         from PIL import Image
@@ -4654,30 +4758,11 @@ class TestRetouchPersistence(unittest.TestCase):
         saved = self.mock_session_manager.update_config.call_args.args[0]
         self.assertEqual(saved.retouch.manual_heal_strokes, [])
 
-    def test_cycle_dust_overlay_with_ir(self):
-        self.controller.state.has_ir = True
-        self.controller.state.dust_overlay_mode = "off"
-        seq = []
-        for _ in range(5):
-            self.controller.cycle_dust_overlay()
-            seq.append(self.controller.state.dust_overlay_mode)
-        self.assertEqual(seq, ["marked", "ir", "off", "marked", "ir"])
-
-    def test_cycle_dust_overlay_skips_ir_without_ir(self):
-        self.controller.state.has_ir = False
-        self.controller.state.dust_overlay_mode = "off"
-        seq = []
-        for _ in range(4):
-            self.controller.cycle_dust_overlay()
-            seq.append(self.controller.state.dust_overlay_mode)
-        self.assertEqual(seq, ["marked", "off", "marked", "off"])
-
-    def test_cycle_dust_overlay_from_ir_when_ir_lost(self):
-        # Mode was "ir" but the new frame has none: cycling treats it as off.
-        self.controller.state.has_ir = False
-        self.controller.state.dust_overlay_mode = "ir"
-        self.controller.cycle_dust_overlay()
-        self.assertEqual(self.controller.state.dust_overlay_mode, "marked")
+    def test_set_dust_overlay_sets_the_mode_and_repaints(self):
+        seen = []
+        self.controller.dust_overlay_changed.connect(lambda: seen.append(self.controller.state.dust_overlay_mode))
+        self.controller.set_dust_overlay("marked")
+        self.assertEqual(seen, ["marked"])
 
 
 if __name__ == "__main__":

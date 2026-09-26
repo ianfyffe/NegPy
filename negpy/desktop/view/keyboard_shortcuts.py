@@ -198,9 +198,9 @@ class ShortcutManager:
             "scan_meter_frame": (
                 lambda: right.scan_sidebar.exposure_meter_btn.click() if getattr(right, "scan_sidebar", None) is not None else None
             ),
-            "mode_color_negative": lambda: controls.process_sidebar.mode_btns[0].click(),
-            "mode_bw_negative": lambda: controls.process_sidebar.mode_btns[1].click(),
-            "mode_transparency": lambda: controls.process_sidebar.mode_btns[2].click(),
+            "mode_color_negative": lambda: controls.process_sidebar.mode_btn.setCurrentIndex(0),
+            "mode_bw_negative": lambda: controls.process_sidebar.mode_btn.setCurrentIndex(1),
+            "mode_transparency": lambda: controls.process_sidebar.mode_btn.setCurrentIndex(2),
             "pick_wb": lambda: controls.color_sidebar.pick_wb_btn.toggle(),
             "manual_crop": lambda: controls.geometry_sidebar.manual_crop_btn.toggle(),
             "straighten": lambda: controls.geometry_sidebar.straighten_btn.toggle(),
@@ -305,8 +305,8 @@ class ShortcutManager:
             "toggle_ir_removal": controls.retouch_sidebar.ir_dust_btn.click,
             "toggle_flat_field": controls.flatfield_sidebar.enable_btn.click,
             "batch_autocrop": controls.autocrop_sidebar.auto_crop_all_btn.click,
-            "toggle_auto_density": controls.tone_sidebar.auto_density_btn.click,
-            "toggle_auto_grade": controls.tone_sidebar.auto_grade_btn.click,
+            "toggle_auto_density": controls.tone_sidebar.auto_density_action.trigger,
+            "toggle_auto_grade": controls.tone_sidebar.auto_grade_action.trigger,
             "preset_apply": controls.presets_sidebar.apply_btn.click,
             "preset_save": controls.presets_sidebar.save_btn.click,
             "live_view_scan": live_view.scan_btn.click,

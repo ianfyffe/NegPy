@@ -1,8 +1,6 @@
-from PyQt6.QtWidgets import QVBoxLayout
-
 from negpy.desktop.view.sidebar.base import BaseSidebar
-from negpy.desktop.view.styles.templates import section_subheader
-from negpy.desktop.view.widgets.sliders import CompactSlider, HueSlider
+from negpy.desktop.view.styles.templates import hint_label, section_subheader
+from negpy.desktop.view.widgets.sliders import CompactSlider, HueSlider, SliderGroup
 from negpy.features.altprocess.models import AltProcess
 from negpy.features.process.models import ProcessMode
 
@@ -20,6 +18,10 @@ class ToningSidebar(BaseSidebar):
             "Toners apply as sequential baths in the order shown — silver toned by an earlier bath is locked to the later ones"
         )
         self.layout.addWidget(self.chemical_header)
+        # Disabled sliders get no hover, so the reason an alternative process grays them hangs here.
+        self.alt_process_hint = hint_label("")
+        self.alt_process_hint.setVisible(False)
+        self.layout.addWidget(self.alt_process_hint)
 
         self.selenium_slider = CompactSlider("Selenium", 0.0, 2.0, conf.selenium_strength)
         self.sepia_slider = CompactSlider("Sepia", 0.0, 2.0, conf.sepia_strength)
@@ -51,19 +53,15 @@ class ToningSidebar(BaseSidebar):
 
         self.layout.addWidget(section_subheader("SPLIT TONING"))
 
-        row_sh = QVBoxLayout()
         self.shadow_hue_slider = HueSlider("Shadow Hue", conf.shadow_tint_hue)
         self.shadow_str_slider = CompactSlider("Shadow Strength", 0.0, 1.0, conf.shadow_tint_strength)
-        row_sh.addWidget(self.shadow_hue_slider)
-        row_sh.addWidget(self.shadow_str_slider)
-        self.layout.addLayout(row_sh)
+        self.layout.addWidget(self.shadow_str_slider)
+        self.layout.addWidget(SliderGroup(self.shadow_hue_slider))
 
-        row_hl = QVBoxLayout()
         self.highlight_hue_slider = HueSlider("Highlight Hue", conf.highlight_tint_hue)
         self.highlight_str_slider = CompactSlider("Highlight Strength", 0.0, 1.0, conf.highlight_tint_strength)
-        row_hl.addWidget(self.highlight_hue_slider)
-        row_hl.addWidget(self.highlight_str_slider)
-        self.layout.addLayout(row_hl)
+        self.layout.addWidget(self.highlight_str_slider)
+        self.layout.addWidget(SliderGroup(self.highlight_hue_slider))
 
         self.layout.addStretch()
 
@@ -163,6 +161,12 @@ class ToningSidebar(BaseSidebar):
                 w.setEnabled(alt == AltProcess.NONE)
             for w in (self.selenium_slider, self.gold_slider):
                 w.setEnabled(not cyano_on)
+            hint = {
+                AltProcess.LITH: "Lith: only Selenium and Gold change the print.",
+                AltProcess.CYANOTYPE: "Cyanotype: no silver for a toner to act on. Use Bleach and Tannin.",
+            }.get(alt, "")
+            self.alt_process_hint.setText(hint)
+            self.alt_process_hint.setVisible(bool(hint))
         finally:
             self.block_signals(False)
 

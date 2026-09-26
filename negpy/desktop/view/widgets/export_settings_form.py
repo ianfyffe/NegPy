@@ -2,9 +2,8 @@ import os
 from typing import Any, Dict, Optional
 
 import qtawesome as qta
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -20,9 +19,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from negpy.desktop.view.styles.templates import hint_label, ICON_BUTTON_WIDTH, labeled_toggle, section_subheader
+from negpy.desktop.view.widgets.choice_button import ChoiceButton
+from negpy.desktop.view.styles.templates import hint_label, ICON_BUTTON_WIDTH, header_row, section_subheader
 from negpy.desktop.view.styles.theme import THEME
-from negpy.desktop.view.widgets.sliders import CompactSlider
+from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
 from negpy.domain.models import (
     EXPORT_COLOR_SPACES,
     JXL_TAGGABLE_SPACES,
@@ -119,6 +119,10 @@ class ExportSettingsForm(QWidget):
         self.fmt_combo.currentIndexChanged.connect(self._on_fmt_changed)
         fmt_row.addWidget(self.fmt_combo)
         format_box.addLayout(fmt_row)
+        # The chosen format's own options ride a rail under it.
+        options = QWidget()
+        options_box = QVBoxLayout(options)
+        options_box.setContentsMargins(0, 0, 0, 0)
 
         self._depth_container = QWidget()
         depth_row = QHBoxLayout(self._depth_container)
@@ -131,7 +135,7 @@ class ExportSettingsForm(QWidget):
         constrain_combo(self.bit_depth_combo)
         self.bit_depth_combo.currentIndexChanged.connect(self._on_changed)
         depth_row.addWidget(self.bit_depth_combo)
-        format_box.addWidget(self._depth_container)
+        options_box.addWidget(self._depth_container)
 
         self._quality_container = QWidget()
         quality_box = QVBoxLayout(self._quality_container)
@@ -143,12 +147,13 @@ class ExportSettingsForm(QWidget):
         self.jpeg_progressive_check.setToolTip("Renders in passes while downloading; slightly smaller on large images")
         self.jpeg_progressive_check.toggled.connect(self._on_changed)
         quality_box.addWidget(self.jpeg_progressive_check)
-        format_box.addWidget(self._quality_container)
+        options_box.addWidget(self._quality_container)
 
-        self._build_tiff(format_box)
-        self._build_png(format_box)
-        self._build_jxl(format_box)
-        self._build_webp(format_box)
+        self._build_tiff(options_box)
+        self._build_png(options_box)
+        self._build_jxl(options_box)
+        self._build_webp(options_box)
+        format_box.addWidget(SliderGroup(options))
         root.addWidget(self._format_section)
 
     def _build_tiff(self, root: QVBoxLayout) -> None:
@@ -237,19 +242,15 @@ class ExportSettingsForm(QWidget):
 
         root.addWidget(section_subheader("SIZE"))
 
+        self.mode_btn = ChoiceButton(
+            (("", "Original"), ("", "Print"), ("", "Pixels")),
+            "Original exports at the source resolution. Print sizes the export for a print: paper "
+            "size and DPI. Pixels sizes it to a pixel count on the long edge",
+        )
+        self.mode_btn.currentChanged.connect(self._on_mode_toggled)
         mode_row = QHBoxLayout()
-        mode_row.setSpacing(4)
-        self.mode_original_btn = labeled_toggle("", "Original", False, "Export at the source resolution")
-        self.mode_print_btn = labeled_toggle("", "Print", False, "Size the export for a print: paper size and DPI")
-        self.mode_target_px_btn = labeled_toggle("", "Pixels", False, "Size the export to a pixel count on the long edge")
-        for btn in (self.mode_original_btn, self.mode_print_btn, self.mode_target_px_btn):
-            mode_row.addWidget(btn)
-        self.mode_btn_group = QButtonGroup(self)
-        self.mode_btn_group.setExclusive(True)
-        self.mode_btn_group.addButton(self.mode_original_btn, 0)
-        self.mode_btn_group.addButton(self.mode_print_btn, 1)
-        self.mode_btn_group.addButton(self.mode_target_px_btn, 2)
-        self.mode_btn_group.idToggled.connect(self._on_mode_toggled)
+        mode_row.addWidget(self._row_label("Resolution"))
+        mode_row.addWidget(self.mode_btn, 1)
         root.addLayout(mode_row)
 
         # PRINT mode: cm + DPI
@@ -272,7 +273,6 @@ class ExportSettingsForm(QWidget):
         vbox_dpi.addWidget(self.dpi_input)
         print_inner.addLayout(vbox_size)
         print_inner.addLayout(vbox_dpi)
-        root.addWidget(self._print_container)
 
         # TARGET_PX mode: long edge in pixels
         self._target_px_container = QWidget()
@@ -286,7 +286,8 @@ class ExportSettingsForm(QWidget):
         self.target_px_input.setValue(2000)
         self.target_px_input.valueChanged.connect(self._on_changed)
         target_px_inner.addWidget(self.target_px_input)
-        root.addWidget(self._target_px_container)
+        self._size_rail = SliderGroup(self._print_container, self._target_px_container)
+        root.addWidget(self._size_rail)
 
         self._ratio_row_widget = QWidget()
         ratio_row = QHBoxLayout(self._ratio_row_widget)
@@ -309,24 +310,21 @@ class ExportSettingsForm(QWidget):
         root.setSpacing(10)
         parent.addWidget(self._color_section)
 
-        header_row = QHBoxLayout()
-        header_row.addWidget(section_subheader("COLOR MANAGEMENT"))
-        header_row.addStretch()
         self.icc_import_btn = QPushButton()
         self.icc_import_btn.setIcon(qta.icon("fa5s.folder-open", color=THEME.text_primary))
         self.icc_import_btn.setFixedWidth(ICON_BUTTON_WIDTH)
         self.icc_import_btn.setToolTip(f"Import an ICC profile into {APP_CONFIG.user_icc_dir}")
         self.icc_import_btn.clicked.connect(self._import_icc)
-        header_row.addWidget(self.icc_import_btn, alignment=Qt.AlignmentFlag.AlignBottom)
-        root.addLayout(header_row)
-
-        root.addWidget(hint_label("Processing is scene-linear (Adobe RGB primaries)"))
+        root.addLayout(header_row(section_subheader("COLOR MANAGEMENT"), self.icc_import_btn))
 
         input_row = QHBoxLayout()
         input_row.addWidget(self._row_label("Input ICC"))
         self.input_combo = QComboBox()
         constrain_combo(self.input_combo)
-        self.input_combo.setToolTip("Treat the source as this profile, for a scan whose profile is known but untagged")
+        self.input_combo.setToolTip(
+            "Treat the source as this profile, for a scan whose profile is known but untagged. "
+            "Processing itself is scene-linear on Adobe RGB primaries."
+        )
         self.input_combo.currentIndexChanged.connect(self._on_changed)
         input_row.addWidget(self.input_combo)
         root.addLayout(input_row)
@@ -565,9 +563,7 @@ class ExportSettingsForm(QWidget):
             )
         self.jxl_cs_warning.setVisible(blocked)
 
-    def _on_mode_toggled(self, _id: int, checked: bool) -> None:
-        if not checked:
-            return
+    def _on_mode_toggled(self, _id: int) -> None:
         mode = self._current_mode_value()
         self._update_mode_visibility(mode)
         self._update_ratio_visibility(mode)
@@ -592,16 +588,15 @@ class ExportSettingsForm(QWidget):
     _ID_BY_MODE = {v: k for k, v in _MODE_BY_ID.items()}
 
     def _current_mode_value(self) -> str:
-        return self._MODE_BY_ID.get(self.mode_btn_group.checkedId(), ExportResolutionMode.PRINT.value)
+        return self._MODE_BY_ID[self.mode_btn.currentIndex()]
 
     def _select_mode_button(self, mode_value: str) -> None:
-        btn = self.mode_btn_group.button(self._ID_BY_MODE.get(mode_value, 1))
-        if btn is not None:
-            btn.setChecked(True)
+        self.mode_btn.setCurrentIndex(self._ID_BY_MODE.get(mode_value, 1))
 
     def _update_mode_visibility(self, mode_value: str) -> None:
         self._print_container.setVisible(mode_value == ExportResolutionMode.PRINT.value)
         self._target_px_container.setVisible(mode_value == ExportResolutionMode.TARGET_PX.value)
+        self._size_rail.setVisible(mode_value != ExportResolutionMode.ORIGINAL.value)
 
     def _update_ratio_visibility(self, mode_value: str | None = None) -> None:
         """Paper ratio applies to print-style sizing; flat + Original hides it."""

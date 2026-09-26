@@ -79,6 +79,8 @@ DROPPED_KEYS: frozenset[str] = frozenset(
         # The sidecar mirror toggle is an app-wide preference, not part of an edit.
         "sidecars_enabled",
         "export_sidecars_enabled",
+        # Batch metadata sync: Metadata cards are roll defaults, so every frame already carries the roll's values.
+        "sync_to_batch",
     }
 )
 
