@@ -1649,11 +1649,7 @@ class CanvasOverlay(QWidget):
         return None
 
     def _crop_edge_midpoint_screen_points(self) -> Optional[Dict[str, QPointF]]:
-        if (
-            self._crop_rect_norm is None
-            or self._view_rect.isEmpty()
-            or self.state.config.geometry.autocrop_ratio != "Free"
-        ):
+        if self._crop_rect_norm is None or self._view_rect.isEmpty() or self.state.config.geometry.autocrop_ratio != "Free":
             return None
         corners = self._crop_corner_screen_points()
         if corners is None:
