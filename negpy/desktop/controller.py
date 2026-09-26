@@ -137,6 +137,7 @@ from negpy.features.process.path import RenderPath, render_path
 from negpy.features.process.models import (
     ProcessConfig,
     ProcessMode,
+    cast_removal_for_mode,
     invalidate_local_bounds,
     mode_aware_exposure_reset,
     scan_setup_values,
@@ -2706,15 +2707,10 @@ class AppController(QObject):
         self.session.set_crop_guide_orientation((self.state.crop_guide_orientation + 1) % 8)
         self.crop_guide_changed.emit()
 
-    def cycle_dust_overlay(self) -> None:
-        """Advance the dust-detection overlay: Off → Marked → IR → Off
-        (IR skipped when the scan has no IR channel). Repaint only — the data is
+    def set_dust_overlay(self, mode: str) -> None:
+        """Dust-detection overlay: "off", "marked" or "ir". Repaint only — the data is
         already in state.last_metrics / state.preview_ir, no re-render needed."""
-        seq = ["off", "marked", "ir"]
-        if not self.state.has_ir:
-            seq.remove("ir")
-        cur = self.state.dust_overlay_mode if self.state.dust_overlay_mode in seq else "off"
-        self.state.dust_overlay_mode = seq[(seq.index(cur) + 1) % len(seq)]
+        self.state.dust_overlay_mode = mode
         self.dust_overlay_changed.emit()
 
     def toggle_zones_overlay(self, force: Optional[bool] = None) -> None:
@@ -4404,6 +4400,7 @@ class AppController(QObject):
     _ROLL_CARDS = (
         "film",
         "sensor",
+        "cast_removal",
         "autocrop",
         "baseline",
         "process",
@@ -4419,6 +4416,7 @@ class AppController(QObject):
     _ROLL_CARD_LABELS = {
         "film": "Film Mode",
         "sensor": "Calibration",
+        "cast_removal": "Calibration",
         "demosaic": "Raw Decode",
         "baseline": "Roll Analysis",
         "process": "Metering",
@@ -4509,6 +4507,10 @@ class AppController(QObject):
         Roll-tab card (set_roll_default). Apply to Whole Roll pushes it out."""
         self.apply_config(with_process_mode(self.state.config, mode), persist=True)
         self._lock_roll_card("film")
+        # The switch moved Cast Removal to the new mode's default. Settle its lock only against
+        # a roll value: with none yet there is nothing to diverge from.
+        if self.state.active_roll_id and "cast_removal_strength" in rolls.roll_defaults(self.session.repo, self.state.active_roll_id):
+            self._lock_roll_card("cast_removal")
 
     def set_positive_source(self, checked: bool) -> None:
         """Toggles Positive for the active frame, locking the "film" card away from
@@ -4548,6 +4550,8 @@ class AppController(QObject):
             self.set_status(_NOTHING_TO_APPLY, 2500)
             return 0
         active_hash = self.state.current_file_hash
+        if "film" in pushed and "cast_removal" not in pushed:
+            self._carry_roll_cast_removal(roll_id, self.state.config.process.process_mode)
         for card_key in pushed:
             rolls.set_roll_defaults(self.session.repo, roll_id, **self._card_values(self.state.config, card_key))
             rolls.set_frame_override(self.session.repo, roll_id, rolls.unforked_hash(active_hash), card_key, False)
@@ -4580,6 +4584,15 @@ class AppController(QObject):
         names = ", ".join(dict.fromkeys(self._ROLL_CARD_LABELS[k] for k in self._ROLL_CARDS if k in touched))
         self.set_status(f"Applied to the roll: {names}", 3000)
         return len(touched)
+
+    def _carry_roll_cast_removal(self, roll_id: str, mode: str) -> None:
+        """A Film Mode pushed to the roll moves the roll's Cast Removal the way
+        with_process_mode moves a frame's. The roll value overlays after the mode, so a
+        negative's strength left in place would reach every frame of a slide roll."""
+        defaults = rolls.roll_defaults(self.session.repo, roll_id)
+        if "cast_removal_strength" in defaults:
+            carried = cast_removal_for_mode(mode, float(defaults["cast_removal_strength"]))
+            rolls.set_roll_defaults(self.session.repo, roll_id, cast_removal_strength=carried)
 
     def set_card_scope(self, card_key: Union[str, tuple], scope: str) -> None:
         """A Roll-tab card's scope pair: Roll gives the roll this frame's value for that
@@ -6200,7 +6213,6 @@ class AppController(QObject):
             export_fmt=ExportFormat.JXL if linear_fmt == "jxl" else ExportFormat.TIFF,
         )
         roll_root = self._roll_export_root(delivery.output_mode, delivery.output_subfolder)
-        sync_metadata = self.state.config.metadata.sync_to_batch
         taken: set[str] = set()
         tasks = []
         for f in supported:
@@ -6214,7 +6226,7 @@ class AppController(QObject):
             stem = render_export_filename(
                 min(frames, key=lambda p: os.path.basename(p).lower()) if frames else f["path"],
                 delivery,
-                metadata=self.state.config.metadata if sync_metadata else params.metadata,
+                metadata=params.metadata,
                 composite="HDR" if frames else "",
             )
             # `_linear` always, on top of whatever the template rendered: without it a dump
@@ -6334,7 +6346,6 @@ class AppController(QObject):
         current_export = replace(self.state.config.export, export_path=export_path)
         roll_root = self._roll_export_root(current_export.output_mode, current_export.output_subfolder)
         icc_output = self.state.icc_output_path
-        sync_metadata = self.state.config.metadata.sync_to_batch
 
         if files is None:
             files = [
@@ -6378,7 +6389,7 @@ class AppController(QObject):
                     bounds_override = self.state.last_metrics.get("log_bounds")
 
             source_exif = self.state.source_exif.get(f["hash"])
-            metadata_config = self.state.config.metadata if sync_metadata else params.metadata
+            metadata_config = params.metadata
 
             tasks.append(
                 ExportTask(
@@ -6421,7 +6432,6 @@ class AppController(QObject):
         return [f for f in files if not f.get("excluded")]
 
     def _build_preset_export_tasks(self, files: list[dict], presets: List[ExportPreset]) -> List[ExportTask]:
-        sync_metadata = self.state.config.metadata.sync_to_batch
         tasks: List[ExportTask] = []
         for f in files:
             params = self._batch_params_for(f)
@@ -6432,7 +6442,7 @@ class AppController(QObject):
                     bounds_override = self.state.last_metrics.get("log_bounds")
 
             source_exif = self.state.source_exif.get(f["hash"])
-            metadata_config = self.state.config.metadata if sync_metadata else params.metadata
+            metadata_config = params.metadata
 
             tasks.extend(
                 self._tasks_for_file(

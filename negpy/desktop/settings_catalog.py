@@ -124,6 +124,7 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
         _row("Single-Shot Narrowband Calibration", "process", "sensor_profile", "sensor_matrix", fmt=lambda v: _fmt_scalar(v[0]), sticky=True),
         # Absent from BOUNDS_INPUT_FIELDS: it acts after inversion, so it never feeds the meters.
         _row("Hue Trim", "process", "hue_trim", sticky=True),
+        _row("Cast Removal", "exposure", "cast_removal_strength", sticky=True),
     )),
     ("Crop", (
         _row("Auto Crop", "geometry", "crop_from_auto"),
@@ -185,7 +186,6 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
         _row("Yellow", "exposure", "wb_yellow"),
         _row("Shadows CMY", "exposure", "shadow_cyan", "shadow_magenta", "shadow_yellow", channels="CMY"),
         _row("Highlights CMY", "exposure", "highlight_cyan", "highlight_magenta", "highlight_yellow", channels="CMY"),
-        _row("Cast Removal", "exposure", "cast_removal_strength", sticky=True),
     )),
     ("Lab", (
         _row("Chroma", "lab", "saturation", sticky=True),
@@ -262,7 +262,6 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
         # capture_frame is deliberately absent: a frame number is unique to one frame.
         _row("Roll", "metadata", "capture_roll"),
         _row("Exposure", "metadata", "exposure_override"),
-        _row("Sync Metadata to Batch", "metadata", "sync_to_batch"),
         _row("Protect Original Metadata", "metadata", "protect_original_metadata", sticky=True),
         _row(
             "Description Fields",
@@ -357,7 +356,7 @@ def rows_for_section(section: str) -> list[SettingRow]:
 
 # Exposure field partitions: the Filtration and Tone sections split ExposureConfig, for
 # both per-section modified counts and scoped resets. render_intent is in neither, since
-# it is flat-master output.
+# it is flat-master output, nor is cast_removal_strength, the Calibration card's.
 COLOR_FIELDS = (
     "wb_cyan",
     "wb_magenta",
@@ -368,7 +367,6 @@ COLOR_FIELDS = (
     "highlight_cyan",
     "highlight_magenta",
     "highlight_yellow",
-    "cast_removal_strength",
 )
 
 GEOMETRY_FIELDS = (

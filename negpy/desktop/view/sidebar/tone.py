@@ -1,10 +1,10 @@
-import qtawesome as qta
-from PyQt6.QtWidgets import QButtonGroup, QComboBox, QDialog, QHBoxLayout, QVBoxLayout
+from PyQt6.QtWidgets import QComboBox, QDialog, QHBoxLayout, QVBoxLayout
 
 from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.base import BaseSidebar
-from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, hint_label, section_subheader, wrap_tooltip
+from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, hint_label, header_row, section_subheader, wrap_tooltip
 from negpy.desktop.view.styles.theme import THEME
+from negpy.desktop.view.widgets.choice_button import ChoiceButton, ToggleMenuButton
 from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
 from negpy.features.exposure.logic import per_channel_dye_separation
 from negpy.features.hdr.models import hdr_active
@@ -35,75 +35,57 @@ class ToneSidebar(BaseSidebar):
         self.grade_trim_slider.setVisible(False)
 
         # Channel selector: Global = the shared curve; R/G/B = per-layer trims.
-        self.ch_global_btn = self._labeled_toggle("fa5s.globe", " Global", True, "Global — edit the shared H&D curve (all layers)")
-        self.ch_r_btn = self._labeled_toggle(
-            "fa5s.circle", " Red", False, "Red layer — per-layer Grade/Toe/Shoulder/Width/Snap trims for the cyan-dye emulsion"
+        self.ch_btn = ChoiceButton(
+            (("fa5s.globe", "Global"), *(("fa5s.circle", n, c) for n, c in zip(("Red", "Green", "Blue"), _CH_COLORS))),
+            "Global edits the shared H&D curve (all layers). Red, Green and Blue edit per-layer "
+            "Grade/Toe/Shoulder/Width/Snap trims for the cyan-, magenta- and yellow-dye emulsions",
         )
-        self.ch_g_btn = self._labeled_toggle(
-            "fa5s.circle", " Green", False, "Green layer — per-layer Grade/Toe/Shoulder/Width/Snap trims for the magenta-dye emulsion"
-        )
-        self.ch_b_btn = self._labeled_toggle(
-            "fa5s.circle", " Blue", False, "Blue layer — per-layer Grade/Toe/Shoulder/Width/Snap trims for the yellow-dye emulsion"
-        )
-        for btn, color in zip((self.ch_r_btn, self.ch_g_btn, self.ch_b_btn), _CH_COLORS):
-            btn.setIcon(qta.icon("fa5s.circle", color=color))
-        self.ch_btn_group = QButtonGroup(self)
-        self.ch_btn_group.setExclusive(True)
-        for i, btn in enumerate((self.ch_global_btn, self.ch_r_btn, self.ch_g_btn, self.ch_b_btn)):
-            self.ch_btn_group.addButton(btn, i)
-        # (button, that channel's trim fields) for the edited dot.
-        self._channel_buttons = tuple(
+        # Each channel's trim fields, for the edited dot.
+        self._channel_fields = tuple(
             (
-                btn,
-                (
-                    f"grade_trim_{ch}",
-                    f"shadow_grade_trim_{ch}",
-                    f"highlight_grade_trim_{ch}",
-                    f"toe_trim_{ch}",
-                    f"shoulder_trim_{ch}",
-                    f"midtone_gamma_trim_{ch}",
-                    f"toe_width_trim_{ch}",
-                    f"shoulder_width_trim_{ch}",
-                    f"dye_separation_trim_{ch}",
-                ),
+                f"grade_trim_{ch}",
+                f"shadow_grade_trim_{ch}",
+                f"highlight_grade_trim_{ch}",
+                f"toe_trim_{ch}",
+                f"shoulder_trim_{ch}",
+                f"midtone_gamma_trim_{ch}",
+                f"toe_width_trim_{ch}",
+                f"shoulder_width_trim_{ch}",
+                f"dye_separation_trim_{ch}",
             )
-            for btn, ch in zip((self.ch_r_btn, self.ch_g_btn, self.ch_b_btn), _CH_SUFFIX)
+            for ch in _CH_SUFFIX
         )
-        ch_row = QHBoxLayout()
-        for btn in (self.ch_global_btn, self.ch_r_btn, self.ch_g_btn, self.ch_b_btn):
-            ch_row.addWidget(btn, 1)
-        self.layout.addLayout(ch_row)
-
-        self.auto_density_btn = self._small_toggle(
-            "fa5s.magic",
+        self.auto_btn = ToggleMenuButton("fa5s.magic", "", "Auto: automatic print density and grade, and the targets they aim for")
+        self.auto_density_action = self.auto_btn.add_toggle(
             "Auto Density",
-            conf.auto_exposure,
-            "Auto Density: meter each frame's midtone and anchor the print exposure there, so dense "
-            "and flat negatives land at a consistent brightness instead of needing per-frame trimming",
+            "Meter each frame's midtone and anchor the print exposure there, so dense and flat "
+            "negatives land at a consistent brightness instead of needing per-frame trimming",
         )
-        self.auto_grade_btn = self._small_toggle(
-            "fa5s.balance-scale",
+        self.auto_grade_action = self.auto_btn.add_toggle(
             "Auto Grade",
-            conf.auto_normalize_contrast,
-            "Auto Grade: aim each frame at a contrast target instead of printing the negative's own "
-            "density range, so dense negatives stop printing over-contrasty and flat ones stop printing muddy",
+            "Aim each frame at a contrast target instead of printing the negative's own density "
+            "range, so dense negatives stop printing over-contrasty and flat ones stop printing muddy",
         )
-        self.targets_btn = self._icon_action(
-            "fa5s.sliders-h",
-            "Set Targets — tune the brightness and contrast Auto Density and Auto Grade aim for. "
-            "Applies to every frame and is remembered between sessions.",
+        self.auto_btn.choice_menu.addSeparator()
+        targets_action = self.auto_btn.choice_menu.addAction("Set Targets…")
+        targets_action.setToolTip(
+            "Tune the brightness and contrast Auto Density and Auto Grade aim for. "
+            "Applies to every frame and is remembered between sessions."
         )
-        self.targets_btn.clicked.connect(self._open_targets_dialog)
+        targets_action.triggered.connect(self._open_targets_dialog)
+        self.auto_density_action.setChecked(conf.auto_exposure)
+        self.auto_grade_action.setChecked(conf.auto_normalize_contrast)
         self.test_strip_btn = self._tool_toggle("mdi.view-grid-outline", "", self._test_strip_tooltip())
         self.test_strip_btn.setFixedWidth(ICON_BUTTON_WIDTH)
         self.test_strip_btn.clicked.connect(lambda checked: self.controller.toggle_test_strip(force=checked))
 
-        auto_row = QHBoxLayout()
-        auto_row.addWidget(self.auto_density_btn, 1)
-        auto_row.addWidget(self.auto_grade_btn, 1)
-        auto_row.addWidget(self.targets_btn)
-        auto_row.addWidget(self.test_strip_btn)
-        self.layout.addLayout(auto_row)
+        ch_row = QHBoxLayout()
+        ch_row.addWidget(self.ch_btn, 1)
+        # Holds the icons at the right edge when B&W hides the selector.
+        ch_row.addStretch()
+        ch_row.addWidget(self.auto_btn)
+        ch_row.addWidget(self.test_strip_btn)
+        self.layout.addLayout(ch_row)
         # Disabled widgets get no hover, so the reason hangs off the hint under them.
         self.auto_merged_hint = hint_label("Not applied to a merged bracket.")
         self.auto_merged_hint.setToolTip(
@@ -119,7 +101,7 @@ class ToneSidebar(BaseSidebar):
 
         self.paper_black_btn = self._small_toggle(
             "fa5s.circle",
-            "Paper Black",
+            "",
             conf.paper_black,
             "Paper Black — show the paper's real Dmax as a slightly lifted, milky black instead of "
             "compensating it to pure display black. Off (default) applies black point compensation, "
@@ -128,7 +110,7 @@ class ToneSidebar(BaseSidebar):
         )
         self.paper_dmin_btn = self._small_toggle(
             "fa5s.file",
-            "Paper White",
+            "",
             conf.paper_dmin,
             "Paper White: simulate paper base density (Dmin 0.06) — whites print at ~0.93 instead of pure white, like a real print",
         )
@@ -145,7 +127,8 @@ class ToneSidebar(BaseSidebar):
         self.highlight_grade_slider = CompactSlider(
             "Highlights Grade", -50.0, 50.0, conf.highlight_grade, step=1.0, inverted=True, unit=" R"
         )
-        self.layout.addWidget(SliderGroup(self.shadow_grade_slider, self.highlight_grade_slider))
+        self.split_grade_rail = SliderGroup(self.shadow_grade_slider, self.highlight_grade_slider)
+        self.layout.addWidget(self.split_grade_rail)
 
         # Inverted like ISO-R Grade, so dragging right hardens on both controls.
         self.contrast_mask_slider = CompactSlider("Contrast Mask", -0.5, 0.5, conf.contrast_mask, has_neutral=True, inverted=True)
@@ -166,7 +149,12 @@ class ToneSidebar(BaseSidebar):
             "that sit next to something bright, which is the mask line on the sheet. "
             "Inert with no mask."
         )
-        self.layout.addWidget(SliderGroup(self.contrast_mask_slider, self.mask_spacer_slider))
+        # Light given to the paper, not the shape of its curve, so it sits with the exposure controls.
+        self.preflash_slider = CompactSlider("Preflash", 0.0, 1.0, conf.preflash)
+        self.layout.addWidget(self.preflash_slider)
+        self.layout.addWidget(self.contrast_mask_slider)
+        self.mask_spacer_rail = SliderGroup(self.mask_spacer_slider)
+        self.layout.addWidget(self.mask_spacer_rail)
 
         # Density-domain saturation, composed into the same dye_mix slot as the paper's real dye
         # crosstalk, rather than a post-hoc Lab-space a*/b*
@@ -180,16 +168,15 @@ class ToneSidebar(BaseSidebar):
         # Redistributes the slider above by each pixel's own chroma. Inert at 1.0 separation, so
         # it is disabled there rather than reading as broken.
         self.separation_damping_slider = CompactSlider("Separation Damping", 0.0, 1.0, conf.separation_damping)
-        self.layout.addWidget(SliderGroup(self.dye_separation_slider, self.dye_separation_trim_slider, self.separation_damping_slider))
 
         paper_header = section_subheader("PAPER RESPONSE")
         paper_header.setToolTip(
             "The paper's characteristic (Hurter–Driffield) curve: how print density responds to "
             "exposure. Snap bends the midtone gamma, Toe shapes the shadow roll-off into paper "
             "black, Shoulder the highlight roll-off into paper white — each knee with its own "
-            "Width, per dye layer via the Global/R/G/B selector."
+            "Width, per dye layer via the Global/R/G/B selector. Dye Separation sets how far its "
+            "dyes separate."
         )
-        self.layout.addWidget(paper_header)
 
         self.paper_combo = QComboBox()
         self.paper_combo.setToolTip(
@@ -200,15 +187,15 @@ class ToneSidebar(BaseSidebar):
         idx = self.paper_combo.findData(conf.paper_profile)
         if idx >= 0:
             self.paper_combo.setCurrentIndex(idx)
+        self.paper_black_btn.setFixedWidth(ICON_BUTTON_WIDTH)
+        self.paper_dmin_btn.setFixedWidth(ICON_BUTTON_WIDTH)
+        self.layout.addLayout(header_row(paper_header, self.paper_black_btn, self.paper_dmin_btn))
         self.layout.addWidget(self.paper_combo)
-
-        paper_toggle_row = QHBoxLayout()
-        paper_toggle_row.addWidget(self.paper_black_btn, 1)
-        paper_toggle_row.addWidget(self.paper_dmin_btn, 1)
-        self.layout.addLayout(paper_toggle_row)
-
-        self.preflash_slider = CompactSlider("Preflash", 0.0, 1.0, conf.preflash)
-        self.layout.addWidget(self.preflash_slider)
+        # The paper's dyes, not the exposure: the profile sets the crosstalk this pushes against.
+        self.layout.addWidget(self.dye_separation_slider)
+        self.layout.addWidget(self.dye_separation_trim_slider)
+        self.separation_damping_rail = SliderGroup(self.separation_damping_slider)
+        self.layout.addWidget(self.separation_damping_rail)
 
         self.midtone_gamma_slider = CompactSlider("Snap", -0.5, 0.5, conf.midtone_gamma)
         snap_row = QHBoxLayout()
@@ -223,7 +210,8 @@ class ToneSidebar(BaseSidebar):
         )
         self.toe_w_trim_slider.setVisible(False)
         self.toe_slider = CompactSlider("Toe", -1.0, 1.0, conf.toe)
-        self.layout.addWidget(SliderGroup(self.toe_slider, self.toe_w_slider, self.toe_w_trim_slider))
+        self.layout.addWidget(self.toe_slider)
+        self.layout.addWidget(SliderGroup(self.toe_w_slider, self.toe_w_trim_slider))
 
         self.sh_slider = CompactSlider("Shoulder", -1.0, 1.0, conf.shoulder)
         self.sh_w_slider = CompactSlider("Shoulder Width", 0.1, 5.0, conf.shoulder_width)
@@ -233,7 +221,8 @@ class ToneSidebar(BaseSidebar):
             "(sharpness crossover): how far this layer's highlight knee reaches down the tonal scale."
         )
         self.sh_w_trim_slider.setVisible(False)
-        self.layout.addWidget(SliderGroup(self.sh_slider, self.sh_w_slider, self.sh_w_trim_slider))
+        self.layout.addWidget(self.sh_slider)
+        self.layout.addWidget(SliderGroup(self.sh_w_slider, self.sh_w_trim_slider))
 
         self.layout.addStretch()
 
@@ -241,9 +230,7 @@ class ToneSidebar(BaseSidebar):
         self._global_only = (
             self.density_slider,
             self.test_strip_btn,
-            self.auto_density_btn,
-            self.auto_grade_btn,
-            self.targets_btn,
+            self.auto_btn,
             self.paper_dmin_btn,
             self.paper_black_btn,
             self.paper_combo,
@@ -278,7 +265,7 @@ class ToneSidebar(BaseSidebar):
         self.controller.request_render(readback_metrics=True)
 
     def _channel_index(self) -> int:
-        return max(self.ch_btn_group.checkedId(), 0)
+        return self.ch_btn.currentIndex()
 
     def _curve_field(self, base: str) -> str:
         idx = self._channel_index()
@@ -330,7 +317,7 @@ class ToneSidebar(BaseSidebar):
         # The strip is session state, not config, and any render drops it, so the button has to
         # follow the controller rather than sync_ui.
         self.controller.test_strip_changed.connect(self._sync_test_strip_btn)
-        self.ch_btn_group.idToggled.connect(lambda _id, checked: self.sync_ui() if checked else None)
+        self.ch_btn.currentChanged.connect(lambda _i: self.sync_ui())
 
         # White Point/Black Point live on ProcessConfig, not ExposureConfig like the rest of
         # this panel, so they write to a different config section than the loop below.
@@ -406,8 +393,8 @@ class ToneSidebar(BaseSidebar):
         for btn, field in (
             (self.paper_dmin_btn, "paper_dmin"),
             (self.paper_black_btn, "paper_black"),
-            (self.auto_density_btn, "auto_exposure"),
-            (self.auto_grade_btn, "auto_normalize_contrast"),
+            (self.auto_density_action, "auto_exposure"),
+            (self.auto_grade_action, "auto_normalize_contrast"),
         ):
             btn.toggled.connect(
                 lambda checked, f=field: self.update_config_section(
@@ -444,18 +431,19 @@ class ToneSidebar(BaseSidebar):
                 self.midtone_gamma_slider,
                 self.shadow_grade_slider,
                 self.highlight_grade_slider,
+                self.split_grade_rail,
                 # The transfer curve takes no dodge/burn map, and the mask rides it.
                 self.contrast_mask_slider,
                 self.mask_spacer_slider,
+                self.mask_spacer_rail,
                 self.preflash_slider,
             ):
                 w.setVisible(not transfer)
             # Per-layer trims are meaningless on a single-emulsion B&W paper.
             is_bw = mode == ProcessMode.BW
-            if is_bw and self._channel_index() != 0:
-                self.ch_global_btn.setChecked(True)
-            for w in (self.ch_global_btn, self.ch_r_btn, self.ch_g_btn, self.ch_b_btn):
-                w.setVisible(not is_bw)
+            if is_bw:
+                self.ch_btn.setCurrentIndex(0)
+            self.ch_btn.setVisible(not is_bw)
 
             idx = self._channel_index()
             global_mode = idx == 0
@@ -473,6 +461,7 @@ class ToneSidebar(BaseSidebar):
             self.dye_separation_slider.setVisible(global_mode and not is_bw)
             self.dye_separation_trim_slider.setVisible(not global_mode and not is_bw)
             self.separation_damping_slider.setVisible(global_mode and not is_bw)
+            self.separation_damping_rail.setVisible(global_mode and not is_bw)
             self.toe_slider.label.setText("Toe" + suffix)
             self.sh_slider.label.setText("Shoulder" + suffix)
             self.midtone_gamma_slider.label.setText("Snap" + suffix)
@@ -503,12 +492,12 @@ class ToneSidebar(BaseSidebar):
                 w.setEnabled(global_mode)
             # WorkspaceConfig holds both off on a merge; greyed so the reason can show.
             merged = hdr_active(self.state.config.hdr)
-            for w in (self.auto_density_btn, self.auto_grade_btn):
-                w.setEnabled(global_mode and not merged)
+            for action in (self.auto_density_action, self.auto_grade_action):
+                action.setEnabled(not merged)
             self.auto_merged_hint.setVisible(merged)
 
-            for btn, fields in self._channel_buttons:
-                btn.edited_dot.set_active(any(getattr(conf, f) != 0.0 for f in fields))
+            for i, fields in enumerate(self._channel_fields, start=1):
+                self.ch_btn.set_edited(i, any(getattr(conf, f) != 0.0 for f in fields))
             self.density_slider.setValue(conf.density)
             self.grade_slider.setValue(conf.grade)
             self.toe_w_slider.setValue(conf.toe_width)
@@ -533,18 +522,16 @@ class ToneSidebar(BaseSidebar):
 
             self.paper_dmin_btn.setChecked(conf.paper_dmin)
             self.paper_black_btn.setChecked(conf.paper_black)
-            self.auto_density_btn.setChecked(conf.auto_exposure)
-            self.auto_grade_btn.setChecked(conf.auto_normalize_contrast)
+            self.auto_density_action.setChecked(conf.auto_exposure)
+            self.auto_grade_action.setChecked(conf.auto_normalize_contrast)
+            self.auto_btn.refresh()
         finally:
             self.block_signals(False)
 
     def block_signals(self, blocked: bool) -> None:
         for w in (
             self.paper_combo,
-            self.ch_global_btn,
-            self.ch_r_btn,
-            self.ch_g_btn,
-            self.ch_b_btn,
+            self.ch_btn,
             self.density_slider,
             self.grade_slider,
             self.grade_trim_slider,
@@ -567,7 +554,7 @@ class ToneSidebar(BaseSidebar):
             self.preflash_slider,
             self.paper_dmin_btn,
             self.paper_black_btn,
-            self.auto_density_btn,
-            self.auto_grade_btn,
+            self.auto_density_action,
+            self.auto_grade_action,
         ):
             w.blockSignals(blocked)

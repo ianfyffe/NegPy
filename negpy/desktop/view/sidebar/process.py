@@ -2,9 +2,7 @@ import math
 from dataclasses import replace
 
 import numpy as np
-import qtawesome as qta
 from PyQt6.QtWidgets import (
-    QButtonGroup,
     QHBoxLayout,
     QVBoxLayout,
     QWidget,
@@ -13,10 +11,11 @@ from PyQt6.QtWidgets import (
 from negpy.desktop.session import ToolMode
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.sidebar.tone import _CH_COLORS, _CH_LABEL, _CH_SUFFIX
-from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, hint_label, section_subheader, set_hint_kind, wrap_tooltip
+from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, hint_label, header_row, section_subheader, set_hint_kind, wrap_tooltip
 from negpy.services.assets import rolls
 from negpy.desktop.view.styles.theme import THEME
-from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
+from negpy.desktop.view.widgets.choice_button import ChoiceButton
+from negpy.desktop.view.widgets.sliders import CompactSlider
 from negpy.features.exposure.models import EXPOSURE_CONSTANTS
 from negpy.features.hdr.logic import output_scale
 from negpy.features.hdr.models import ANCHOR_EV_UNSET, hdr_active
@@ -94,15 +93,11 @@ class ProcessSidebar(BaseSidebar):
 
         mode_row = QHBoxLayout()
         mode_col.addLayout(mode_row)
-        self.mode_btns = []
-        self.mode_btn_group = QButtonGroup(self)
-        self.mode_btn_group.setExclusive(True)
-        for i, (mode, label, color, tip) in enumerate(_MODES):
-            btn = self._labeled_toggle("mdi6.film", label, mode == conf.process_mode, tip)
-            btn.setIcon(qta.icon("mdi6.film", color=color))
-            self.mode_btn_group.addButton(btn, i)
-            mode_row.addWidget(btn, 1)
-            self.mode_btns.append(btn)
+        self.mode_btn = ChoiceButton(
+            tuple(("mdi6.film", label, color) for _mode, label, color, _tip in _MODES),
+            "<br>".join(tip for *_rest, tip in _MODES),
+        )
+        mode_row.addWidget(self.mode_btn, 1)
         mode_row.addWidget(self.autodetect_btn)
 
         # Lives beside Film Mode, not inside Normalization: whether the source is
@@ -125,7 +120,7 @@ class ProcessSidebar(BaseSidebar):
 
         self.lock_bounds_btn = self._small_toggle(
             "fa5s.lock",
-            " Lock Bounds",
+            "",
             False,
             "Lock Bounds — freeze normalization bounds so crop and analysis sliders no longer re-analyze",
         )
@@ -134,19 +129,19 @@ class ProcessSidebar(BaseSidebar):
         # ControlsPanel places it on the Metering card, so it sits outside self.layout --
         # the same reason mode_bar sits above every Roll-tab card.
         self.analysis_bar = QWidget()
+        # Nested in a card body, so it takes the body's transparent rule, not the global QWidget fill.
+        self.analysis_bar.setObjectName("collapsible_content_body")
         analysis_col = QVBoxLayout(self.analysis_bar)
         analysis_col.setContentsMargins(0, 0, 0, 0)
         analysis_col.setSpacing(THEME.space_sm)
-        analysis_col.addWidget(section_subheader("ANALYSIS"))
-
         self.analysis_buffer_slider = CompactSlider("Analysis Buffer", 0.0, 0.25, conf.analysis_buffer)
         self.reanalyze_frame_btn = self._icon_action(
             "fa5s.redo", "Reanalyze Frame — measure this frame's bounds again from its current crop and analysis settings"
         )
-        buffer_row = QHBoxLayout()
-        buffer_row.addWidget(self.analysis_buffer_slider, 1)
-        buffer_row.addWidget(self.reanalyze_frame_btn)
-        analysis_col.addLayout(buffer_row)
+        self.lock_bounds_btn.setFixedWidth(ICON_BUTTON_WIDTH)
+        self.analysis_header = section_subheader("ANALYSIS")
+        analysis_col.addLayout(header_row(self.analysis_header, self.reanalyze_frame_btn, self.lock_bounds_btn))
+        analysis_col.addWidget(self.analysis_buffer_slider)
 
         self.analysis_region_btn = self._tool_toggle(
             "fa5s.vector-square",
@@ -154,12 +149,12 @@ class ProcessSidebar(BaseSidebar):
             "Draw a freehand analysis region on the image — the meters read exactly that area "
             "(overrides the Analysis Buffer). Double-click inside it to confirm.",
         )
-        self.clear_analysis_region_btn = self._labeled_action(
-            "fa5s.times", " Clear Region", "Clear the freehand analysis region (fall back to the Analysis Buffer)"
+        self.clear_analysis_region_btn = self._icon_action(
+            "fa5s.times", "Clear Region: clear the freehand analysis region (fall back to the Analysis Buffer)"
         )
         region_row = QHBoxLayout()
-        for btn in (self.analysis_region_btn, self.clear_analysis_region_btn, self.lock_bounds_btn):
-            region_row.addWidget(btn, 1)
+        region_row.addWidget(self.analysis_region_btn, 1)
+        region_row.addWidget(self.clear_analysis_region_btn)
         analysis_col.addLayout(region_row)
 
         initial_luma_slider_val = _luma_range_value_to_slider(conf.luma_range_clip)
@@ -172,35 +167,28 @@ class ProcessSidebar(BaseSidebar):
         )
         self.tonal_range_header = section_subheader("TONAL RANGE")
         analysis_col.addWidget(self.tonal_range_header)
-        analysis_col.addWidget(SliderGroup(self.luma_range_clip_slider, self.color_range_clip_slider))
+        analysis_col.addWidget(self.luma_range_clip_slider)
+        analysis_col.addWidget(self.color_range_clip_slider)
 
-        self.ch_global_btn = self._labeled_toggle("fa5s.globe", " Global", True, "Global — shared white/black point offsets (all layers)")
-        self.ch_r_btn = self._labeled_toggle("fa5s.circle", " Red", False, "Red layer — white/black point trim for the cyan-dye emulsion")
-        self.ch_g_btn = self._labeled_toggle(
-            "fa5s.circle", " Green", False, "Green layer — white/black point trim for the magenta-dye emulsion"
+        self.ch_btn = ChoiceButton(
+            (("fa5s.globe", "Global"), *(("fa5s.circle", n, c) for n, c in zip(("Red", "Green", "Blue"), _CH_COLORS))),
+            "Global sets the shared white/black point offsets (all layers). Red, Green and Blue "
+            "trim the cyan-, magenta- and yellow-dye emulsions",
         )
-        self.ch_b_btn = self._labeled_toggle(
-            "fa5s.circle", " Blue", False, "Blue layer — white/black point trim for the yellow-dye emulsion"
-        )
-        for btn, color in zip((self.ch_r_btn, self.ch_g_btn, self.ch_b_btn), _CH_COLORS):
-            btn.setIcon(qta.icon("fa5s.circle", color=color))
-        self.ch_btn_group = QButtonGroup(self)
-        self.ch_btn_group.setExclusive(True)
-        ch_row = QHBoxLayout()
-        for i, btn in enumerate((self.ch_global_btn, self.ch_r_btn, self.ch_g_btn, self.ch_b_btn)):
-            self.ch_btn_group.addButton(btn, i)
-            ch_row.addWidget(btn, 1)
         self.point_header = section_subheader("WHITE / BLACK POINT")
         analysis_col.addWidget(self.point_header)
-        analysis_col.addLayout(ch_row)
+        analysis_col.addWidget(self.ch_btn)
 
         self.white_point_slider = CompactSlider("White Point", -0.25, 0.25, conf.white_point_offset, has_neutral=True)
         self.black_point_slider = CompactSlider("Black Point", -0.25, 0.25, conf.black_point_offset, has_neutral=True)
-        analysis_col.addWidget(SliderGroup(self.white_point_slider, self.black_point_slider))
+        analysis_col.addWidget(self.white_point_slider)
+        analysis_col.addWidget(self.black_point_slider)
 
         # Which baseline each axis' bounds come from: the roll's shared meter or the frame's
         # own analysis. ControlsPanel places it at the top of the Roll Analysis card.
         self.baseline_bar = QWidget()
+        # Nested in a card body, so it takes the body's transparent rule, not the global QWidget fill.
+        self.baseline_bar.setObjectName("collapsible_content_body")
         baseline_col = QVBoxLayout(self.baseline_bar)
         baseline_col.setContentsMargins(0, 0, 0, 0)
         baseline_col.setSpacing(THEME.space_sm)
@@ -260,7 +248,7 @@ class ProcessSidebar(BaseSidebar):
         self.layout.addStretch()
 
     def _connect_signals(self) -> None:
-        self.mode_btn_group.idToggled.connect(lambda i, checked: self._on_mode_changed(_MODES[i][0]) if checked else None)
+        self.mode_btn.currentChanged.connect(lambda i: self._on_mode_changed(_MODES[i][0]))
         self.autodetect_btn.toggled.connect(lambda c: self.controller.toggle_autodetect(c))
         self.lock_bounds_btn.toggled.connect(self._on_lock_bounds_toggled)
 
@@ -287,11 +275,11 @@ class ProcessSidebar(BaseSidebar):
         self.white_point_slider.valueCommitted.connect(lambda v: self._on_white_point_changed(v, persist=True))
         self.black_point_slider.valueChanged.connect(lambda v: self._on_black_point_changed(v, persist=False))
         self.black_point_slider.valueCommitted.connect(lambda v: self._on_black_point_changed(v, persist=True))
-        self.ch_btn_group.idToggled.connect(lambda _i, checked: self.sync_ui() if checked else None)
+        self.ch_btn.currentChanged.connect(lambda _i: self.sync_ui())
         self.sync_ui()
 
     def _channel_index(self) -> int:
-        return max(self.ch_btn_group.checkedId(), 0)
+        return self.ch_btn.currentIndex()
 
     def _wp_field(self) -> str:
         idx = self._channel_index()
@@ -389,10 +377,7 @@ class ProcessSidebar(BaseSidebar):
         conf = self.state.config.process
         self.block_signals(True)
         try:
-            # Exclusive group: checking the current mode unchecks the rest.
-            for btn, (mode, *_rest) in zip(self.mode_btns, _MODES):
-                if mode == conf.process_mode:
-                    btn.setChecked(True)
+            self.mode_btn.setCurrentIndex(next(i for i, (mode, *_rest) in enumerate(_MODES) if mode == conf.process_mode))
             self.analysis_buffer_slider.setValue(conf.analysis_buffer)
             self.luma_range_clip_slider.setValue(_luma_range_value_to_slider(conf.luma_range_clip))
             self.color_range_clip_slider.setValue(_color_value_to_slider(conf.color_range_clip))
@@ -466,8 +451,8 @@ class ProcessSidebar(BaseSidebar):
                 ch = _CH_SUFFIX[idx - 1]
                 self.white_point_slider.setValue(getattr(conf, f"white_point_trim_{ch}"))
                 self.black_point_slider.setValue(getattr(conf, f"black_point_trim_{ch}"))
-            for btn, ch in zip((self.ch_r_btn, self.ch_g_btn, self.ch_b_btn), _CH_SUFFIX):
-                btn.edited_dot.set_active(getattr(conf, f"white_point_trim_{ch}") != 0.0 or getattr(conf, f"black_point_trim_{ch}") != 0.0)
+            for i, ch in enumerate(_CH_SUFFIX, start=1):
+                self.ch_btn.set_edited(i, getattr(conf, f"white_point_trim_{ch}") != 0.0 or getattr(conf, f"black_point_trim_{ch}") != 0.0)
 
             # Locked bounds are frozen, so there is nothing left to nudge. The transfer path's
             # window is never measured, so Lock Bounds does not reach it.
@@ -491,10 +476,7 @@ class ProcessSidebar(BaseSidebar):
         Helper to block/unblock all sliders and buttons.
         """
         widgets = [
-            # The group, not just its buttons: QButtonGroup is notified internally, so a blocked
-            # button still makes it emit idToggled and re-enter the mode handler.
-            self.mode_btn_group,
-            *self.mode_btns,
+            self.mode_btn,
             self.autodetect_btn,
             self.lock_bounds_btn,
             self.analysis_buffer_slider,
@@ -505,11 +487,7 @@ class ProcessSidebar(BaseSidebar):
             self.luma_range_clip_slider,
             self.color_range_clip_slider,
             self.positive_source_btn,
-            self.ch_btn_group,
-            self.ch_global_btn,
-            self.ch_r_btn,
-            self.ch_g_btn,
-            self.ch_b_btn,
+            self.ch_btn,
             self.white_point_slider,
             self.black_point_slider,
         ]

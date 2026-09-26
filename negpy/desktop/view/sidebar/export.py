@@ -5,7 +5,6 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QActionGroup
 from PyQt6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -21,6 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from negpy.desktop.view.widgets.choice_button import ChoiceButton
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.widgets.contact_sheet_colors_dialog import ContactSheetColorsDialog
 from negpy.desktop.view.styles.templates import (
@@ -30,14 +30,13 @@ from negpy.desktop.view.styles.templates import (
     hint_label,
     icon_button,
     labeled_action,
-    labeled_toggle,
     section_subheader,
     set_hint_kind,
 )
 from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.collapsible import make_section
-from negpy.desktop.view.widgets.sliders import CompactSlider
+from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
 from negpy.desktop.view.widgets.export_settings_form import ExportSettingsForm, constrain_combo
 from negpy.desktop.view.widgets.split_button import make_split_button
 from negpy.domain.models import PROOF_INTENT_LABELS, ColorSpace, ProofIntent, preset_display_name
@@ -62,23 +61,24 @@ class ExportSidebar(BaseSidebar):
         self.update_timer.setInterval(500)
         self.update_timer.timeout.connect(self._persist_all_export_settings)
 
-        # Task-flow order: the Print/Flat decision reframes the whole form, so it comes first with
-        # the primary Export action right under it. The form follows, and the occasional tools
-        # (presets, contact sheet, preview) sit collapsed at the bottom.
+        # Task-flow order: the output intent reframes the whole form, so it comes first; the
+        # Export action follows the form it reads, and the occasional tools sit collapsed below.
         self._add_flat_master_section()
-        self._add_export_section()
 
         # Shared FORMAT / SIZE / COLOR / DESTINATION rows.
         self.form = ExportSettingsForm()
         self.form.load(self._config_to_form_values())
         self.layout.addWidget(self.form)
         self._add_proof_controls()
+        self._add_export_section()
 
-        self._add_soft_proof_section()
+        # Nearest the export first: another way to export, then the export's proof, then
+        # other outputs, and last the edits rather than the images.
         self._add_presets_section()
-        self._add_sidecars_section()
+        self._add_soft_proof_section()
         self._add_contact_sheet_section()
         self._add_printing_notes_section()
+        self._add_sidecars_section()
         self._sync_flat_enabled()
 
         self.layout.addStretch()
@@ -112,10 +112,8 @@ class ExportSidebar(BaseSidebar):
         self.manage_presets_btn.clicked.connect(self._open_presets_dialog)
         self.export_presets_btn.clicked.connect(self._on_export_presets_clicked)
         self.export_main_btn.clicked.connect(self._on_export_clicked)
-        self.protect_check.toggled.connect(self._on_protect_toggled)
-        self.sync_check.toggled.connect(self._on_sync_to_batch_toggled)
 
-        self.intent_btn_group.idToggled.connect(self._on_flat_output_toggled)
+        self.intent_btn.currentChanged.connect(self._on_flat_output_toggled)
         self.flat_peek_btn.toggled.connect(lambda checked: self.controller.toggle_flat_peek(force=checked))
         self.flat_bake_btn.clicked.connect(self.controller.request_batch_normalization)
         self.controller.flat_output_changed.connect(self._on_flat_output_changed)
@@ -533,49 +531,25 @@ class ExportSidebar(BaseSidebar):
         """Output-intent override: Print (default) or Flat digital intermediate."""
         self.layout.addWidget(section_subheader("OUTPUT INTENT"))
 
-        # Contain the whole intent block (toggle, format, peek/bake, hints) so it reads as one
-        # unit. objectName-scoped, so the border does not cascade.
-        container = QWidget()
-        container.setObjectName("flat_intent_box")
-        container.setStyleSheet(f"#flat_intent_box {{ border: 1px solid {THEME.border_primary}; background: transparent; }}")
-        box = QVBoxLayout(container)
-        box.setContentsMargins(6, 6, 6, 6)
-        box.setSpacing(6)
+        # What Flat and Linear turn on rides a rail under the choice; Print has none.
+        rail_body = QWidget()
+        box = QVBoxLayout(rail_body)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(THEME.space_md)
 
-        intent_row = QHBoxLayout()
-        intent_row.setSpacing(4)
-        self.intent_print_btn = labeled_toggle("", "Print", False, "Export the print as you see it, with the full NegPy look applied.")
-        self.intent_flat_btn = labeled_toggle(
-            "",
-            "Flat",
-            False,
-            "Export a flat, neutral, low-contrast master that keeps maximum tonal and color "
+        self.intent_btn = ChoiceButton(
+            (("", "Print"), ("", "Flat"), ("", "Linear")),
+            "Print: export the print as you see it, with the full NegPy look applied.<br><br>"
+            "Flat: export a flat, neutral, low-contrast master that keeps maximum tonal and color "
             "information for editing in Lightroom, Darktable or Photoshop. Skips the creative "
             "print look (auto density/grade, cast removal, lab effects, toning, vignette) and "
-            "writes a wide-gamut, high-bit-depth file. Your in-app preview is unaffected.",
-        )
-        self.intent_linear_btn = labeled_toggle(
-            "",
-            "Linear",
-            False,
-            "Export the raw decoded sensor data as an untagged 16-bit TIFF, before any "
+            "writes a wide-gamut, high-bit-depth file. Your in-app preview is unaffected.<br><br>"
+            "Linear: export the raw decoded sensor data as an untagged 16-bit TIFF, before any "
             "NegPy processing (no normalization, exposure, lab, toning, color management). "
             "Supported for Pakon RAW and LinearRaw DNG (SilverFast/VueScan) files.",
         )
-        for btn in (self.intent_print_btn, self.intent_flat_btn, self.intent_linear_btn):
-            intent_row.addWidget(btn)
-        self.intent_btn_group = QButtonGroup(self)
-        self.intent_btn_group.setExclusive(True)
-        self.intent_btn_group.addButton(self.intent_print_btn, 0)
-        self.intent_btn_group.addButton(self.intent_flat_btn, 1)
-        self.intent_btn_group.addButton(self.intent_linear_btn, 2)
-        if self.state.linear_output:
-            self.intent_linear_btn.setChecked(True)
-        elif self.state.flat_output:
-            self.intent_flat_btn.setChecked(True)
-        else:
-            self.intent_print_btn.setChecked(True)
-        box.addLayout(intent_row)
+        self.intent_btn.setCurrentIndex(self._state_intent())
+        self.layout.addWidget(self.intent_btn)
 
         peek_bake_row = QHBoxLayout()
         peek_bake_row.setSpacing(4)
@@ -706,16 +680,18 @@ class ExportSidebar(BaseSidebar):
         self.linear_corrections_hint.setVisible(False)
         box.addWidget(self.linear_corrections_hint)
 
-        self.layout.addWidget(container)
+        self.intent_rail = SliderGroup(rail_body)
+        self.layout.addWidget(self.intent_rail)
 
     def _sync_flat_enabled(self) -> None:
-        flat_on = self.intent_flat_btn.isChecked()
-        linear_on = self.intent_linear_btn.isChecked()
+        flat_on = self.intent_btn.currentIndex() == 1
+        linear_on = self.intent_btn.currentIndex() == 2
         if hasattr(self, "form"):
             self.form.set_flat_mode(flat_on)
             # Linear keeps DESTINATION and drops the rest; set_flat_mode reruns the format
             # rows, so the linear pass has to come second or FORMAT reappears.
             self.form.set_linear_mode(linear_on)
+        self.intent_rail.setVisible(flat_on or linear_on)
         self.flat_hint_label.setVisible(flat_on)
         self.flat_peek_btn.setVisible(flat_on)
         self.linear_hint_label.setVisible(linear_on)
@@ -749,7 +725,7 @@ class ExportSidebar(BaseSidebar):
     def _sync_flat_roll_warning(self) -> None:
         """Show the roll-baseline nudge only when flat output is on and the roll
         doesn't yet share a locked normalization baseline."""
-        on = self.intent_flat_btn.isChecked()
+        on = self.intent_btn.currentIndex() == 1
         proc = self.state.config.process
         # Flat-master roll consistency needs both axes baselined across the roll.
         locked = proc.use_luma_average and proc.use_color_average and proc.is_locked_initialized
@@ -757,32 +733,25 @@ class ExportSidebar(BaseSidebar):
         self.flat_roll_warning.setVisible(show)
         self.flat_bake_btn.setVisible(show)
 
-    def _on_flat_output_toggled(self, btn_id: int, checked: bool) -> None:
-        if checked:
-            if btn_id == 2:
-                self.controller.set_linear_output(True)
-            else:
-                self.controller.set_linear_output(False)
-                self.controller.set_flat_output(btn_id == 1)
-            self._sync_flat_enabled()
+    def _state_intent(self) -> int:
+        """Print 0, Flat 1, Linear 2, from the session; Linear wins over Flat."""
+        return 2 if self.state.linear_output else 1 if self.state.flat_output else 0
 
-    def _on_flat_output_changed(self, enabled: bool) -> None:
-        self.intent_btn_group.blockSignals(True)
-        if enabled:
-            self.intent_flat_btn.setChecked(True)
-        elif not self.state.linear_output:
-            self.intent_print_btn.setChecked(True)
-        self.intent_btn_group.blockSignals(False)
+    def _on_flat_output_toggled(self, btn_id: int) -> None:
+        if btn_id == 2:
+            self.controller.set_linear_output(True)
+        else:
+            self.controller.set_linear_output(False)
+            self.controller.set_flat_output(btn_id == 1)
         self._sync_flat_enabled()
 
-    def _on_linear_output_changed(self, enabled: bool) -> None:
-        self.intent_btn_group.blockSignals(True)
-        if enabled:
-            self.intent_linear_btn.setChecked(True)
-        elif not self.state.flat_output:
-            self.intent_print_btn.setChecked(True)
-        self.intent_btn_group.blockSignals(False)
+    def _on_flat_output_changed(self, _enabled: bool) -> None:
+        self.intent_btn.blockSignals(True)
+        self.intent_btn.setCurrentIndex(self._state_intent())
+        self.intent_btn.blockSignals(False)
         self._sync_flat_enabled()
+
+    _on_linear_output_changed = _on_flat_output_changed
 
     _EXPANSION_OPTIONS: dict[str, list[tuple[str, float | None]]] = {
         "pakon": [("4× (default)", None), ("2×", 2.0), ("Off", 1.0)],
@@ -1293,27 +1262,6 @@ class ExportSidebar(BaseSidebar):
         saved = self._RETIRED_EXPORT_SCOPES.get(saved, saved)
         self._set_export_scope(saved if saved in self._EXPORT_SCOPES else "current", persist=False)
 
-        # Export-time behaviors over the Metadata tab's per-frame fields, not metadata
-        # content themselves, so they live beside the Export button rather than on
-        # that tab. Both are stored on the Metadata config.
-        meta = self.state.config.metadata
-        self.protect_check = self._small_toggle(
-            "fa5s.shield-alt",
-            " Protect Original Metadata",
-            meta.protect_original_metadata,
-            "Copy EXIF and XMP from the source file onto exports without adding or changing metadata. Gear and process fields are ignored.",
-        )
-        self.layout.addWidget(self.protect_check)
-
-        self.sync_check = self._small_toggle(
-            "fa5s.copy",
-            " Sync Metadata to Batch",
-            meta.sync_to_batch,
-            "Batch and preset exports write this frame's capture, gear and process values to every file, instead of each file's own.",
-        )
-        self.sync_check.setEnabled(not meta.protect_original_metadata)
-        self.layout.addWidget(self.sync_check)
-
     def _set_export_scope(self, key: str, persist: bool = True) -> None:
         self._export_scope = key
         _label, btn_label, tooltip = self._EXPORT_SCOPES[key]
@@ -1322,16 +1270,6 @@ class ExportSidebar(BaseSidebar):
         self.export_main_btn.setToolTip(tooltip_with_shortcut(tooltip, self._EXPORT_SCOPE_SHORTCUTS.get(key)))
         if persist:
             self.controller.session.repo.save_global_setting("export_scope", key)
-
-    def _on_sync_to_batch_toggled(self, checked: bool) -> None:
-        self.update_config_section("metadata", persist=True, render=False, readback_metrics=False, sync_to_batch=checked)
-
-    def _on_protect_toggled(self, checked: bool) -> None:
-        """Protect ignores gear/process fields, so syncing them to a batch would mean
-        nothing; the Metadata tab's own fields disable through its sync_ui() picking
-        up this same config change."""
-        self.sync_check.setEnabled(not checked)
-        self.update_config_section("metadata", persist=True, render=False, readback_metrics=False, protect_original_metadata=checked)
 
     def _flush_export_settings(self) -> None:
         """Stop the debounce timer and write the form into state immediately."""
@@ -1579,10 +1517,6 @@ class ExportSidebar(BaseSidebar):
             if not self.cs_output_path_edit.hasFocus():
                 self.cs_output_path_edit.setText(conf.contact_sheet_output_path)
             self.sidecars_enabled_btn.setChecked(conf.export_sidecars_enabled)
-            meta = self.state.config.metadata
-            self.protect_check.setChecked(meta.protect_original_metadata)
-            self.sync_check.setChecked(meta.sync_to_batch)
-            self.sync_check.setEnabled(not meta.protect_original_metadata)
             self.printing_notes_preview_btn.setChecked(self.state.printing_notes)
             self._refresh_contact_sheet_templates()
             saved_template = conf.contact_sheet_template.strip()
@@ -1590,12 +1524,7 @@ class ExportSidebar(BaseSidebar):
                 self.cs_template_combo.setCurrentText(saved_template)
             else:
                 self.cs_template_combo.setCurrentText(ContactSheetTemplates.DEFAULT_NAME)
-            if self.state.linear_output:
-                self.intent_linear_btn.setChecked(True)
-            elif self.state.flat_output:
-                self.intent_flat_btn.setChecked(True)
-            else:
-                self.intent_print_btn.setChecked(True)
+            self.intent_btn.setCurrentIndex(self._state_intent())
             self.flat_peek_btn.setChecked(self.state.flat_peek)
             self.linear_wb_checkbox.setChecked(self.state.linear_apply_wb)
             self.linear_flatfield_checkbox.setChecked(self.state.linear_apply_flatfield)
@@ -1631,8 +1560,6 @@ class ExportSidebar(BaseSidebar):
             self.cs_output_path_edit,
             self.cs_template_combo,
             self.sidecars_enabled_btn,
-            self.protect_check,
-            self.sync_check,
             self.flat_peek_btn,
             self.printing_notes_preview_btn,
             self.linear_wb_checkbox,
@@ -1643,4 +1570,4 @@ class ExportSidebar(BaseSidebar):
         ]
         for w in widgets:
             w.blockSignals(blocked)
-        self.intent_btn_group.blockSignals(blocked)
+        self.intent_btn.blockSignals(blocked)

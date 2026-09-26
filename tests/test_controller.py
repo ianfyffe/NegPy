@@ -998,6 +998,45 @@ class TestAppController(unittest.TestCase):
         self.assertEqual(rolls.roll_defaults(self.controller.session.repo, roll_id)["hue_trim"], 2.5)
         self.assertEqual(rolls.frame_override_cards(self.controller.session.repo, roll_id, "h1"), {"autocrop"})
 
+    def test_cast_removal_is_its_own_roll_card(self):
+        from negpy.services.assets import rolls
+
+        self._wire_repo_store()
+        roll_id = rolls.create_virtual_roll(self.controller.session.repo, "Portra", [])
+        state = self.mock_session_manager.state
+        state.active_roll_id = roll_id
+        state.uploaded_files = [{"name": "a.dng", "path": "/a.dng", "hash": "h1"}]
+        state.current_file_hash = "h1"
+
+        self.controller.set_roll_default("cast_removal", cast_removal_strength=0.3)
+
+        self.assertEqual(rolls.frame_override_cards(self.controller.session.repo, roll_id, "h1"), {"cast_removal"})
+        cfg, _kwargs = self.mock_session_manager.update_config.call_args
+        self.assertEqual(cfg[0].exposure.cast_removal_strength, 0.3)
+
+    def test_pushing_film_mode_carries_the_rolls_cast_removal(self):
+        """The roll's strength overlays after its mode, so a negative's default left in
+        place would reach every frame of a roll pushed to Slide."""
+        from negpy.features.process.models import ProcessMode
+        from negpy.services.assets import rolls
+
+        self._wire_repo_store()
+        repo = self.controller.session.repo
+        roll_id = rolls.create_virtual_roll(repo, "Ektachrome", [])
+        rolls.set_roll_defaults(repo, roll_id, process_mode=ProcessMode.C41, cast_removal_strength=1.0)
+        rolls.set_frame_override(repo, roll_id, "h1", "film", locked=True)
+        state = self.mock_session_manager.state
+        state.active_roll_id = roll_id
+        state.uploaded_files = [{"name": "a.dng", "path": "/a.dng", "hash": "h1"}]
+        state.current_file_hash = "h1"
+        state.config = replace(state.config, process=replace(state.config.process, process_mode=ProcessMode.E6))
+
+        self.controller.apply_roll_card("film")
+
+        defaults = rolls.roll_defaults(repo, roll_id)
+        self.assertEqual(defaults["process_mode"], ProcessMode.E6)
+        self.assertEqual(defaults["cast_removal_strength"], 0.0)
+
     def test_apply_roll_card_refreshes_the_thumbnails_of_frames_that_follow_the_roll(self):
         """A frame locked on the pushed card keeps its own value, so it is neither
         flagged stale nor re-rendered."""
@@ -4211,30 +4250,11 @@ class TestRetouchPersistence(unittest.TestCase):
         saved = self.mock_session_manager.update_config.call_args.args[0]
         self.assertEqual(saved.retouch.manual_heal_strokes, [])
 
-    def test_cycle_dust_overlay_with_ir(self):
-        self.controller.state.has_ir = True
-        self.controller.state.dust_overlay_mode = "off"
-        seq = []
-        for _ in range(5):
-            self.controller.cycle_dust_overlay()
-            seq.append(self.controller.state.dust_overlay_mode)
-        self.assertEqual(seq, ["marked", "ir", "off", "marked", "ir"])
-
-    def test_cycle_dust_overlay_skips_ir_without_ir(self):
-        self.controller.state.has_ir = False
-        self.controller.state.dust_overlay_mode = "off"
-        seq = []
-        for _ in range(4):
-            self.controller.cycle_dust_overlay()
-            seq.append(self.controller.state.dust_overlay_mode)
-        self.assertEqual(seq, ["marked", "off", "marked", "off"])
-
-    def test_cycle_dust_overlay_from_ir_when_ir_lost(self):
-        # Mode was "ir" but the new frame has none: cycling treats it as off.
-        self.controller.state.has_ir = False
-        self.controller.state.dust_overlay_mode = "ir"
-        self.controller.cycle_dust_overlay()
-        self.assertEqual(self.controller.state.dust_overlay_mode, "marked")
+    def test_set_dust_overlay_sets_the_mode_and_repaints(self):
+        seen = []
+        self.controller.dust_overlay_changed.connect(lambda: seen.append(self.controller.state.dust_overlay_mode))
+        self.controller.set_dust_overlay("marked")
+        self.assertEqual(seen, ["marked"])
 
 
 if __name__ == "__main__":
