@@ -133,6 +133,38 @@ def test_a_format_2_sidecar_locks_only_where_the_edit_differs_from_the_roll(tmp_
     assert [c.process.hue_trim for c in _look(b)[:2]] == [2.0, 5.0]
 
 
+def test_a_card_the_writer_did_not_know_locks_where_the_edit_differs(tmp_path):
+    b = _machine(tmp_path, "b")
+    rolls.set_roll_defaults(b.repo, b.roll_id, hue_trim=2.0, cast_removal_strength=1.0)
+    older_cards = sorted(set(rolls.ROLL_DEFAULT_FIELDS) - {"cast_removal"})
+    edit = replace(_cfg(hue_trim=5.0), exposure=replace(_cfg().exposure, cast_removal_strength=0.3))
+    payload = {
+        "sidecar_format": 3,
+        "saved_at": 10.0,
+        "source_hash": "h1",
+        "mark": None,
+        "edit": edit.to_dict(),
+        "roll_locks": [],
+        "roll_cards": older_cards,
+    }
+    with open(sidecar_path_for(b.assets[0]["path"]), "w", encoding="utf-8") as f:
+        json.dump(payload, f, default=str)
+
+    read_frame_sidecars(b.repo, b.assets[:1])
+
+    assert rolls.frame_override_cards(b.repo, b.roll_id, "h1") == {"cast_removal"}
+    look = _look(b)[0]
+    assert (look.process.hue_trim, look.exposure.cast_removal_strength) == (2.0, 0.3)
+
+
+def test_a_sidecar_names_every_card_its_locks_decide(pair):
+    a, _ = pair
+    sidecar = sidecar_from_repo(a.repo, "h2", a.assets[1]["path"])
+
+    assert sidecar.roll_cards == tuple(sorted(rolls.ROLL_DEFAULT_FIELDS))
+    assert "cast_removal" in sidecar.roll_cards
+
+
 def test_a_roll_new_here_is_adopted_silently_and_a_newer_one_offered_until_declined(pair):
     a, b = pair
     _mirror(a)

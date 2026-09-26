@@ -4,8 +4,9 @@ and one ``.negpy-roll`` file per folder roll.
 Format 3 is an envelope: ``saved_at`` (the DB row's ``updated_at``, so a sidecar this
 machine mirrored compares equal to its row, not newer), ``source_hash``, ``mark`` and
 ``mark_at`` (the mark's own time), the ``edit`` (flat config), named ``work_prints`` with
-their ``updated_at``, ``deleted_work_prints`` (name: deletion time) and ``roll_locks``, the
-cards the frame keeps locked in its folder roll. A frame with a mark or
+their ``updated_at``, ``deleted_work_prints`` (name: deletion time), ``roll_locks``, the
+cards the frame keeps locked in its folder roll, and ``roll_cards``, every card the writer
+knew, so a lock set says nothing of a card added after it was written. A frame with a mark or
 work prints but no saved edit has a null ``edit`` and ``saved_at``. A file without
 ``mark_at`` dates a mark by ``saved_at`` and carries no clear; a format-2 file has no ``roll_locks``. A
 format-1 file is a bare flat config and has no timestamp, so it only ever fills a DB miss.
@@ -67,6 +68,7 @@ class Sidecar:
     deleted_work_prints: Dict[str, float] = field(default_factory=dict)
     # None when the file does not say: format 2, no folder roll, or a frame forked in it.
     roll_locks: Optional[tuple] = None
+    roll_cards: Optional[tuple] = None
 
     @property
     def work_print_stamps(self) -> Dict[str, float]:
@@ -90,6 +92,7 @@ class SidecarScan:
     prints: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False, compare=False)
     source_hash: str = ""
     roll_locks: Optional[tuple] = None
+    roll_cards: Optional[tuple] = None
 
     @property
     def has_edit(self) -> bool:
@@ -122,6 +125,7 @@ class SidecarScan:
             work_prints=work_prints,
             deleted_work_prints=dict(self.deleted_work_prints),
             roll_locks=self.roll_locks,
+            roll_cards=self.roll_cards,
         )
 
 
@@ -182,6 +186,7 @@ def _to_payload(sidecar: Sidecar) -> Dict[str, Any]:
         },
         "deleted_work_prints": dict(sidecar.deleted_work_prints),
         "roll_locks": list(sidecar.roll_locks) if sidecar.roll_locks is not None else None,
+        "roll_cards": list(sidecar.roll_cards) if sidecar.roll_cards is not None else None,
     }
 
 
@@ -196,6 +201,7 @@ def _scan_payload(data: Dict[str, Any]) -> Optional[SidecarScan]:
     mark_at = data.get("mark_at")
     mark = data.get("mark")
     locks = data.get("roll_locks")
+    known = data.get("roll_cards")
     prints: Dict[str, Dict[str, Any]] = {}
     stamps: Dict[str, float] = {}
     for name, entry in (data.get("work_prints") or {}).items():
@@ -221,6 +227,7 @@ def _scan_payload(data: Dict[str, Any]) -> Optional[SidecarScan]:
         prints=prints,
         source_hash=str(data.get("source_hash") or ""),
         roll_locks=tuple(str(c) for c in locks) if isinstance(locks, list) else None,
+        roll_cards=tuple(str(c) for c in known) if isinstance(known, list) else None,
     )
 
 
@@ -253,17 +260,18 @@ def _roll_locks(repo, file_hash: str, source_path: str) -> Optional[tuple]:
 
 
 def _restore_roll_locks(repo, file_hash: str, source_path: str, sidecar: Sidecar) -> None:
-    """Set the frame's locks in its folder roll from the sidecar. A file that does not say
-    locks every card where the edit differs from this roll's defaults, and unlocks none. A
-    fork hash has no locks of its own to set."""
+    """Set the frame's locks in its folder roll from the sidecar. The file's locks decide
+    each card its writer knew; every other card, or all of them in a file that does not say,
+    is locked where the edit differs from this roll's defaults, and none unlocks. A fork
+    hash has no locks of its own to set."""
     roll_id = _folder_roll(repo, source_path) if unforked_hash(file_hash) == file_hash else None
     if roll_id is None or rolls.is_forked(repo, roll_id, file_hash) or sidecar.config is None:
         return
     current = rolls.frame_override_cards(repo, roll_id, file_hash)
+    cards = current | rolls.diverged_cards(rolls.roll_defaults(repo, roll_id), sidecar.config)
     if sidecar.roll_locks is not None:
-        cards = set(sidecar.roll_locks)
-    else:
-        cards = current | rolls.diverged_cards(rolls.roll_defaults(repo, roll_id), sidecar.config)
+        known = set(sidecar.roll_cards or ())
+        cards = set(sidecar.roll_locks) | {card for card in cards if card not in known}
     if cards != current:
         rolls.set_frame_locks(repo, roll_id, file_hash, cards)
 
@@ -285,6 +293,7 @@ def sidecar_from_repo(repo, file_hash: str, source_path: str = "") -> Optional[S
         return None
     stamps = repo.load_work_print_stamps(file_hash)
     roll_id = _folder_roll(repo, source_path)
+    locks = _roll_locks(repo, file_hash, source_path) if record else None
 
     def portable(cfg: WorkspaceConfig) -> WorkspaceConfig:
         return _rebind_source(cfg, f"roll:{roll_id}", FOLDER_ROLL_SOURCE) if roll_id else cfg
@@ -297,7 +306,8 @@ def sidecar_from_repo(repo, file_hash: str, source_path: str = "") -> Optional[S
         mark_at=mark_record[1] if mark_record else None,
         work_prints={name: SidecarWorkPrint(created_at, portable(cfg), stamps.get(name)) for name, created_at, cfg in saved_prints},
         deleted_work_prints=tombstones,
-        roll_locks=_roll_locks(repo, file_hash, source_path) if record else None,
+        roll_locks=locks,
+        roll_cards=tuple(sorted(rolls.ROLL_DEFAULT_FIELDS)) if locks is not None else None,
     )
 
 
