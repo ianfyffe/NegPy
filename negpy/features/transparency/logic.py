@@ -56,6 +56,12 @@ from negpy.kernel.image.validation import ensure_image
 #: frame content. That is what keeps a bracketed set rendering as a bracketed set.
 TRANSFER_DENSITY_RANGE = 3.0
 
+#: Dye Separation's channel cap: a soft ceiling at the higher of this density and the
+#: pixel's lightest channel plus the spread below. Mirrored in transfer.wgsl.
+SEPARATION_CAP_LEVEL = 2.5
+SEPARATION_CAP_SPREAD = 1.5
+SEPARATION_CAP_SOFTNESS = 0.15
+
 TRANSFER_CONSTANTS = {
     # Reference grade (ISO R) that means "no contrast change". MUST equal the grade the app
     # ships in DEFAULT_WORKSPACE_CONFIG, written there as the legacy 2.5 that
@@ -340,10 +346,14 @@ def apply_transfer_curve(
     `cast_offset` arrives already scaled by density_range (see neutral_axis_affine).
 
     `separation`/`separation_trims` are Dye Separation and its per-channel trims,
-    applied after the curve shapes each channel and before decode. They share their
-    math with the print path's resolve_saturation_matrix but not its paper crosstalk:
-    this curve has no paper dye matrix to compose into, so each channel scales its own
-    deviation from the frame's mean density directly rather than through a 3x3 matmul.
+    applied after the curve shapes each channel and before decode. Each channel scales
+    its own deviation from a reference density by its own k. The reference is the mean of
+    the channels, each softly capped at the higher of SEPARATION_CAP_LEVEL and the pixel's
+    lightest channel plus SEPARATION_CAP_SPREAD, in capture density, then shaped like the
+    channel itself. Nothing here bounds a channel the way the paper curve does on the
+    print, and a channel far denser than the rest and near the window's dense end is
+    mostly noise, which the plain mean would spread onto the other two. Grays and
+    ordinary colors never reach the cap, so for them it is the plain mean.
     `damping` is Separation Damping, tapering each channel's own k by each pixel's own
     chroma (see logic.separation_damping_gain); inert at separation 1.0, same as on the print.
     """
@@ -355,10 +365,8 @@ def apply_transfer_curve(
     toe_knee = float(c["transfer_toe_knee"])
     sh_knee = float(c["transfer_shoulder_knee"])
 
-    n = np.asarray(img_norm, dtype=np.float32)
-    dens = np.empty_like(n)
-    for ch in range(3):
-        d = n[:, :, ch] * np.float32(density_range)
+    def shape(d: np.ndarray, ch: int) -> np.ndarray:
+        """One channel's capture density through every control above Dye Separation."""
 
         # Cast Removal: the channel's neutral refs onto green's. First, so every control
         # below shapes the corrected signal.
@@ -399,29 +407,43 @@ def apply_transfer_curve(
         if shoulder[ch] != 0.0:
             d = d + np.float32(shoulder[ch]) * _softplus(np.float32(sh_knee) - d, sw3[ch])
 
-        dens[:, :, ch] = d
+        return d
+
+    n = np.asarray(img_norm, dtype=np.float32)
+    capture = n * np.float32(density_range)
+    dens = np.empty_like(n)
+    for ch in range(3):
+        dens[:, :, ch] = shape(capture[:, :, ch], ch)
 
     sep_k3 = per_channel_dye_separation(separation, separation_trims)
     if sep_k3 != (1.0, 1.0, 1.0):
-        # M(k) = diag(k) + (1-k)*J (papers.resolve_saturation_matrix): each channel
-        # scales its own deviation from the frame's mean density by its own k, since
-        # this curve has no paper base to measure above and no dye matrix to fold the
-        # per-layer trims into instead.
-        mean = dens.mean(axis=2, keepdims=True)
-        e = dens - mean
+        # Both softplus steps rise with their input, so d_ref never falls as a channel
+        # darkens; a reference that can fall folds a smooth gradient into bands. The cap is
+        # decided on the capture, where the window clamp always sits at the dense edge, so
+        # no edit can move a clamped channel back under it.
+        d_lo = capture.min(axis=2, keepdims=True)
+        cap = np.float32(SEPARATION_CAP_LEVEL) + _softplus(
+            d_lo + np.float32(SEPARATION_CAP_SPREAD - SEPARATION_CAP_LEVEL), SEPARATION_CAP_SOFTNESS
+        )
+        capped = cap - _softplus(cap - capture, SEPARATION_CAP_SOFTNESS)
+        capped = np.stack([shape(capped[:, :, ch], ch) for ch in range(3)], axis=2)
+        d_ref = capped.mean(axis=2, keepdims=True)
+        e = dens - d_ref
         if damping > 0.0:
             # Separation Damping makes each channel's k chroma-dependent per pixel, from
             # the same chroma but each channel's own k (see separation_damping_gain_np).
-            chroma = np.sqrt(((e[:, :, 0] - e[:, :, 1]) ** 2 + (e[:, :, 1] - e[:, :, 2]) ** 2 + (e[:, :, 0] - e[:, :, 2]) ** 2) / 3.0)
+            # The chroma reads the capped channels too.
+            ce = capped - d_ref
+            chroma = np.sqrt(((ce[:, :, 0] - ce[:, :, 1]) ** 2 + (ce[:, :, 1] - ce[:, :, 2]) ** 2 + (ce[:, :, 0] - ce[:, :, 2]) ** 2) / 3.0)
             ref_spread = float(EXPOSURE_CONSTANTS["separation_damping_ref_spread"])
             k_eff = np.stack(
                 [separation_damping_gain_np(sep_k3[ch], damping, chroma, ref_spread) for ch in range(3)],
                 axis=2,
             )
-            dens = mean + k_eff * e
+            dens = d_ref + k_eff * e
         else:
             k3 = np.asarray(sep_k3, dtype=np.float32)
-            dens = mean + k3[np.newaxis, np.newaxis, :] * e
+            dens = d_ref + k3[np.newaxis, np.newaxis, :] * e
 
     out = np.power(np.float32(10.0), -dens, dtype=np.float32)
 
