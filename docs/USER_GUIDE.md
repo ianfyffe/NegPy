@@ -15,7 +15,7 @@ If Windows blocks the default data folder, NegPy suggests `%LOCALAPPDATA%\NegPy\
 ### Screen layout
 
 *   **Left, the film strip**: your frames as a contact sheet, with import, sorting and triage tools.
-*   **Center, the canvas**: the live preview. Most tools (crop, white-balance picker, heal brush, dodge/burn masks) work by clicking on it. Scroll or pinch to zoom, drag to pan. The bottom toolbar holds Fit/**1:1** zoom (one scan pixel per screen pixel; below **HQ** a **preview res · HQ off** pill shows the preview is scaled up), undo/redo, rotate/flip and more. Rotate 90° and flip act on every selected frame. Items that do not fit go into the **⋯** menu, which holds every action, including **Preferences…** (all app-wide settings, §15), **Edit Toolbar…** and **Persistent Settings…**. Right-click the image for **Reset View**, **Sticky Zoom** (keep the zoom across frames), the pickers, copy/paste settings and **Unload** (remove the frame from the session, keep its edit). An empty canvas shows **Load some scans to get started**; click it for **Import Folder as a Roll…** (the folder becomes a roll and opens, as in Library) or **Add Files…**.
+*   **Center, the canvas**: the live preview. Most tools (crop, white-balance picker, heal brush, dodge/burn masks) work by clicking on it. Scroll or pinch to zoom, drag to pan. The bottom toolbar holds Fit/**1:1** zoom (one scan pixel per screen pixel; below **HQ** a **preview res · HQ off** pill shows the preview is scaled up), undo/redo, rotate/flip and more. Rotate 90° and flip act on every selected frame. Items that do not fit go into the **⋯** menu, which holds every action, including **Preferences…** (all app-wide settings, §15), **Edit Toolbar…** (puts any tool or action from the menu on the row, except About, updates and the tour) and **Persistent Settings…**. Right-click the image for **Reset View**, **Sticky Zoom** (keep the zoom across frames), the pickers, copy/paste settings and **Unload** (remove the frame from the session, keep its edit). An empty canvas shows **Load some scans to get started**; click it for **Import Folder as a Roll…** (the folder becomes a roll and opens, as in Library) or **Add Files…**.
 *   **Right, the controls**: tabs **Roll** / **Frame** / **Metadata** / **Gear** / **Export** / **Scan**. **Frame** has a pinned **Analysis** readout and its own row of tabs below it. Roll and Frame change the render; the other tabs do not.
 
 Drag a panel by its top edge (the thin strip above Session, the margin around the Controls panel's **Find** box) to float it; its pin button docks it again. **Shift+H** hides both panels, and brings both back. NegPy remembers the layout. **Reset Panel Layout** in the **⋯** menu restores the default layout.
@@ -56,7 +56,7 @@ During a peek the canvas shows a **NEGATIVE**, **EMBEDDED** or **FLAT SCAN** bad
 |-----|--------|---------------|
 | **Geometry** | Geometry | Crop, straighten, easel movements |
 | **Exposure** | Filtration · Tone · Dodge & Burn | White balance, density, contrast, curve, local burns |
-| **Color** | Lab · Alternative Processes · Toning | Chroma, sharpening, lith, cyanotype, toning |
+| **Look** | Lab · Alternative Processes · Toning | Chroma, sharpening, lith, cyanotype, toning |
 | **Finish** | Retouch · Finishing | Dust, vignette, border, carrier |
 | **Favorites** | Your chosen sliders · Presets | Most-used controls, saved edits |
 | **History** | Work prints · Edit history | Named versions, undo trail |
@@ -434,7 +434,7 @@ Color timing, like enlarger dichroic filters. **Global / Shadows / Highlights** 
 *   **Shadows Grade** / **Highlights Grade** (split grade, ±50 ISO-R): local contrast in the deep shadows or highlights.
 *   **Contrast Mask** (±0.5, hidden in Transparency): a blurred mask sandwiched with the negative; the value is its signed gamma. Positive (a positive mask) compresses the range by (1 − gamma) so a harder grade fits the paper, keeping fine detail; use it on a scene too contrasty for your grade, then lower Grade in R. Past about 0.4 edges get a soft halo. Negative expands the range by (1 + gamma) without steepening grain, and works on a negative too flat for Grade; past about −0.4 highlights clip (see the Clipping row).
 *   **Mask Spacer** (2 to 6%, no effect without a mask): the gap between mask and negative, as percent of the frame. Thick masks only broad masses; thin reaches into detail, bites harder, and hazes shadows next to bright areas. 4% is a conservative default. Both mask controls read only your crop and gray out in R/G/B mode.
-*   **Dye Separation** (0.5 to 1.5, hidden in B&W Negative): saturation in density space, applied before decode in the paper's crosstalk matrix, so it follows the paper profile and eases off at toe and shoulder. On a slide it applies to density directly. Below 1.0 pulls toward neutral; 1.0 is off. **Chroma** (Color tab) instead scales color evenly after decode.
+*   **Dye Separation** (0.5 to 1.5, hidden in B&W Negative): saturation in density space, applied before decode in the paper's crosstalk matrix, so it follows the paper profile and eases off at toe and shoulder. On a slide it applies to density directly. Below 1.0 pulls toward neutral; 1.0 is off. **Chroma** (Look tab) instead scales color evenly after decode.
 *   **Separation Damping** (0 to 1, hidden in B&W Negative): where the Dye Separation push lands. Higher keeps the full push on muted color and reduces it on saturated color; below 1.0 separation, pastels go gray first. Grays out **at Dye Separation 1.0**.
 
 **Paper Response**:
@@ -477,7 +477,7 @@ Masks with a hidden outline stay on the map; disabled masks do not. The overlay 
 
 ---
 
-## 6. Color tab
+## 6. Look tab
 
 <!-- panel:lab -->
 ### 6.1 Lab: polish and detail
