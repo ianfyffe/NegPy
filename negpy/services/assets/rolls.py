@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional,
 
 from negpy.features.metadata.models import GEAR_FIELDS, PROCESS_FIELDS, SCANNING_FIELDS
 from negpy.features.process.models import neutral_axis_tuple, with_film_fields
+from negpy.services.assets import half_frame
 from negpy.services.assets.library import folder_counts
 
 if TYPE_CHECKING:
@@ -53,7 +54,8 @@ def _stamp(entry: dict, when: Optional[float] = None) -> None:
 
 
 def touch_roll(repo: Any, roll_id: str, when: Optional[float] = None) -> None:
-    """Date a change to roll state stored outside the roll entry (its Half Frame and Trichrome modes)."""
+    """Date a change to roll state stored outside the roll entry (its Half Frame and Trichrome
+    modes, its half-frame split profile)."""
     store = _read(repo)
     entry = store.get(roll_id)
     if entry is not None:
@@ -141,7 +143,11 @@ def has_portable_state(repo: Any, roll_id: str) -> bool:
     """Whether the roll holds anything its roll file would replace."""
     entry = roll_for_id(repo, roll_id) or {}
     modes = (repo.get_global_setting(key, default=None) for key in (HALF_FRAME_MODE_KEY, TRICHROME_MODE_KEY))
-    return any(entry.get(k) for k in PORTABLE_FIELDS) or any(isinstance(by_roll, dict) and roll_id in by_roll for by_roll in modes)
+    return (
+        any(entry.get(k) for k in PORTABLE_FIELDS)
+        or any(isinstance(by_roll, dict) and roll_id in by_roll for by_roll in modes)
+        or half_frame.roll_half_frame_profile(repo, roll_id) is not None
+    )
 
 
 def adopts_roll_file(repo: Any, roll_id: str) -> bool:
@@ -152,10 +158,17 @@ def adopts_roll_file(repo: Any, roll_id: str) -> bool:
 
 
 def replace_portable_state(
-    repo: Any, roll_id: str, values: Dict[str, Any], half_frame_mode: bool, updated_at: float, trichrome_mode: Optional[bool] = None
+    repo: Any,
+    roll_id: str,
+    values: Dict[str, Any],
+    half_frame_mode: bool,
+    updated_at: float,
+    trichrome_mode: Optional[bool] = None,
+    half_frame_profile: Optional[dict] = None,
 ) -> None:
     """Replace what a roll file carries, stamped with the file's time so it reads as current.
-    A *trichrome_mode* of None is a file that does not carry it, and leaves the mode here."""
+    A *trichrome_mode* or *half_frame_profile* of None is a file that does not carry it, and
+    leaves the value here; an empty profile drops the roll's own."""
     store = _read(repo)
     entry = store.get(roll_id)
     if entry is None:
@@ -170,6 +183,8 @@ def replace_portable_state(
     _set_roll_mode(repo, HALF_FRAME_MODE_KEY, roll_id, half_frame_mode)
     if trichrome_mode is not None:
         _set_roll_mode(repo, TRICHROME_MODE_KEY, roll_id, trichrome_mode)
+    if half_frame_profile is not None:
+        half_frame.set_roll_half_frame_profile(repo, roll_id, half_frame_profile or None)
 
 
 def saved_rolls(repo: Any) -> Dict[str, dict]:

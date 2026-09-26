@@ -13,7 +13,7 @@ import pytest
 from negpy.desktop.session import DesktopSessionManager
 from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
 from negpy.infrastructure.storage.repository import StorageRepository
-from negpy.services.assets import rolls
+from negpy.services.assets import half_frame, rolls
 from negpy.services.assets.composites import remember_composites, restore_maps
 from negpy.services.assets.repoint import find_moved_folder, follow_folder, recognize_roll_folder
 from negpy.services.assets.sidecar import (
@@ -211,6 +211,55 @@ def test_a_roll_file_without_trichrome_mode_leaves_the_mode_here(tmp_path):
 
     assert rolls.roll_defaults(b.repo, b.roll_id) == {"hue_trim": 2.0}
     assert rolls.roll_trichrome_mode(b.repo, b.roll_id)
+
+
+_PROFILE = {"crop_rect": [0.02, 0.05, 0.98, 0.95], "split_x": 0.51, "gutter_thickness": 0.01}
+
+
+def test_the_rolls_split_profile_crosses_machines(tmp_path):
+    a, b = _machine(tmp_path, "a"), _machine(tmp_path, "b")
+    half_frame.save_half_frame_profile(a.repo, a.roll_id, _PROFILE)
+    rolls.touch_roll(a.repo, a.roll_id)
+    export_roll_sidecar(a.repo, a.roll_id)
+    _copy_sidecars(a, b)
+
+    read_roll_sidecar(b.repo, b.roll_id)
+
+    assert half_frame.half_frame_profile(b.repo, b.roll_id) == _PROFILE
+
+
+def test_a_roll_without_its_own_profile_drops_one_here_and_an_older_file_keeps_it(tmp_path):
+    a, b = _machine(tmp_path, "a"), _machine(tmp_path, "b")
+    rolls.set_roll_defaults(a.repo, a.roll_id, hue_trim=2.0)
+    export_roll_sidecar(a.repo, a.roll_id)
+    with open(roll_sidecar_path(a.folder)) as f:
+        data = json.load(f)
+    assert data["half_frame_profile"] is None
+    half_frame.save_half_frame_profile(b.repo, b.roll_id, _PROFILE)
+
+    older = {k: v for k, v in data.items() if k != "half_frame_profile"}
+    with open(roll_sidecar_path(b.folder), "w") as f:
+        json.dump(older, f)
+    adopt_roll_sidecar(b.repo, b.roll_id, read_roll_sidecar(b.repo, b.roll_id, any_age=True).sidecar)
+    assert half_frame.roll_half_frame_profile(b.repo, b.roll_id) == _PROFILE
+
+    _copy_sidecars(a, b)
+    adopt_roll_sidecar(b.repo, b.roll_id, load_roll_sidecar(b.folder))
+    assert half_frame.roll_half_frame_profile(b.repo, b.roll_id) is None
+
+
+def test_a_malformed_profile_in_the_file_is_not_carried(tmp_path):
+    a = _machine(tmp_path, "a")
+    half_frame.save_half_frame_profile(a.repo, a.roll_id, _PROFILE)
+    rolls.touch_roll(a.repo, a.roll_id)
+    export_roll_sidecar(a.repo, a.roll_id)
+    with open(roll_sidecar_path(a.folder)) as f:
+        data = json.load(f)
+    data["half_frame_profile"] = {"crop_rect": [0, 0, 1], "split_x": 0.5, "gutter_thickness": 0.0}
+    with open(roll_sidecar_path(a.folder), "w") as f:
+        json.dump(data, f)
+
+    assert load_roll_sidecar(a.folder).half_frame_profile is None
 
 
 def test_scenes_and_their_baselines_match_by_hash(pair):

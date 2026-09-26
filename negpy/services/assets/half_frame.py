@@ -89,6 +89,33 @@ def save_half_frame_profile(repo: Any, roll_id: Optional[str], profile: dict) ->
         repo.save_global_setting(PROFILE_KEY, profile)
 
 
+def roll_half_frame_profile(repo: Any, roll_id: str) -> Optional[dict]:
+    """The roll's own profile, without the shared fallback; None when it has none."""
+    by_roll = repo.get_global_setting(PROFILE_BY_ROLL_KEY, default=None)
+    profile = by_roll.get(roll_id) if isinstance(by_roll, dict) else None
+    return profile if isinstance(profile, dict) and profile else None
+
+
+def set_roll_half_frame_profile(repo: Any, roll_id: str, profile: Optional[dict]) -> None:
+    """Replace the roll's own profile; None drops it, so the roll reads the shared one."""
+    by_roll = repo.get_global_setting(PROFILE_BY_ROLL_KEY, default=None)
+    by_roll = {k: v for k, v in (by_roll if isinstance(by_roll, dict) else {}).items() if k != roll_id}
+    if profile:
+        by_roll[roll_id] = profile
+    repo.save_global_setting(PROFILE_BY_ROLL_KEY, by_roll)
+
+
+def valid_half_frame_profile(value: Any) -> Optional[dict]:
+    """*value* as a ``{crop_rect, split_x, gutter_thickness}`` profile, or None when it is not one."""
+    if not isinstance(value, dict):
+        return None
+    rect, split, gutter = value.get("crop_rect"), value.get("split_x"), value.get("gutter_thickness")
+    numbers = [*rect, split, gutter] if isinstance(rect, list) and len(rect) == 4 else None
+    if numbers is None or not all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in numbers):
+        return None
+    return {"crop_rect": [float(n) for n in rect], "split_x": float(split), "gutter_thickness": float(gutter)}
+
+
 def half_hash(file_hash: str, half: int) -> str:
     return f"{file_hash}{_SEP}{half}"
 

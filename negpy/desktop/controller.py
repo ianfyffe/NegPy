@@ -1851,11 +1851,15 @@ class AppController(QObject):
         return half_frame_store.half_frame_profile(self.session.repo, self.state.active_roll_id)
 
     def save_half_frame_profile(self, crop_rect, split_x: float, gutter_thickness: float) -> None:
+        roll_id = self.state.active_roll_id
         half_frame_store.save_half_frame_profile(
             self.session.repo,
-            self.state.active_roll_id,
+            roll_id,
             {"crop_rect": list(crop_rect), "split_x": float(split_x), "gutter_thickness": float(gutter_thickness)},
         )
+        if roll_id:
+            rolls.touch_roll(self.session.repo, roll_id)
+            self._mirror_roll(roll_id)
 
     def half_frame_overrides(self) -> dict:
         """Per-file ``(crop_rect, split_x, gutter_thickness)`` overrides, keyed by
@@ -6947,13 +6951,15 @@ class AppController(QObject):
     def apply_sidecar_offers(self, load: list, keep: list) -> bool:
         """Load the chosen offers and decline the rest. Roll files load first, so a frame
         whose sidecar does not carry its locks compares against the loaded roll. True when a
-        loaded Half Frame or Trichrome change started a re-discovery of the loaded assets."""
+        loaded Half Frame, Trichrome or split-profile change started a re-discovery of the
+        loaded assets."""
         roll_load = [o for o in load if isinstance(o, RollSidecarOffer)]
         frame_load = [o for o in load if not isinstance(o, RollSidecarOffer)]
         rediscover = False
         for offer in roll_load:
             before = self.half_frame_mode_for_roll(offer.roll_id)
             trichrome_before = self.trichrome_mode_for_roll(offer.roll_id)
+            profile_before = half_frame_store.half_frame_profile(self.session.repo, offer.roll_id)
             adopt_roll_sidecar(self.session.repo, offer.roll_id, offer.sidecar)
             if offer.roll_id == self.state.active_roll_id and offer.sidecar.half_frame_mode != before:
                 self.half_frame_mode_changed.emit(offer.sidecar.half_frame_mode)
@@ -6961,6 +6967,9 @@ class AppController(QObject):
             trichrome = self.trichrome_mode_for_roll(offer.roll_id)
             if offer.roll_id == self.state.active_roll_id and trichrome != trichrome_before:
                 self.rgb_scan_mode_changed.emit(trichrome)
+                rediscover = True
+            profile = half_frame_store.half_frame_profile(self.session.repo, offer.roll_id)
+            if offer.roll_id == self.state.active_roll_id and offer.sidecar.half_frame_mode and profile != profile_before:
                 rediscover = True
         for offer in frame_load:
             promote_sidecar(self.session.repo, offer.asset["hash"], offer.asset["path"], offer.sidecar)

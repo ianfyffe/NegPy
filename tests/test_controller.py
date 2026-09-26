@@ -109,6 +109,14 @@ class TestAppController(unittest.TestCase):
         self.controller.state.active_roll_id = "roll-b"
         self.assertIsNone(self.controller.half_frame_profile())
 
+    def test_a_rolls_profile_dates_and_mirrors_the_roll(self):
+        self.controller.session.repo.get_global_setting.return_value = None
+        self.controller.state.active_roll_id = "roll-a"
+        with patch("negpy.desktop.controller.rolls") as mock_rolls, patch.object(self.controller, "_mirror_roll") as mirror:
+            self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
+        mock_rolls.touch_roll.assert_called_once_with(self.controller.session.repo, "roll-a")
+        mirror.assert_called_once_with("roll-a")
+
     def test_half_frame_override_round_trip(self):
         self.controller.session.repo.get_global_setting.return_value = None
         self.assertEqual(self.controller.half_frame_overrides(), {})
