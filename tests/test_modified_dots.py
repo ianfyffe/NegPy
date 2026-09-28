@@ -10,8 +10,7 @@ from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
 def _panel():
     controller = MagicMock()
     controller.state = AppState()
-    # An untouched file's config, not AppState()'s own bare WorkspaceConfig() placeholder --
-    # crosstalk_strength (and friends) differ between the two (see DEFAULT_WORKSPACE_CONFIG).
+    # An untouched file's config, which is what the dots are counted against.
     controller.state.config = DEFAULT_WORKSPACE_CONFIG
     return controller, ControlsPanel(controller)
 

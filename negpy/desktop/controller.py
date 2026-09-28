@@ -132,6 +132,7 @@ from negpy.features.exposure.analysis import (
     ring_overrides,
     rotate_grid,
     strip_cells,
+    strip_center,
     strip_overrides,
 )
 from negpy.features.exposure.logic import (
@@ -2399,7 +2400,8 @@ class AppController(QObject):
         if kind == "color":
             exposure = replace(exposure, wb_magenta=0.0, wb_yellow=0.0)
         else:
-            exposure = replace(exposure, density=1.0, grade=115.0)
+            density, grade = strip_center()
+            exposure = replace(exposure, density=density, grade=grade)
         return f"{kind}:{self._render_memo_key(replace(self.state.config, exposure=exposure))}"
 
     def _retain_displayed_texture(self) -> Optional[GPUTexture]:

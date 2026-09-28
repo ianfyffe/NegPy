@@ -6,6 +6,7 @@ from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QWidget
 
 from negpy.desktop.session import AppState, ToolMode
+from negpy.domain.models import AspectRatio
 from negpy.desktop.view.canvas.overlay import CanvasOverlay
 
 _DISPLAY = (200, 160)
@@ -16,10 +17,17 @@ def _mouse_event(kind: QEvent.Type, pos: QPointF, buttons=Qt.MouseButton.LeftBut
     return QMouseEvent(kind, pos, Qt.MouseButton.LeftButton, buttons, Qt.KeyboardModifier.NoModifier)
 
 
+def _free_crop_state() -> AppState:
+    """AppState with the crop ratio unlocked: a drag on one edge moves that edge alone
+    only when no aspect ratio holds the rectangle, and the shipped default is 3:2."""
+    cfg = AppState().config
+    return AppState(config=replace(cfg, geometry=replace(cfg.geometry, autocrop_ratio=AspectRatio.FREE)))
+
+
 def _crop_overlay() -> CanvasOverlay:
     parent = QWidget()
     parent._is_panning = False
-    overlay = CanvasOverlay(AppState(), parent)
+    overlay = CanvasOverlay(_free_crop_state(), parent)
     overlay._test_parent = parent
     overlay._view_rect = QRectF(0, 0, *_DISPLAY)
     overlay._current_size = _DISPLAY

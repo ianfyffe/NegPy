@@ -10,6 +10,7 @@ from negpy.desktop.view.styles.templates import header_row, hint_label, section_
 from negpy.desktop.view.widgets.collapsible import NO_ROLL_SCOPE_HINT, CollapsibleSection, make_section
 from negpy.desktop.view.widgets.charts import MiniHistogramWidget, MiniRGBHistogramWidget
 from negpy.desktop.view.styles.theme import THEME
+from negpy.features.exposure.models import EXPOSURE_CONSTANTS
 from negpy.features.lab.models import LabConfig
 from negpy.features.altprocess.models import AltProcessConfig
 from negpy.features.toning.models import ToningConfig
@@ -99,8 +100,8 @@ _BASELINE_FIELDS = (
 
 # Constant frozen-dataclass defaults, built once rather than per resync. Exposure/process/
 # geometry/config come from DEFAULT_WORKSPACE_CONFIG, not their own bare dataclass default:
-# grade, crosstalk_strength and the autocrop fields are calibrated there (transfer_grade_ref
-# and friends), which is also what an untouched or reset file actually carries.
+# the autocrop fields are the shipped ones only there, which is also what an untouched or
+# reset file actually carries.
 _DEFAULT_EXPOSURE = DEFAULT_WORKSPACE_CONFIG.exposure
 _DEFAULT_LAB = LabConfig()
 _DEFAULT_TONING = ToningConfig()
@@ -559,7 +560,8 @@ class ControlsPanel(QWidget):
         )
         exp.grade_slider.setToolTip(
             tooltip_with_shortcut(
-                "Contrast (ISO R paper exposure range): R180 = very soft, R50 = very hard; R110 ≈ grade 2 paper",
+                f"Contrast (ISO R paper exposure range): R{EXPOSURE_CONSTANTS['iso_r_max']:.0f} = very soft, "
+                f"R{EXPOSURE_CONSTANTS['iso_r_min']:.0f} = very hard; R110 ≈ grade 2 paper",
                 ["grade_up", "grade_down"],
             )
         )

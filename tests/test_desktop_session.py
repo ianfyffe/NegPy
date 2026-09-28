@@ -1716,7 +1716,8 @@ class TestSessionEmptied(unittest.TestCase):
         self.assertIsNone(state.current_file_hash)
         self.assertIsNone(state.preview_raw)
         self.assertEqual(state.last_metrics, {})
-        self.assertEqual(state.config, WorkspaceConfig())
+        # Back to a fresh session's own config, which is the one a card's Reset lands on.
+        self.assertEqual(state.config, AppState().config)
 
     def test_remove_current_last_file_emits_and_resets(self):
         self.session.remove_current_file()

@@ -139,6 +139,7 @@ NegPy never creates, renames, moves or deletes anything in the folder. Reorganiz
 
 Right-click a roll for:
 
+*   **Close Roll…** (**loaded** roll only): empties the Film Strip and returns to the Library. Asks first; edits stay saved.
 *   **Rename…**: renames the roll, not the folder rows above it. A folder roll also offers **Also rename the folder on disk** (unticked by default, asked each time). NegPy refuses with a warning if a sibling has that name or permission is missing. Stitches, HDR merges and virtual-roll members in the folder follow it, and your other computers follow the rename (Export → Sidecars). Inside a cloud-sync folder (Dropbox, iCloud, OneDrive), the sync can treat a rename as delete and re-upload.
 *   **Delete…**: forgets the roll record only; folder, images, edits and its `.negpy-roll` file stay. **↻** does not bring it back; **Import Folder as a Roll…** restores it, and the roll file is then offered rather than taken. **Clear Library** in *Manage Database* forgets all rolls.
 *   **Roll Analysis** (**loaded** roll only): runs Roll Analysis on every frame outside a scene ([§10.5](#105-roll-analysis)) and stores it as the roll's baseline, for any frame's **Use average** toggles, in this roll or another.
@@ -155,7 +156,8 @@ A frame has one edit in every roll that holds it. On a frame in more than one ro
 
 The **⋮** menu on the Film Strip header, beside its ⓘ guide:
 
-*   **New Roll…**: clears the film strip so you can drag in frames and keep them with **Save as Roll…**. Same as **Clear All…**.
+*   **New Roll…**: clears the film strip so you can drag in frames and keep them with **Save as Roll…**.
+*   **Close Roll…**: empties the film strip and returns to the Library; **Unload All…** when the frames are not a roll. Asks first; edits stay saved.
 *   **Reset Roll to Defaults…**: **Reset Settings** on every visible frame. Asks first; each reset is an undo step.
 
 The grid button on the same header opens the **Light Table** (`Shift+G`): the roll as a grid in place of the canvas, to cull and pick frames with the same selection, marks and menus. Double-click or **Enter** opens a frame on the canvas; **Esc** or `Shift+G` goes back. Both side panels step aside while it shows, so the grid fills the window.
@@ -168,7 +170,7 @@ The Film Strip button row:
 *   **Apply (clone)**: copies the current frame's settings, aspects chosen in a dialog, to selected frames or the whole roll. Crop and rotation stay per-image.
 *   **Roll Settings** (tag icon): tags gear, capture, place, process and scanning metadata for the frame, a selection or the whole roll (default when a roll is loaded). Fields start from the active frame; **Load** a metadata preset to fill and tick fields, then tick groups to write. With Analog Gear empty, it matches the folder name against your Gear library, as at import, and never overwrites tagged gear.
 *   **Save as Roll…** (red folder icon): keeps the loaded frames as a roll. See [Rolls that are not folders](#rolls-that-are-not-folders).
-*   **Unload…**: drops the active frame or selection. For the whole roll, use *Clear All…*.
+*   **Unload…**: drops the active frame or selection. For the whole roll, use **Close Roll…**.
 *   **Show Scenes** (layers icon): edges each frame in its scene's color, with the selection ring just outside it. See [Scenes](#scenes).
 *   **Sort** (arrows): orders the frames by Name or Date, or by **Scene** once the loaded roll has one ([Scenes](#scenes)), ascending or descending. The Library's roll list has its own.
 *   **Sheet filter** (funnel): *All Frames*, *Keepers Only* or *Hide Rejected*, for every roll.
@@ -177,7 +179,7 @@ Both of the last two are remembered between sessions.
 
 Above both sections are the **filter box**, a **`.*`** regex toggle and a **search-library** button, shared by Library and Film Strip, plus a **search-by-meaning** toggle once enabled in Preferences. The Film Strip has a **tally** ("36 frames · 12 keepers · 3 rejected") and a **thumbnail size** slider. With a filter active, the tally names it ("3 of 36 frames · Keepers filter"); if it hides everything, **Show all frames** clears the filter box and funnel. The tally starts with the roll name ("Portra 400 — 36 frames"), or **Collection** for frames from a search, several folders or added by hand; their edits also show in each frame's own roll. In a narrow panel the tally is cut short with …; hover it to read it in full.
 
-Right-click **empty space** for **Add Files**, **Add Folder** and **Clear All…** (always the whole session). Toolbar buttons that do not fit a narrow panel move into a **»** menu.
+Right-click **empty space** for **Add Files**, **Add Folder** and **Close Roll…** (always the whole Film Strip). Toolbar buttons that do not fit a narrow panel move into a **»** menu.
 
 #### Filtering the sheet
 
@@ -375,14 +377,14 @@ Rows that measure the scan, not your edit; hover for details. A row with nothing
 
 *   **Auto** (magic wand on the CROP header): detect the frame edge and crop to it. Its settings and the whole-roll run are on the Roll tab's **Crop** card ([§10.4](#104-crop)).
 *   **Ratio**: the roll's crop ratio, the same field as on the Crop card; the crop tool snaps to it.
-*   **Crop** tool (crop icon on the CROP header): draw a crop rectangle; when **Ratio** is **Free**, drag an edge midpoint to resize one axis. It opens on the current crop, including one **Auto** found; after a manual change nothing re-detects over it. **Reset** (undo icon on the CROP header) clears it and turns auto-crop off.
+*   **Crop** tool (crop icon on the CROP header): draw a crop rectangle; when **Ratio** is **Free**, drag an edge midpoint to resize one axis. It opens on the current crop, including one **Auto** found; after a manual change nothing re-detects over it. Move the pointer past the edge of the visible viewport to pan during a crop draw, move, or resize.. **Reset** (undo icon on the CROP header) clears it and turns auto-crop off.
 *   **Guide**: *Thirds*, *Phi Grid*, *Diagonals*, *Golden Triangles*, *Golden Spiral*, *Armature*, *Diagonal Method*, *Grid* or *Off*. The redo button rotates guides with orientations (spiral 8, triangles 2).
 
 **Alignment:**
 
 *   **Crop by Default** (crop icon, right end of the ALIGNMENT header): crop the wedge Fine Rotation, Tilt and Swing leave, so no edge shows extrapolated pixels. Live, only while no manual or auto crop is set. While you adjust a slider below, the canvas briefly darkens the margin it trims.
 *   **Fine Rotation** (±45°): sub-degree rotation, positive clockwise. Applied after auto-crop.
-*   **Straighten** tool (ruler, on the ALIGNMENT header): draw a line along a horizon or vertical edge to level or plumb it.
+*   **Straighten** tool (ruler, on the ALIGNMENT header): draw a line along a horizon or vertical edge to level or plumb it. Move the pointer past the edge of the viewport to pan during drawing.
 *   **Tilt** (±15%): tip the easel about a horizontal axis to correct converging verticals. Positive stretches the top edge. The unit is percent of the frame, not an angle.
 *   **Swing** (±15%): the same about a vertical axis, for converging horizontals. Positive stretches the left edge.
 

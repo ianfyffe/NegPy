@@ -54,12 +54,13 @@ DEFAULT_WORKSPACE_CONFIG = WorkspaceConfig(
     process=ProcessConfig(
         process_mode=ProcessMode.C41,
         analysis_buffer=0.05,
-        # Legacy default Lab separation 1.5 carried over to the capture-side domain.
-        crosstalk_strength=0.5,
+        # Off until a profile is calibrated: a crosstalk matrix describes one scanning
+        # setup, which the shipped config cannot know.
+        crosstalk_strength=0.0,
     ),
     exposure=ExposureConfig(
         density=1.0,
-        grade=2.5,
+        grade=115.0,
         toe=0.0,
         toe_width=2.5,
         shoulder=0.0,

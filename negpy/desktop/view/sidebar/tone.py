@@ -10,6 +10,9 @@ from negpy.features.exposure.logic import per_channel_dye_separation
 from negpy.features.hdr.models import hdr_active
 from negpy.features.exposure.models import EXPOSURE_CONSTANTS, TUNABLE_TARGETS, apply_targets
 
+_ISO_R_MIN = float(EXPOSURE_CONSTANTS["iso_r_min"])
+_ISO_R_MAX = float(EXPOSURE_CONSTANTS["iso_r_max"])
+
 _CH_SUFFIX = ("red", "green", "blue")
 _CH_LABEL = ("", " R", " G", " B")
 _CH_COLORS = (THEME.channel_red_text, THEME.channel_green_text, THEME.channel_blue_text)
@@ -25,7 +28,9 @@ class ToneSidebar(BaseSidebar):
         conf = self.state.config.exposure
 
         self.density_slider = CompactSlider("Print Density", 0.0, 2.0, conf.density)
-        self.grade_slider = CompactSlider("ISO-R Grade", 50.0, 180.0, conf.grade, step=1.0, inverted=True, unit=" R")
+        # The travel is the curve's own clamp, so the slider cannot offer a grade the
+        # kernel would clip (grade_to_slope, split_grade_deltas, the local-grade map).
+        self.grade_slider = CompactSlider("ISO-R Grade", _ISO_R_MIN, _ISO_R_MAX, conf.grade, step=1.0, inverted=True, unit=" R")
         self.grade_trim_slider = CompactSlider("Grade", -30.0, 30.0, 0.0, step=1.0, inverted=True, unit=" R")
         self.grade_trim_slider.setToolTip(
             "Crossover correction — this layer's contrast trim in ISO-R points on top of the Grade: "

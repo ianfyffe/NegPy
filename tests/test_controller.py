@@ -37,6 +37,13 @@ if not QApplication.instance():
     _app = QApplication(sys.argv)
 
 
+def _peek_state() -> AppState:
+    """AppState with the shipped autocrop inset off: a peek test compares whole buffers,
+    so the frame must reach the canvas at its own size."""
+    cfg = AppState().config
+    return AppState(config=replace(cfg, geometry=replace(cfg.geometry, autocrop_offset=0)))
+
+
 def _slide_config(cfg):
     from negpy.features.process.models import ProcessMode
 
@@ -4909,7 +4916,7 @@ class TestNegativePeekColor(unittest.TestCase):
 
     def setUp(self):
         self.mock_session_manager = MagicMock(spec=DesktopSessionManager)
-        self.mock_session_manager.state = AppState()
+        self.mock_session_manager.state = _peek_state()
         self.mock_session_manager.repo = MagicMock()
         with (
             patch("negpy.desktop.controller.RenderWorker") as mock_rw_class,
@@ -5053,7 +5060,7 @@ class TestEmbeddedPeek(unittest.TestCase):
         import numpy as np
 
         self.mock_session_manager = MagicMock(spec=DesktopSessionManager)
-        self.mock_session_manager.state = AppState()
+        self.mock_session_manager.state = _peek_state()
         self.mock_session_manager.repo = MagicMock()
         with (
             patch("negpy.desktop.controller.RenderWorker") as mock_rw_class,
@@ -5150,7 +5157,7 @@ class TestCompareFlatPeekInteraction(unittest.TestCase):
         import numpy as np
 
         self.mock_session_manager = MagicMock(spec=DesktopSessionManager)
-        self.mock_session_manager.state = AppState()
+        self.mock_session_manager.state = _peek_state()
         self.mock_session_manager.repo = MagicMock()
         with (
             patch("negpy.desktop.controller.RenderWorker") as mock_rw_class,

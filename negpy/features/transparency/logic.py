@@ -64,11 +64,10 @@ SEPARATION_CAP_SOFTNESS = 0.15
 
 TRANSFER_CONSTANTS = {
     # Reference grade (ISO R) that means "no contrast change". MUST equal the grade the app
-    # ships in DEFAULT_WORKSPACE_CONFIG, written there as the legacy 2.5 that
-    # ExposureConfig.__post_init__ migrates, or the transfer stops being identity at
-    # defaults. Mirrored rather than imported to keep this module dependency-free;
+    # ships in DEFAULT_WORKSPACE_CONFIG, or the transfer stops being identity at defaults.
+    # Mirrored rather than imported to keep this module dependency-free;
     # test_transparency_transfer.py asserts the two agree.
-    "transfer_grade_ref": 100.0,
+    "transfer_grade_ref": 115.0,
     # Stops of exposure per unit of the density slider (higher density = darker).
     "transfer_density_stops": 2.0,
     # Contrast pivot as a density: mid-grey at ~18% of the white level.

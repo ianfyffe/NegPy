@@ -25,6 +25,7 @@ class ExposureConfig:
     """
 
     density: float = 1.0
+    # The print and E-6 transfer curves are an identity at this grade (transfer_grade_ref).
     grade: float = 115.0
     # Per-layer contrast trims in ISO-R points (crossover correction).
     grade_trim_red: float = 0.0

@@ -72,7 +72,10 @@ class AppState:
     current_file_path: Optional[str] = None
     current_file_hash: Optional[str] = None
     source_cs: str = ""
-    config: WorkspaceConfig = field(default_factory=WorkspaceConfig)
+    # The shipped defaults, not a bare WorkspaceConfig(): the sidebars build every slider
+    # against this config, and a slider's double-click restores the value it was built with,
+    # which has to be the value a card's Reset lands on.
+    config: WorkspaceConfig = field(default_factory=lambda: DEFAULT_WORKSPACE_CONFIG)
     workspace_color_space: str = WORKING_COLOR_SPACE
     is_processing: bool = False
     active_tool: ToolMode = ToolMode.NONE
@@ -1223,10 +1226,9 @@ class DesktopSessionManager(QObject):
         # Sticky settings include the global process mode, which a composite must not take over
         # the mode of the frames it was built from. _asset_defaults applies after.
         #
-        # DEFAULT_WORKSPACE_CONFIG, not a bare WorkspaceConfig(): grade and a few other
-        # fields are calibrated so the print/transfer curves are an identity at this exact
-        # config (transfer_grade_ref, test_transparency_transfer.py), which the dataclasses'
-        # own bare defaults don't carry.
+        # DEFAULT_WORKSPACE_CONFIG, not a bare WorkspaceConfig(): the autocrop fields are
+        # the shipped ones only here, and the print/transfer curves are an identity at this
+        # exact config (transfer_grade_ref, test_transparency_transfer.py).
         config = self._overlay_roll_defaults(self._apply_sticky_settings(DEFAULT_WORKSPACE_CONFIG, only_global=False), asset)
         return self._asset_defaults(config, asset), True
 
@@ -1842,11 +1844,10 @@ class DesktopSessionManager(QObject):
         """Reset a single feature section to its default config.
 
         Exposure/process/geometry reset to DEFAULT_WORKSPACE_CONFIG's own section rather
-        than the bare dataclass default: grade, crosstalk_strength and the autocrop fields
-        are calibrated there (transfer_grade_ref and friends), not on ExposureConfig()/
-        ProcessConfig()/GeometryConfig()'s own field defaults. Cast Removal's default is
-        further mode-dependent (cast_removal_for_mode) on top of that -- resetting Process
-        can change process_mode, so exposure is re-synced to the new mode too.
+        than the bare dataclass default: the autocrop fields are the shipped ones only there,
+        not on GeometryConfig()'s own field defaults. Cast Removal's default is further
+        mode-dependent (cast_removal_for_mode) on top of that -- resetting Process can change
+        process_mode, so exposure is re-synced to the new mode too.
         """
         from negpy.features.finish.models import FinishConfig
         from negpy.features.lab.models import LabConfig
@@ -2104,7 +2105,7 @@ class DesktopSessionManager(QObject):
         self.state.preview_detect = None
         self.state.preview_embedded = None
         self.state.has_ir = False
-        self.state.config = WorkspaceConfig()
+        self.state.config = DEFAULT_WORKSPACE_CONFIG
         self._config_dirty = False
         with self.state.metrics_lock:
             self.state.last_metrics.clear()

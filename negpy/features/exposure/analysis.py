@@ -196,6 +196,12 @@ RING_CC_PER_UNIT = 20.0
 RING_GRID = (5, 5)
 
 
+def strip_center() -> Tuple[float, float]:
+    """(density, grade) of the middle patch. A proof's memo key pins these, so the mosaic
+    is one cache entry whatever the frame's own density and grade are."""
+    return STRIP_DENSITIES[len(STRIP_DENSITIES) // 2], STRIP_GRADES[len(STRIP_GRADES) // 2]
+
+
 def strip_cells() -> List[Tuple[int, int, float, float]]:
     """(row, col, density, grade) for every patch, row-major."""
     return [(r, c, d, g) for r, g in enumerate(STRIP_GRADES) for c, d in enumerate(STRIP_DENSITIES)]
