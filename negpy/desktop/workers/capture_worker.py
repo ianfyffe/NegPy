@@ -47,7 +47,7 @@ class CaptureRequest:
     white_process_mode: WhiteCaptureMode = WhiteCaptureMode.AUTO
     is_retake: bool = False  # a retake overwrites an existing frame → keep its files on abort
     rgb_mode: bool = True  # True = Scanlight R/G/B triplet; False = one plain white-light shot (no Scanlight)
-    iso: str = ""  # RGB preset's baked ISO/aperture — the triplet forces them; "" = leave as set
+    iso: str = ""  # a calibrated preset's baked ISO/aperture, forced on the body; "" = leave as set
     aperture: str = ""
     as_roll: bool = False
     single_capture: bool = False  # RGB preset shot as one exposure with all three LEDs lit
@@ -69,9 +69,10 @@ class CalibrationRequest:
     shutter_candidates: tuple[str, ...] = ()  # this body's writable shutter ladder (from the live-view JSON)
     # Phase-1 start point, already normalized to the live ISO/aperture by the sidebar. The
     # defaults keep the fixed reference (ISO 100 / f8) when the caller supplies none.
-    start_levels: tuple[int, int, int] = REFERENCE_LEVELS
+    start_levels: tuple[int, ...] = REFERENCE_LEVELS  # (R, G, B), or (W,) for white
     start_shutter: str = REFERENCE_SHUTTER
     single_capture: bool = False  # solve for R, G and B lit together in one exposure
+    white: bool = False  # calibrate the white LED alone (B&W) instead of the R/G/B triplet
 
 
 def _shutters_or_none(shutters: tuple[str, str, str]):
@@ -260,6 +261,8 @@ class CaptureWorker(QObject):
                     shutter=req.shutter_w or None,
                     settle_s=req.settle_s,
                     cancel=self._cancel,
+                    iso=req.iso or None,
+                    aperture=req.aperture or None,
                 )
                 self.finished.emit([path])
                 return
@@ -523,17 +526,30 @@ class CaptureWorker(QObject):
             # cleans every suffix on every success, error and cancel path.
             with tempfile.TemporaryDirectory(prefix="negpy-calibration-") as scratch_dir:
                 scratch = os.path.join(scratch_dir, "capture.raw")
-                result = service.calibrate(
-                    req.roi,
-                    scratch,
-                    start_levels=req.start_levels,
-                    start_shutter=req.start_shutter,  # normalized to the live ISO/aperture by the sidebar
-                    target_fraction=req.target_fraction,
-                    candidates=req.shutter_candidates,  # empty → calibrate falls back to the built-in ladder
-                    progress=self.calibration_progress.emit,
-                    cancel=self._cancel,
-                    single_capture=req.single_capture,
-                )
+                if req.white:
+                    result = service.calibrate_white(
+                        req.roi,
+                        scratch,
+                        start_level=req.start_levels[0],
+                        start_shutter=req.start_shutter,  # normalized to the live ISO/aperture by the sidebar
+                        target_fraction=req.target_fraction,
+                        candidates=req.shutter_candidates,  # empty → calibrate falls back to the built-in ladder
+                        progress=self.calibration_progress.emit,
+                        cancel=self._cancel,
+                    )
+                else:
+                    r, g, b = req.start_levels
+                    result = service.calibrate(
+                        req.roi,
+                        scratch,
+                        start_levels=(r, g, b),
+                        start_shutter=req.start_shutter,
+                        target_fraction=req.target_fraction,
+                        candidates=req.shutter_candidates,
+                        progress=self.calibration_progress.emit,
+                        cancel=self._cancel,
+                        single_capture=req.single_capture,
+                    )
             self.calibration_finished.emit(result)
         except CalibrationExposureError as e:
             # An expected outcome, not a broken session: the target is unreachable at these

@@ -1,9 +1,9 @@
 """Dedicated pop-up for creating a film-stock preset by ETTR calibration.
 
 Opened by the "+" next to the preset dropdown (independent of the scan cockpit, so
-you can calibrate the very first preset). The operator names the stock, clicks the
-clear film base (crosshair), and presses Calibrate; on success the panel saves the
-preset and closes this window automatically.
+you can calibrate the very first preset). The operator names the stock, picks the light
+(an R/G/B triplet, or the white LED for B&W), clicks the clear film base (crosshair), and
+presses Calibrate; on success the panel saves the preset and closes this window automatically.
 """
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -49,10 +49,19 @@ def _reserve_checked_width(btn: QPushButton) -> None:
     btn.setMinimumWidth(btn.sizeHint().width() + max(0, extra))
 
 
+_RGB_PLACEHOLDER = "e.g. Portra 400"
+_WHITE_PLACEHOLDER = "e.g. HP5 Plus"
+# The calibration window adds the white LED to the capture modes, on a Scanlight that has one.
+_WHITE_MODE = ("", "White (B&&W)")
+_MODE_DATA = ("triplet", "single", "white")
+_CALIBRATION_MODE_TOOLTIP = CAPTURE_MODE_TOOLTIP + " White takes one exposure with the white LED, for B&W negatives."
+
+
 class CalibrationWindow(QDialog):
     """Live-view + crosshair + name, to calibrate a new film-stock preset."""
 
     calibrateRequested = pyqtSignal(str)  # preset name
+    lightChanged = pyqtSignal(bool)  # True = the white LED
     closed = pyqtSignal()
 
     def __init__(self, parent=None, *, repo=None) -> None:
@@ -66,16 +75,17 @@ class CalibrationWindow(QDialog):
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("Film stock"))
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("e.g. Portra 400")
+        self.name_edit.setPlaceholderText(_RGB_PLACEHOLDER)
         name_row.addWidget(self.name_edit, 1)
         self._running = False
-        self.capture_btn = ChoiceButton(CAPTURE_MODES, CAPTURE_MODE_TOOLTIP)
+        self._white_shown = False
+        self.capture_btn = ChoiceButton(CAPTURE_MODES + (_WHITE_MODE,), _CALIBRATION_MODE_TOOLTIP, data=_MODE_DATA)
         name_row.addWidget(self.capture_btn)
         self._sensor_profile_wanted = True  # the operator's pick, kept while Triplet shows the toggle off
         self.sensor_profile_btn = labeled_toggle("fa5s.vials", " Sensor Profile", True, SENSOR_PROFILE_TOOLTIP)
         _reserve_checked_width(self.sensor_profile_btn)
         self.sensor_profile_btn.clicked.connect(self._on_sensor_profile_clicked)
-        self.capture_btn.currentChanged.connect(lambda _i: self._sync_sensor_profile())
+        self.capture_btn.currentChanged.connect(self._on_mode_changed)
         name_row.addWidget(self.sensor_profile_btn)
         self._sync_sensor_profile()
         self.calibrate_btn = labeled_action(
@@ -131,14 +141,40 @@ class CalibrationWindow(QDialog):
     def _on_sensor_profile_clicked(self, checked: bool) -> None:
         self._sensor_profile_wanted = checked
 
+    def _on_mode_changed(self, _index: int) -> None:
+        self._sync_sensor_profile()
+        white = self.white()
+        self.name_edit.setPlaceholderText(_WHITE_PLACEHOLDER if white else _RGB_PLACEHOLDER)
+        if white != self._white_shown:
+            self._white_shown = white
+            self.lightChanged.emit(white)
+
     def _sync_sensor_profile(self) -> None:
-        single = self.capture_btn.currentIndex() == 1
+        single = self.single_capture()
         self.sensor_profile_btn.setChecked(single and self._sensor_profile_wanted)
         self.sensor_profile_btn.setEnabled(single and not self._running)
 
+    def single_capture(self) -> bool:
+        """True when this run solves R, G and B lit together in one exposure."""
+        return self.capture_btn.currentData() == "single"
+
+    def white(self) -> bool:
+        """True when this run calibrates the white LED."""
+        return self.capture_btn.currentData() == "white"
+
     def wants_sensor_profile(self) -> bool:
         """Whether a finished run saves a sensor profile with the preset."""
-        return self.capture_btn.currentIndex() == 1 and self._sensor_profile_wanted
+        return self.single_capture() and self._sensor_profile_wanted
+
+    def set_white_available(self, available: bool) -> None:
+        """Offer the white LED only on a Scanlight that has one."""
+        if available == (self.capture_btn.count() == len(_MODE_DATA)):
+            return
+        current = self.capture_btn.currentData()
+        modes = CAPTURE_MODES + (_WHITE_MODE,) if available else CAPTURE_MODES
+        self.capture_btn.set_choices(modes, _MODE_DATA[: len(modes)])
+        self.capture_btn.setCurrentIndex(max(0, self.capture_btn.findData(current)))
+        self._on_mode_changed(self.capture_btn.currentIndex())
 
     def set_inputs_locked(self, locked: bool) -> None:
         """Freeze the calibration inputs while a run is in progress: the film-stock name, the capture mode, the Sensor Profile toggle, the base

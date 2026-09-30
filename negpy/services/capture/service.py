@@ -280,8 +280,11 @@ class CaptureService:
         min_raw_bytes: int = 8 * 1024 * 1024,
         max_raw_bytes: int = 200 * 1024 * 1024,
         cancel: Optional[threading.Event] = None,
+        iso: Optional[str] = None,
+        aperture: Optional[str] = None,
     ) -> str:
-        """Single white-light exposure for slide / E-6 film (one file, no R/G/B split)."""
+        """Single white-light exposure for B&W or slide film (one file, no R/G/B split). A
+        calibrated preset passes its shutter, ISO and aperture; None leaves the camera as set."""
         os.makedirs(output_folder, exist_ok=True)
         try:
             self._light.set_color(w=w_level)
@@ -295,6 +298,8 @@ class CaptureService:
                 min_raw_bytes=min_raw_bytes,
                 max_raw_bytes=max_raw_bytes,
                 cancel=cancel,
+                iso=iso,
+                aperture=aperture,
             )
         finally:
             try:

@@ -58,6 +58,20 @@ def test_legacy_preset_without_exposure_defaults_blank():
     assert p is not None and p.iso == "" and p.aperture == ""
 
 
+def test_white_preset_round_trip():
+    store = PresetStore(FakeRepo())
+    p = ScanlightPreset(r_level=0, g_level=0, b_level=0, w_level=212, white=True, shutter_w="1/15", iso="100", aperture="f/5.6")
+    store.save("HP5 Plus", p)
+    assert store.get("HP5 Plus") == p
+
+
+def test_legacy_preset_loads_as_rgb():
+    repo = FakeRepo()
+    repo.save_global_setting(PresetStore.KEY, {"Portra 400": {"r_level": 200, "shutter_r": "1/4"}})
+    p = PresetStore(repo).get("Portra 400")
+    assert p is not None and not p.white and p.shutter_w == ""
+
+
 def test_framing_levels_dim_three_stops():
     assert framing_levels(210, 95, 80) == (26, 11, 10)  # the reference start point, 2^3 dimmer
 
