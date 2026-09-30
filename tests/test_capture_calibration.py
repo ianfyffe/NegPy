@@ -5,6 +5,7 @@ meters the ladder's true exposure, like a real body — NOT the rounded label, w
 name ("1/3" exposes 0.315 s).
 Only the lit channel gets signal (one LED on per probe, as on the real rig). `k_scale` scales all
 three uniformly, like opening the aperture; per-channel k models the deep-red weakness (R lowest).
+The white LED lights every sensor channel, each by its own `K_WHITE` response.
 """
 
 import os
@@ -22,6 +23,7 @@ from negpy.services.capture.calibration import (
     PWM_MIN_SINGLE,
     REFERENCE_LEVELS,
     REFERENCE_SHUTTER,
+    REFERENCE_WHITE_LEVEL,
     SHUTTER_CANDIDATES,
     CalibrationService,
     CalibrationExposureError,
@@ -47,6 +49,8 @@ from negpy.services.capture.calibration import (
 # Per-channel response (counts per LED-level per second). R is the weakest (665 nm, low sensor QE),
 # G≈B — the ~1.6-stop spread measured from Robin's f/8 C-41 logs.
 K = {"R": 250.0, "G": 700.0, "B": 760.0}
+# Per sensor channel under the white LED: green reads the most light through a B&W base.
+K_WHITE = {"R": 900.0, "G": 1500.0, "B": 700.0}
 
 
 # ---- pure functions -------------------------------------------------------
@@ -238,14 +242,19 @@ def test_solve_never_exceeds_pwm_max_safe_on_the_dimmest_channel():
 class FakeLight:
     def __init__(self):
         self.last = (0, 0, 0)
+        self.w = 0
         self.history = []  # every color ever lit — lets tests prove an abort never reached G/B
+        self.w_history = []
 
     def set_color(self, r=0, g=0, b=0, w=0, save=False):
         self.last = (r, g, b)
+        self.w = w
         self.history.append((r, g, b))
+        self.w_history.append(w)
 
     def off(self):
         self.last = (0, 0, 0)
+        self.w = 0
 
     def close(self):
         pass
@@ -264,7 +273,7 @@ class FakeCamera:
         pass
 
 
-def _make_demosaic(light, camera, *, k_scale=1.0, level_cap=None, sliver=0, crosstalk=0.0, concave=1.0):
+def _make_demosaic(light, camera, *, k_scale=1.0, level_cap=None, sliver=0, crosstalk=0.0, concave=1.0, k_white=K_WHITE):
     """Linear fake sensor (128×128 so a sub-0.1 % clip sliver fits below the p99.9 cut). No bias.
     `k_scale` scales all channels uniformly (like aperture); `level_cap` saturates the LED above a
     level (a channel solved to max LED lands under target → under-exposed); `sliver` over-bright
@@ -280,9 +289,10 @@ def _make_demosaic(light, camera, *, k_scale=1.0, level_cap=None, sliver=0, cros
         img = np.zeros((128, 128, 3))
         lit = [min(level, level_cap) if level_cap is not None else level for level in light.last]
         lit = [255.0 * (level / 255.0) ** concave for level in lit]
+        w_eff = min(light.w, level_cap) if level_cap is not None else light.w
         for i, own in enumerate(lit):
             eff = own + crosstalk * (sum(lit) - own)
-            val = K["RGB"[i]] * k_scale * eff * sec
+            val = (K["RGB"[i]] * eff + k_white["RGB"[i]] * w_eff) * k_scale * sec
             img[..., i] = val
             if sliver:
                 img.reshape(-1, 3)[:sliver, i] = min(65535.0, val * 1.25)
@@ -396,6 +406,90 @@ def test_calibrate_measures_spread_matching_the_channel_responses():
     # log2(760/250) ≈ 1.60 — the value that confirms one shutter can serve all three (< 2.7).
     assert result.spread_stops == pytest.approx(1.60, abs=0.05)
     assert result.spread_stops < 2.7
+
+
+# ---- white light (B&W) ----------------------------------------------------
+
+
+def _calibrate_white(service, roi=Roi(0, 0, 1, 1)):
+    return service.calibrate_white(roi, "/tmp/_negpy_cal.raw")
+
+
+def test_calibrate_white_lands_the_brightest_channel_on_target():
+    light, cam = FakeLight(), FakeCamera()
+    result = _calibrate_white(_service(light, cam))
+    w = result.white
+    assert w is not None and set(result.channels) == {"W"}
+    assert w.signal == pytest.approx(target_signal(), rel=0.06)
+    assert w.limiting == "G"  # green reads the most, so green sits at the target and clips first
+    assert w.level <= PWM_MAX
+    assert result.shutter == w.shutter
+    assert result.spread_stops == 0.0
+
+
+def test_calibrate_white_never_lights_the_narrowband_leds():
+    light, cam = FakeLight(), FakeCamera()
+    _calibrate_white(_service(light, cam))
+    assert all(color == (0, 0, 0) for color in light.history)
+    assert light.w == 0, "the light is off after the run"
+
+
+def test_calibrate_white_follows_whichever_channel_is_brightest():
+    light, cam = FakeLight(), FakeCamera()
+    result = _calibrate_white(_service(light, cam, k_white={"R": 600.0, "G": 900.0, "B": 1400.0}))
+    assert result.white.limiting == "B"
+
+
+def test_calibrate_white_probes_from_where_the_solve_lands():
+    light, cam = FakeLight(), FakeCamera()
+    _calibrate_white(_service(light, cam))
+    assert light.w_history[0] == REFERENCE_WHITE_LEVEL == PWM_MAX_SAFE
+    assert light.w_history[-1] <= PWM_MAX
+
+
+def test_calibrate_white_checks_the_raw_clip_on_every_sensor_channel():
+    light, cam = FakeLight(), FakeCamera()
+    seen: set[int] = set()
+
+    def record(_path, channel, _roi):
+        seen.add(channel)
+        return 0.0, 0.0
+
+    _calibrate_white(CalibrationService(light, cam, _make_demosaic(light, cam), source_clip=record, sleep=lambda _s: None))
+    assert seen == {0, 1, 2}
+
+
+def test_calibrate_white_aborts_on_a_plateau_in_any_one_channel():
+    light, cam = FakeLight(), FakeCamera()
+
+    def blue_plateau(_path, channel, _roi):
+        return (0.0, MAX_CLIP_FRACTION * 2) if channel == 2 else (0.0, 0.0)
+
+    service = CalibrationService(light, cam, _make_demosaic(light, cam), source_clip=blue_plateau, sleep=lambda _s: None)
+    with pytest.raises(CalibrationExposureError) as e:
+        _calibrate_white(service)
+    assert e.value.status == "over" and e.value.channel == "W"
+
+
+def test_calibrate_white_aborts_as_under_when_the_target_is_unreachable():
+    light, cam = FakeLight(), FakeCamera()
+    with pytest.raises(CalibrationExposureError) as e:
+        _calibrate_white(_service(light, cam, k_scale=0.005))
+    assert e.value.status == "under" and e.value.channel == "W"
+
+
+def test_calibrate_white_aborts_as_over_when_minimum_exposure_clips():
+    light, cam = FakeLight(), FakeCamera()
+    with pytest.raises(CalibrationExposureError) as e:
+        _calibrate_white(_service(light, cam, k_scale=3000.0))
+    assert e.value.status == "over" and e.value.channel == "W"
+
+
+def test_calibrate_white_clip_guard_pulls_the_led_down_below_clipping():
+    light, cam = FakeLight(), FakeCamera()
+    w = _calibrate_white(_service(light, cam, sliver=400)).white
+    assert w.linearity_fraction <= MAX_LINEARITY_FRACTION
+    assert w.clip_fraction <= MAX_CLIP_FRACTION
 
 
 # ---- linearity limit vs. plateau: separately budgeted --------------------
