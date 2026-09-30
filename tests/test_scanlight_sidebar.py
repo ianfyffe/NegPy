@@ -829,18 +829,100 @@ def test_normal_mode_keeps_the_scan_live_view_steppers():
     assert not w.lv_window.settings_widget.isHidden()
 
 
-def _calibrate(w, monkeypatch, name="Portra 400"):
+def _result(white=False):
+    from negpy.services.capture.calibration import CalibrationResult, ChannelCalibration
+
+    if white:
+        return CalibrationResult({"W": ChannelCalibration("W", 212, "1/15", 58000.0, 58982, limiting="G")})
+    levels = {"R": 200, "G": 180, "B": 90}
+    return CalibrationResult({c: ChannelCalibration(c, lv, "1/5", 58982.0, 58982, limiting=c) for c, lv in levels.items()})
+
+
+def _calibrate(w, monkeypatch, name="Portra 400", white=False):
     """Drive _on_calibration_finished as the worker would (a result exists only when every channel
     hit target — anything else arrives via _on_calibration_exposure). Returns the baked preset."""
-    import types
-
     saved: dict = {}
     monkeypatch.setattr(w._presets, "save", lambda _n, preset: saved.update(preset=preset))
     monkeypatch.setattr(w._presets, "get", lambda _n: None)
     monkeypatch.setattr(w, "_reload_presets", lambda **_k: None)
     w._calibrating_preset = name
-    w._on_calibration_finished(types.SimpleNamespace(levels=(200, 180, 90), shutters=("1/5", "1/5", "1/5")))
+    w._on_calibration_finished(_result(white))
     return saved["preset"]
+
+
+def test_white_calibration_bakes_a_white_preset(monkeypatch):
+    w = _sidebar()
+    preset = _calibrate(w, monkeypatch, name="HP5 Plus", white=True)
+    assert preset.white and preset.w_level == 212 and preset.shutter_w == "1/15"
+    assert (preset.r_level, preset.g_level, preset.b_level) == (0, 0, 0)
+    assert w._settings.white_mode and w._settings.white_process_mode is WhiteCaptureMode.BW
+    assert "Base at 89% of full scale on green" in w.status_label.text()
+
+
+def test_rgb_calibration_still_bakes_an_rgb_preset(monkeypatch):
+    w = _sidebar()
+    preset = _calibrate(w, monkeypatch)
+    assert not preset.white and preset.w_level == 0 and preset.shutter_r == "1/5"
+
+
+def _white_preset():
+    return ScanlightPreset(r_level=0, g_level=0, b_level=0, w_level=212, white=True, shutter_w="1/15", iso="100", aperture="f/5.6")
+
+
+def _select(w, monkeypatch, preset, name="HP5 Plus"):
+    monkeypatch.setattr(w._presets, "get", lambda _n: preset)
+    w.preset_combo.addItem(name, name)
+    idx = w.preset_combo.findData(name)
+    w.preset_combo.setCurrentIndex(idx)
+    w._on_preset_selected(idx)
+
+
+def test_calibrated_white_preset_locks_the_exposure_and_forces_it(monkeypatch, tmp_path):
+    w = _sidebar()
+    _select(w, monkeypatch, _white_preset())
+    assert w.lv_window.settings_widget.isHidden()  # calibrated → locked, like an RGB preset
+    assert w._settings.white_mode and w._settings.white_process_mode is WhiteCaptureMode.BW
+    w.folder_edit.setText(str(tmp_path))
+    w._start_capture(retake=False)
+    req = w.controller.start_capture.call_args[0][0]
+    assert req.white_mode and req.w_level == 212 and req.shutter_w == "1/15"
+    assert (req.iso, req.aperture) == ("100", "f/5.6")
+
+
+def test_calibrated_white_preset_keeps_its_shutter_through_a_settings_refresh(monkeypatch):
+    w = _sidebar()
+    _select(w, monkeypatch, _white_preset())
+    w._update_settings_from_ui()
+    assert w._settings.shutter_w == "1/15"
+
+
+def test_builtin_white_preset_after_a_calibrated_one_forces_nothing(monkeypatch, tmp_path):
+    w = _sidebar()
+    _select(w, monkeypatch, _white_preset())
+    idx = w.preset_combo.findData("White Light (B&W or Slide Film)")
+    w.preset_combo.setCurrentIndex(idx)
+    w._on_preset_selected(idx)
+    assert w._settings.shutter_w == ""
+    w.folder_edit.setText(str(tmp_path))
+    w._start_capture(retake=False)
+    req = w.controller.start_capture.call_args[0][0]
+    assert (req.shutter_w, req.iso, req.aperture) == ("", "", "")
+
+
+def test_white_calibration_starts_from_the_white_reference(monkeypatch):
+    from negpy.services.capture.calibration import REFERENCE_WHITE_LEVEL
+
+    w = _sidebar()
+    w._camera_verified = True
+    w._light_verified = True
+    w.calib_window.image._set_crosshair(0.5, 0.5)
+    monkeypatch.setattr(w, "_settings_json", lambda: {"shutter": {"options": [{"label": "1/250"}, {"label": "1/15"}]}})
+    w.calib_window.light_btn.setCurrentIndex(1)
+    w.controller.set_scanlight_color.assert_called_with(0, 0, 0, REFERENCE_WHITE_LEVEL, w._settings.port)  # framed under W
+    w._on_calibrate_new_preset("HP5 Plus")
+    req = w.controller.start_calibration.call_args[0][0]
+    assert req.white and req.start_levels == (REFERENCE_WHITE_LEVEL,)
+    assert not w.calib_window.light_btn.isEnabled()  # locked with the other inputs while it meters
 
 
 def test_calibration_exposure_abort_saves_nothing_and_keeps_a_live_retry_window(monkeypatch):
@@ -1125,6 +1207,15 @@ def test_rgb_only_scanlight_hides_white_slider_and_preset():
     w._refresh_light_channels()
     assert w._slider_rows[w.w_slider].isHidden()  # W slider gone
     assert not _white_preset_item(w).isEnabled()  # white-light preset greyed out
+
+
+def test_rgb_only_scanlight_offers_no_white_calibration(monkeypatch):
+    w = _sidebar()
+    w.calib_window.light_btn.setCurrentIndex(1)
+    w._light_has_white = False
+    w._refresh_light_channels()
+    assert w.calib_window.light_btn.isHidden()
+    assert not w.calib_window.white()
 
 
 def test_white_scanlight_keeps_white_slider_and_preset():

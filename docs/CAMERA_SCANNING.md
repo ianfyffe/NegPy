@@ -89,12 +89,18 @@ That highlight matters, because the clear base becomes the *black point* after i
 clip guard therefore checks the raw Bayer photosites and backs the exposure off if any
 channel saturates. Save the preset once per film stock and reuse it.
 
+**Calibrate (B&W).** On a Scanlight with a white LED, pick **Light: White (B&W)** in the
+calibration window. The run is the same, with the white LED alone: one shutter and one white
+level. White light reaches every sensor channel, so each shot meters all three and the
+brightest one lands just under clipping. The status line reports where the base landed and on
+which channel. The preset scans one white-light exposure and opens the frames as B&W.
+
 If the target is unreachable at your exposure, the run stops at the probe. A pop-up says
 which way to adjust: over-exposed means close the aperture or lower the ISO, under-exposed
 means open up or raise the ISO. **No preset is saved.** Adjust and calibrate again in the
 window that stayed open.
 
-**Presets.** A selected preset is shown read-only, with its RGB levels, ISO, shutter and
+**Presets.** A selected preset is shown read-only, with its LED levels, ISO, shutter and
 aperture. The scan forces that exposure on the body before every frame, so a bumped dial
 cannot falsify the result. To build a preset by hand instead, pick **Create a manual
 preset…** from the dropdown. The sliders and the exposure steppers unlock. Dial them in,

@@ -1,9 +1,9 @@
 """Dedicated pop-up for creating a film-stock preset by ETTR calibration.
 
 Opened by the "+" next to the preset dropdown (independent of the scan cockpit, so
-you can calibrate the very first preset). The operator names the stock, clicks the
-clear film base (crosshair), and presses Calibrate; on success the panel saves the
-preset and closes this window automatically.
+you can calibrate the very first preset). The operator names the stock, picks the light
+(an R/G/B triplet, or the white LED for B&W), clicks the clear film base (crosshair), and
+presses Calibrate; on success the panel saves the preset and closes this window automatically.
 """
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -19,13 +19,18 @@ from PyQt6.QtWidgets import (
 from negpy.desktop.view.sidebar.live_view_window import SettingStepper
 from negpy.desktop.view.sidebar.roi_image import RoiImageLabel
 from negpy.desktop.view.styles.templates import hint_label, labeled_action
+from negpy.desktop.view.widgets.choice_button import ChoiceButton
 from negpy.desktop.view.widgets.floating_panel import float_over_app
+
+_RGB_PLACEHOLDER = "e.g. Portra 400"
+_WHITE_PLACEHOLDER = "e.g. HP5 Plus"
 
 
 class CalibrationWindow(QDialog):
     """Live-view + crosshair + name, to calibrate a new film-stock preset."""
 
     calibrateRequested = pyqtSignal(str)  # preset name
+    lightChanged = pyqtSignal(bool)  # True = the white LED
     closed = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
@@ -39,8 +44,15 @@ class CalibrationWindow(QDialog):
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("Film stock"))
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("e.g. Portra 400")
+        self.name_edit.setPlaceholderText(_RGB_PLACEHOLDER)
         name_row.addWidget(self.name_edit, 1)
+        self.light_btn = ChoiceButton(
+            (("", "Light: RGB Triplet"), ("", "Light: White (B&W)")),
+            "RGB Triplet calibrates one exposure per color LED, for color film. White calibrates one "
+            "white-light exposure, for B&W negatives.",
+        )
+        self.light_btn.currentChanged.connect(self._on_light_changed)
+        name_row.addWidget(self.light_btn)
         self.calibrate_btn = labeled_action(
             "fa5s.crosshairs", " Calibrate && Save", "Meter the clicked film base and save the result as this preset"
         )
@@ -89,11 +101,27 @@ class CalibrationWindow(QDialog):
     def _emit_calibrate(self) -> None:
         self.calibrateRequested.emit(self.name_edit.text().strip())
 
+    def _on_light_changed(self, _index: int) -> None:
+        white = self.white()
+        self.name_edit.setPlaceholderText(_WHITE_PLACEHOLDER if white else _RGB_PLACEHOLDER)
+        self.lightChanged.emit(white)
+
+    def white(self) -> bool:
+        """True when this run calibrates the white LED."""
+        return not self.light_btn.isHidden() and self.light_btn.currentIndex() == 1
+
+    def set_white_available(self, available: bool) -> None:
+        """Offer the white LED only on a Scanlight that has one."""
+        self.light_btn.setVisible(available)
+        if not available:
+            self.light_btn.setCurrentIndex(0)
+
     def set_inputs_locked(self, locked: bool) -> None:
-        """Freeze the calibration inputs while a run is in progress: the film-stock name, the base
+        """Freeze the calibration inputs while a run is in progress: the film-stock name, the light, the base
         ROI (clicking the image must not move the patch being metered), and the ISO/aperture the
         base is metered at. Re-enabled at any terminal outcome so a failed run can be retried."""
         self.name_edit.setEnabled(not locked)
+        self.light_btn.setEnabled(not locked)
         self.iso_stepper.setEnabled(not locked)
         self.aperture_stepper.setEnabled(not locked)
         self.image.set_roi_locked(locked)

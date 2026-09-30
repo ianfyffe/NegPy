@@ -45,7 +45,18 @@ from negpy.desktop.view.styles.theme import THEME
 from negpy.infrastructure import simulated
 from negpy.infrastructure.capture.gphoto import default_settings_path
 from negpy.infrastructure.capture.settings import ScanlightSettings, WhiteCaptureMode
-from negpy.services.capture.calibration import REFERENCE_LEVELS, SHUTTER_CANDIDATES, normalize_start_point, shutter_seconds, usable_ladder
+from negpy.services.capture.calibration import (
+    REFERENCE_LEVELS,
+    REFERENCE_SHUTTER,
+    REFERENCE_WHITE_LEVEL,
+    REFERENCE_WHITE_SHUTTER,
+    CLIP_CEILING,
+    SHUTTER_CANDIDATES,
+    CalibrationResult,
+    normalize_start_point,
+    shutter_seconds,
+    usable_ladder,
+)
 from negpy.services.capture.presets import PresetStore, ScanlightPreset, framing_levels
 
 _CHANNEL_COLORS = {"R": THEME.channel_red_text, "G": THEME.channel_green_text, "B": THEME.channel_blue_text, "W": THEME.text_secondary}
@@ -80,6 +91,15 @@ _MANUAL_PRESET = "\x00create-manual"
 # 10 ms and set_color is a fire-and-forget serial write, so 50 ms keeps an
 # order-of-magnitude margin. A fixed tuning constant, not a persisted setting.
 _LED_SETTLE_S = 0.05
+
+
+def _base_readout(result: CalibrationResult) -> str:
+    """Where a white-light calibration put the film base, for the status line; '' for RGB."""
+    w = result.white
+    if w is None:
+        return ""
+    channel = {"R": "red", "G": "green", "B": "blue"}.get(w.limiting, w.limiting)
+    return f" Base at {w.signal / CLIP_CEILING:.0%} of full scale on {channel}: {w.shutter} s, white {w.level}."
 
 
 class _NoWheel(QObject):
@@ -132,6 +152,7 @@ class ScanlightSidebar(QWidget):
         self.calib_window = CalibrationWindow(self)
         self.calib_window.closed.connect(self._on_calib_window_closed)
         self.calib_window.calibrateRequested.connect(self._on_calibrate_new_preset)
+        self.calib_window.lightChanged.connect(lambda _white: self._light_calibration_start())
         self._lv_target = self.lv_image  # RoiImageLabel currently fed by the live-view poll
 
         self._light_debounce = QTimer()
@@ -508,7 +529,7 @@ class ScanlightSidebar(QWidget):
         for name in _BUILTIN_WHITE_PRESETS:
             self.preset_combo.addItem(name, name)  # built-in white-light modes
         for name in self._presets.names():
-            self.preset_combo.addItem(name, name)  # user film-stock (RGB) presets
+            self.preset_combo.addItem(name, name)  # user film-stock presets (RGB or calibrated white)
         if select:
             idx = self.preset_combo.findData(select)
             if idx >= 0:
@@ -561,15 +582,27 @@ class ScanlightSidebar(QWidget):
             (self.w_slider, preset.w_level),  # RGB presets store 0 → the white LED stays off
         ):
             self._set_slider(slider, value)
-        self._show_lone(self.shutter_stepper, preset.shutter_r)  # one shared shutter (r/g/b are equal)
-        self._settings = replace(
-            self._settings,
-            white_mode=False,
-            shutter_r=preset.shutter_r,
-            shutter_g=preset.shutter_r,
-            shutter_b=preset.shutter_r,
-            shutter_w=preset.shutter_r,
-        )
+        if preset.white:
+            self._show_lone(self.shutter_stepper, preset.shutter_w)
+            self._settings = replace(
+                self._settings,
+                white_mode=True,
+                white_process_mode=WhiteCaptureMode.BW,
+                shutter_r="",
+                shutter_g="",
+                shutter_b="",
+                shutter_w=preset.shutter_w,
+            )
+        else:
+            self._show_lone(self.shutter_stepper, preset.shutter_r)  # one shared shutter (r/g/b are equal)
+            self._settings = replace(
+                self._settings,
+                white_mode=False,
+                shutter_r=preset.shutter_r,
+                shutter_g=preset.shutter_r,
+                shutter_b=preset.shutter_r,
+                shutter_w=preset.shutter_r,
+            )
         self._apply_preset_exposure(preset.iso, preset.aperture)  # a scan forces these on the body
         self._apply_preset_camera_settings(preset)  # and reflect them in the live view now
 
@@ -620,7 +653,7 @@ class ScanlightSidebar(QWidget):
             return
         if name in _BUILTIN_WHITE_PRESETS:
             # Built-in white-light mode, one white exposure for B&W or slide: white on, RGB off.
-            self._settings = replace(self._settings, white_mode=True, white_process_mode=_BUILTIN_WHITE_PRESETS[name])
+            self._settings = replace(self._settings, white_mode=True, white_process_mode=_BUILTIN_WHITE_PRESETS[name], shutter_w="")
             for slider, value in ((self.r_slider, 0), (self.g_slider, 0), (self.b_slider, 0), (self.w_slider, 255)):
                 self._set_slider(slider, value)
             self._show_lone(self.shutter_stepper, "")
@@ -641,7 +674,13 @@ class ScanlightSidebar(QWidget):
         """One-line note under the preset row for the current selection — white-light presets
         do a single exposure. Empty/hidden for RGB film-stock presets or no selection."""
         name = self.preset_combo.currentData()
-        self.preset_hint.setText("Single white-light exposure — for B&W or slide film." if name in _BUILTIN_WHITE_PRESETS else "")
+        if name in _BUILTIN_WHITE_PRESETS:
+            hint = "Single white-light exposure — for B&W or slide film."
+        elif self._settings.white_mode and self._preset_selected():
+            hint = "Single white-light exposure, calibrated for B&W film."
+        else:
+            hint = ""
+        self.preset_hint.setText(hint)
         self.preset_hint.setVisible(bool(self.preset_hint.text()))
 
     def _on_preset_save(self) -> None:
@@ -678,6 +717,8 @@ class ScanlightSidebar(QWidget):
                 shutter_b=s.shutter_b,
                 iso=s.iso,
                 aperture=s.aperture,
+                white=s.white_mode,
+                shutter_w=s.shutter_w if s.white_mode else "",
             ),
         )
         self._reload_presets(select=name)
@@ -702,12 +743,17 @@ class ScanlightSidebar(QWidget):
         self._lv_target = self.calib_window.image
         self.calib_window.start()
         self._start_live_view_worker()  # live-view stream for the crosshair
-        # The framing light is the calibration's own start point (REFERENCE_LEVELS), so the
-        # crosshair is placed under the light the probe begins from, not under leftover RGB or
-        # an arbitrary grey. Pushed DIRECTLY, leaving the shared sliders on the selected preset,
-        # so cancelling restores the preset's own light. Calibration overwrites R/G/B on success.
-        self.controller.set_scanlight_color(*REFERENCE_LEVELS, 0, self._settings.port)
+        self._light_calibration_start()
         self._set_status("Calibrating a new preset — see the pop-up.")
+
+    def _light_calibration_start(self) -> None:
+        """Light the calibration's own start point, so the crosshair is placed under the light the
+        probe begins from, not under leftover RGB or an arbitrary grey. Pushed DIRECTLY, leaving the
+        shared sliders on the selected preset, so cancelling restores the preset's own light."""
+        if self.calib_window.white():
+            self.controller.set_scanlight_color(0, 0, 0, REFERENCE_WHITE_LEVEL, self._settings.port)
+        else:
+            self.controller.set_scanlight_color(*REFERENCE_LEVELS, 0, self._settings.port)
 
     def _settings_json(self) -> dict:
         """The live-view settings JSON the stream publishes (ISO/shutter/aperture options + current),
@@ -751,7 +797,8 @@ class ScanlightSidebar(QWidget):
         the option, or no camera session is open to receive the write)."""
         data = self._settings_json()
         issued = 0
-        for key, label in (("shutter", preset.shutter_r), ("iso", preset.iso), ("aperture", preset.aperture)):
+        shutter = preset.shutter_w if preset.white else preset.shutter_r
+        for key, label in (("shutter", shutter), ("iso", preset.iso), ("aperture", preset.aperture)):
             if not label:
                 continue
             info = data.get(key)
@@ -824,7 +871,7 @@ class ScanlightSidebar(QWidget):
         # reconnect. _stop_calibration_live_view tears it down when the run ends.
         self._calibrating_preset = name
         self._apply_gating()  # a running calibration locks Scan / Retake
-        self.calib_window.set_inputs_locked(True)  # freeze name / ROI / ISO / aperture while it meters
+        self.calib_window.set_inputs_locked(True)  # freeze name / light / ROI / ISO / aperture while it meters
         self._update_settings_from_ui()
         from negpy.desktop.workers.capture_worker import CalibrationRequest
 
@@ -834,9 +881,12 @@ class ScanlightSidebar(QWidget):
         # probe begins near target and needs fewer captures. Levels stay fixed and only the
         # shutter is corrected. A manual lens reads a blank aperture, so the correction is
         # ISO-only and the probe absorbs the rest.
+        white = self.calib_window.white()
         start_levels, start_shutter = normalize_start_point(
             self._current_setting_label("iso"),
             self._current_setting_label("aperture", require_writable=True),
+            levels=(REFERENCE_WHITE_LEVEL,) if white else REFERENCE_LEVELS,
+            shutter=REFERENCE_WHITE_SHUTTER if white else REFERENCE_SHUTTER,
             candidates=candidates,
         )
         self.controller.start_calibration(
@@ -848,6 +898,7 @@ class ScanlightSidebar(QWidget):
                 shutter_candidates=candidates,
                 start_levels=start_levels,
                 start_shutter=start_shutter,
+                white=white,
             )
         )
 
@@ -1187,18 +1238,33 @@ class ScanlightSidebar(QWidget):
     def _on_calibration_finished(self, result) -> None:
         self.progress_bar.setVisible(False)
         self._manual_mode = False  # a calibrated preset is read-only, never left in manual-edit mode
-        levels, shutters = result.levels, result.shutters
-        self.r_slider.setValue(int(levels[0]))
-        self.g_slider.setValue(int(levels[1]))
-        self.b_slider.setValue(int(levels[2]))
-        # An RGB preset means the white LED is off. Without this the W slider keeps a prior white
-        # preset's 255, which _update_settings_from_ui bakes into the saved preset.
-        self._set_slider(self.w_slider, 0)
-        shutter = shutters[0]  # one shared shutter (all three are equal)
+        shutter = result.shutter
         self._show_lone(self.shutter_stepper, shutter)
-        self._settings = replace(
-            self._settings, white_mode=False, shutter_r=shutter, shutter_g=shutter, shutter_b=shutter, shutter_w=shutter
-        )
+        white = result.white
+        if white is not None:
+            for slider in (self.r_slider, self.g_slider, self.b_slider):
+                self._set_slider(slider, 0)
+            self._set_slider(self.w_slider, white.level)
+            self._settings = replace(
+                self._settings,
+                white_mode=True,
+                white_process_mode=WhiteCaptureMode.BW,
+                shutter_r="",
+                shutter_g="",
+                shutter_b="",
+                shutter_w=shutter,
+            )
+        else:
+            levels = result.levels
+            self.r_slider.setValue(int(levels[0]))
+            self.g_slider.setValue(int(levels[1]))
+            self.b_slider.setValue(int(levels[2]))
+            # An RGB preset means the white LED is off. Without this the W slider keeps a prior white
+            # preset's level, which _update_settings_from_ui bakes into the saved preset.
+            self._set_slider(self.w_slider, 0)
+            self._settings = replace(
+                self._settings, white_mode=False, shutter_r=shutter, shutter_g=shutter, shutter_b=shutter, shutter_w=shutter
+            )
         # The body sits at the metered ISO/aperture, so capture them: the preset bakes them and
         # later forces them, and the fields show them read-only.
         self._apply_preset_exposure(self._current_setting_label("iso"), self._current_setting_label("aperture", require_writable=True))
@@ -1217,7 +1283,7 @@ class ScanlightSidebar(QWidget):
             # Pinned: the slider writes above armed the light debounce, whose light_set echo lands
             # right after this line. Without the pin it replaced this outcome before anyone could
             # read it.
-            self._set_status(f"Saved preset “{name}”.", pinned=True)
+            self._set_status(f"Saved preset “{name}”.{_base_readout(result)}", pinned=True)
         self._stop_calibration_live_view()  # calibration ran inside live view → tear it down
 
     @pyqtSlot(str)
@@ -1235,7 +1301,7 @@ class ScanlightSidebar(QWidget):
         self.calib_window.set_status(f"⚠ {label} — {fix}.")
         self.calib_window.progress.setVisible(False)
         self._apply_gating()  # re-enable Scan — the capture thread is free again
-        self.controller.set_scanlight_color(*REFERENCE_LEVELS, 0, self._settings.port)  # re-light for framing
+        self._light_calibration_start()  # re-light for framing
         self._show_exposure_warning(name, status)
 
     def _show_exposure_warning(self, name: str, status: str) -> None:
@@ -1341,6 +1407,7 @@ class ScanlightSidebar(QWidget):
         last = self._last_frame_number(roll_folder, roll)
         frame_number = max(1, last if retake else last + 1)
         rgb = self._rgb_mode
+        calibrated = rgb and (not s.white_mode or bool(s.shutter_w))
         req = CaptureRequest(
             roll_name=roll,
             frame_number=frame_number,
@@ -1358,10 +1425,10 @@ class ScanlightSidebar(QWidget):
             white_process_mode=s.white_process_mode,
             is_retake=retake,
             rgb_mode=rgb,
-            # Only the RGB triplet forces the preset's ISO/aperture. White-light and normal
+            # A calibrated preset forces its ISO/aperture. The built-in white preset and normal
             # scanning leave the body free, since the operator sets those in the live view.
-            iso=s.iso if rgb and not s.white_mode else "",
-            aperture=s.aperture if rgb and not s.white_mode else "",
+            iso=s.iso if calibrated else "",
+            aperture=s.aperture if calibrated else "",
         )
         self.set_scanning(True)
         if rgb and not req.white_mode:
@@ -1605,11 +1672,13 @@ class ScanlightSidebar(QWidget):
         modes). The sidebar exposure fields hide for a white-light preset. And the sliders + exposure
         steppers + Save are editable only while building a manual preset — a selected preset is a
         fixed recipe."""
-        locked = self._rgb_mode and not self._settings.white_mode
+        # A calibrated white preset carries its shutter; the built-in white preset carries none.
+        uncalibrated_white = self._settings.white_mode and not self._settings.shutter_w
+        locked = self._rgb_mode and not uncalibrated_white
         self.lv_window.settings_widget.setVisible(not locked)
         if not hasattr(self, "_exposure_widget"):
             return  # first call lands during __init__, before the RGB section is built
-        self._exposure_widget.setVisible(not self._settings.white_mode)
+        self._exposure_widget.setVisible(not uncalibrated_white)
         editable = self._manual_mode
         for slider in (self.r_slider, self.g_slider, self.b_slider):
             slider.setEnabled(editable)
@@ -1638,22 +1707,27 @@ class ScanlightSidebar(QWidget):
         """Adapt the light controls to the connected Scanlight. An RGB-only body (v1-v3, no white
         LED) hides the W slider and greys out the white-light preset, since neither can do anything;
         the live-view framing then lights all three RGB channels instead of a missing white one
-        (`_push_light`). A body with a white LED (v4 / Big) keeps them."""
+        (`_push_light`). A body with a white LED (v4 / Big) keeps them, and calibration offers it."""
         has_white = self._light_has_white
         w_row = self._slider_rows.get(self.w_slider)
         if w_row is not None:
             w_row.setVisible(has_white)
-        white_name = next(iter(_BUILTIN_WHITE_PRESETS))  # the built-in white-light preset
-        white_idx = self.preset_combo.findData(white_name)
+        white_names = set(_BUILTIN_WHITE_PRESETS) | {n for n in self._presets.names() if self._is_white_preset(n)}
         model = self.preset_combo.model()
-        if white_idx >= 0 and isinstance(model, QStandardItemModel):
-            item = model.item(white_idx)
-            if item is not None:
-                item.setEnabled(has_white)
+        if isinstance(model, QStandardItemModel):
+            for name in white_names:
+                item = model.item(self.preset_combo.findData(name))
+                if item is not None:
+                    item.setEnabled(has_white)
+        self.calib_window.set_white_available(has_white)
         # A white-light preset selected on an RGB-only body cannot run, so drop it.
-        if not has_white and self.preset_combo.currentData() in _BUILTIN_WHITE_PRESETS:
+        if not has_white and self.preset_combo.currentData() in white_names:
             self.preset_combo.setCurrentIndex(0)
             self._on_preset_selected(0)
+
+    def _is_white_preset(self, name: str) -> bool:
+        preset = self._presets.get(name)
+        return preset is not None and preset.white
 
     def _set_rgb_mode(self, on: bool) -> None:
         """Switch between RGB (Scanlight) and normal white-light scanning, driven by the
@@ -1701,11 +1775,11 @@ class ScanlightSidebar(QWidget):
             shutter_r=shutter,
             shutter_g=shutter,
             shutter_b=shutter,
-            # A white-light frame is not calibrated, so there is no baked exposure to force: its
-            # live-view steppers are the exposure control (see _refresh_preset_ui). Copying the RGB
-            # shutter here overwrote the operator's choice with a narrowband value, too long under
-            # white light and refused outright by a dial-locked body (issue #746).
-            shutter_w="" if self._settings.white_mode else shutter,
+            # A white-light preset keeps its own shutter: the calibrated one, or none for the
+            # built-in preset, whose live-view steppers are the exposure control (see
+            # _refresh_preset_ui). The RGB shutter is a narrowband value, too long under white
+            # light and refused outright by a dial-locked body (issue #746).
+            shutter_w=self._settings.shutter_w if self._settings.white_mode else shutter,
             iso=iso,
             aperture=aperture,
             roll_name=self.roll_edit.text().strip() or "Roll001",

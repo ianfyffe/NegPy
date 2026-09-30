@@ -61,13 +61,15 @@ def _capture_validated_single(
     min_raw_bytes: int,
     max_raw_bytes: int,
     cancel: Optional[threading.Event] = None,
+    iso: Optional[str] = None,
+    aperture: Optional[str] = None,
 ) -> str:
     """Capture beside the destination and replace it only after size validation."""
     output_folder = os.path.dirname(final_stem)
     staging_dir = tempfile.mkdtemp(prefix=f".{os.path.basename(final_stem)}-", suffix=".capture", dir=output_folder)
     try:
         staged_stem = os.path.join(staging_dir, os.path.basename(final_stem))
-        staged_path = camera.capture(staged_stem + _RAW_SUFFIX, shutter=shutter)
+        staged_path = camera.capture(staged_stem + _RAW_SUFFIX, shutter=shutter, iso=iso, aperture=aperture)
         verify_raw_size(staged_path, min_raw_bytes, max_raw_bytes)
         final_path = os.path.join(output_folder, os.path.basename(staged_path))
         if cancel is not None and cancel.is_set():
@@ -251,8 +253,11 @@ class CaptureService:
         min_raw_bytes: int = 8 * 1024 * 1024,
         max_raw_bytes: int = 200 * 1024 * 1024,
         cancel: Optional[threading.Event] = None,
+        iso: Optional[str] = None,
+        aperture: Optional[str] = None,
     ) -> str:
-        """Single white-light exposure for slide / E-6 film (one file, no R/G/B split)."""
+        """Single white-light exposure for B&W or slide film (one file, no R/G/B split). A
+        calibrated preset passes its shutter, ISO and aperture; None leaves the camera as set."""
         os.makedirs(output_folder, exist_ok=True)
         try:
             self._light.set_color(w=w_level)
@@ -266,6 +271,8 @@ class CaptureService:
                 min_raw_bytes=min_raw_bytes,
                 max_raw_bytes=max_raw_bytes,
                 cancel=cancel,
+                iso=iso,
+                aperture=aperture,
             )
         finally:
             try:

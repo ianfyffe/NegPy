@@ -36,6 +36,7 @@ class FakeCamera:
     def capture(self, out_path, shutter=None, iso=None, aperture=None):
         out_path = os.path.splitext(out_path)[0] + ".ARW"  # the camera picks the suffix
         self.captured.append((out_path, shutter))
+        self.exposure = (iso, aperture)
         with open(out_path, "wb") as f:
             f.write(b"\0" * self.size)
         return out_path
@@ -55,6 +56,15 @@ def test_capture_white_single_file(tmp_path):
     # White channel only, then light off.
     assert any(c[3] == 200 and (c[0], c[1], c[2]) == (0, 0, 0) for c in light.colors)
     assert light.off_called
+
+
+def test_calibrated_white_capture_forces_its_iso_and_aperture(tmp_path):
+    cam = FakeCamera()
+    svc = CaptureService(FakeLight(), cam, sleep=lambda _s: None)
+    svc.capture_white(
+        roll_name="HP5", frame_number=1, output_folder=str(tmp_path), w_level=212, shutter="1/15", iso="100", aperture="f/5.6"
+    )
+    assert cam.exposure == ("100", "f/5.6")
 
 
 def test_failed_white_retake_preserves_existing_file(tmp_path):
