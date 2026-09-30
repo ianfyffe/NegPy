@@ -1,3 +1,5 @@
+from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -9,10 +11,38 @@ from negpy.desktop.view.canvas.crop_guides import GUIDE_LABELS, ORIENTATION_COUN
 from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, field_label, header_row, section_subheader, wrap_tooltip
+from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.sliders import CompactSlider
 from negpy.domain.models import CROP_RATIO_CHOICES, canonical_crop_ratio
 from negpy.features.geometry.logic import has_manual_crop
 from negpy.features.geometry.models import FINE_ROTATION_LIMIT
+
+
+def _keystone_reference_icon() -> QIcon:
+    icon = QIcon()
+    modes = (
+        (QIcon.Mode.Normal, THEME.text_primary, THEME.text_on_accent),
+        (QIcon.Mode.Active, THEME.text_primary, THEME.text_on_accent),
+        (QIcon.Mode.Disabled, THEME.text_muted, THEME.text_muted),
+    )
+    for mode, off_color, on_color in modes:
+        for state, color in ((QIcon.State.Off, off_color), (QIcon.State.On, on_color)):
+            pixmap = QPixmap(32, 32)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor(color), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            for y in (3, 15, 27):
+                painter.drawLine(2, y, 29, 21)
+            for x in (4, 15, 27):
+                painter.drawLine(21, 3, x, 29)
+            painter.setBrush(QColor(color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QPointF(29.0, 21.0), 1.5, 1.5)
+            painter.drawEllipse(QPointF(21.0, 3.0), 1.5, 1.5)
+            painter.end()
+            icon.addPixmap(pixmap, mode, state)
+    return icon
 
 
 class GeometrySidebar(BaseSidebar):
@@ -77,7 +107,12 @@ class GeometrySidebar(BaseSidebar):
         self.straighten_btn = self._tool_toggle("fa5s.ruler", "", "Draw a line along a horizon or edge to level the frame")
         self.straighten_btn.setFixedWidth(ICON_BUTTON_WIDTH)
         # The tools sit on the header so all three sliders keep one track width.
-        self.layout.addLayout(header_row(section_subheader("ALIGNMENT"), self.straighten_btn, self.crop_to_valid_btn))
+        self.keystone_lines_btn = self._tool_toggle("", "", "Tilt and swing with reference lines")
+        self.keystone_lines_btn.setIcon(_keystone_reference_icon())
+        self.keystone_lines_btn.setFixedWidth(ICON_BUTTON_WIDTH)
+        self.layout.addLayout(
+            header_row(section_subheader("ALIGNMENT"), self.straighten_btn, self.keystone_lines_btn, self.crop_to_valid_btn)
+        )
 
         # The slider shows the photographer's convention, where positive is clockwise on screen.
         # Internally geometry.fine_rotation keeps the cv2/warp convention, where positive is
@@ -121,6 +156,7 @@ class GeometrySidebar(BaseSidebar):
         self.reset_crop_btn.toggled.connect(self._on_auto_crop_toggled)
 
         self.straighten_btn.toggled.connect(self._on_straighten_toggled)
+        self.keystone_lines_btn.toggled.connect(self._on_keystone_lines_toggled)
 
         # Display convention is CW-positive; negate crossing into the stored convention.
         self.fine_rot_slider.valueChanged.connect(
@@ -153,6 +189,9 @@ class GeometrySidebar(BaseSidebar):
     def _on_straighten_toggled(self, checked: bool) -> None:
         self.controller.set_active_tool(ToolMode.STRAIGHTEN if checked else ToolMode.NONE)
 
+    def _on_keystone_lines_toggled(self, checked: bool) -> None:
+        self.controller.set_active_tool(ToolMode.KEYSTONE_LINES if checked else ToolMode.NONE)
+
     def _on_auto_crop_toggled(self, checked: bool) -> None:
         if checked:
             self.controller.apply_auto_crop()
@@ -178,6 +217,7 @@ class GeometrySidebar(BaseSidebar):
 
             self.manual_crop_btn.setChecked(self.state.active_tool == ToolMode.CROP_MANUAL)
             self.straighten_btn.setChecked(self.state.active_tool == ToolMode.STRAIGHTEN)
+            self.keystone_lines_btn.setChecked(self.state.active_tool == ToolMode.KEYSTONE_LINES)
             self.reset_crop_btn.setChecked(conf.crop_from_auto)
             self.manual_crop_btn.edited_dot.set_active(has_manual_crop(conf))
             self.reset_crop_btn.edited_dot.set_active(conf.crop_from_auto)
@@ -195,5 +235,6 @@ class GeometrySidebar(BaseSidebar):
         self.converge_h_slider.blockSignals(blocked)
         self.manual_crop_btn.blockSignals(blocked)
         self.straighten_btn.blockSignals(blocked)
+        self.keystone_lines_btn.blockSignals(blocked)
         self.reset_crop_btn.blockSignals(blocked)
         self.crop_to_valid_btn.blockSignals(blocked)

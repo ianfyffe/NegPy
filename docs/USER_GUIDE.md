@@ -78,11 +78,11 @@ An unedited frame gets the rig and roll settings: film process, crop ratio, flip
 
 **Preferences → Session & Storage → Persistent Settings…** edits that list, grouped by panel, with values from your last saved edit. Tick a setting or a group header to make it carry. The **Carry settings between frames** checkbox is the master switch; off, new frames get bare defaults and your ticks stay saved.
 
-An edited frame keeps its look; only export and metadata settings reach it. **Reset Settings** ignores the list and returns bare defaults, except for the scanning setup: Linear RAW, Narrowband and the demosaic choices stay as a new frame gets them. In a roll, a reset also sets every Roll-tab card back to **Roll**, so the frame takes the roll's values.
+An edited frame keeps its look; only export and metadata settings reach it. **Reset Settings** ignores the list and returns bare defaults, except for the scanning setup: Linear RAW, Narrowband and the demosaic choices stay as a new frame gets them. In a roll, a reset also sets every Roll-tab card back to **Roll**, so the frame takes the roll's values. No reset changes the scanning setup, a card's arrow included: they describe your rig, so **Scanning setup** is what sets them.
 
 ### Frame or roll: the scope pair
 
-Each section header has **Frame** (picture, amber) and **Roll** (film roll, red) beside its reset arrow. The lit one shows where the card's values live; click the other to move them. A card with non-default values has a stripe in that color down its header. Frames that are not one roll (search results, several folders) show **Frame** everywhere and **Roll** grayed out, until Save as Roll.
+Each section header has **Frame** (picture, amber) and **Roll** (film roll, red) beside its reset arrow, which returns that card alone to defaults; the **· 2** after a card's name counts the settings it holds away from them. The lit one shows where the card's values live; click the other to move them. A card with non-default values has a stripe in that color down its header. Frames that are not one roll (search results, several folders) show **Frame** everywhere and **Roll** grayed out, until Save as Roll.
 
 On a **Roll tab** or **Metadata** card the pair is a latch. On Roll, the card follows the roll's value, and new frames in the roll inherit it. Edit a slider and it flips to Frame. Click **Roll** to push this frame's value to the roll; click **Frame** to pin the current value to this frame.
 
@@ -385,6 +385,7 @@ Rows that measure the scan, not your edit; hover for details. A row with nothing
 *   **Crop by Default** (crop icon, right end of the ALIGNMENT header): crop the wedge Fine Rotation, Tilt and Swing leave, so no edge shows extrapolated pixels. Live, only while no manual or auto crop is set. While you adjust a slider below, the canvas briefly darkens the margin it trims.
 *   **Fine Rotation** (±45°): sub-degree rotation, positive clockwise. Applied after auto-crop.
 *   **Straighten** tool (ruler, on the ALIGNMENT header): draw a line along a horizon or vertical edge to level or plumb it. Move the pointer past the edge of the viewport to pan during drawing.
+*   **Tilt and swing with reference lines** tool: drag a line along each rebate edge (top, bottom, left, right); once all four are marked, Tilt and Swing solve to make them parallel and square. Re-drag an edge to refine.
 *   **Tilt** (±15%): tip the easel about a horizontal axis to correct converging verticals. Positive stretches the top edge. The unit is percent of the frame, not an angle.
 *   **Swing** (±15%): the same about a vertical axis, for converging horizontals. Positive stretches the left edge.
 
@@ -812,7 +813,7 @@ A color sensor records one color per photosite; the demosaic algorithm fills in 
 
 **Demosaic**:
 
-*   **Preview** / **Export** (sticky, default **Auto**): *Auto* is a fast half-size decode on screen and AHD for export. For the preview, Auto and Linear are fastest; the others decode at full size. **AHD** is balanced, **VNG** smooth, **PPG** fast with clean edges, **DCB** and **DHT** favor fine detail, **AAHD** softens edges to suppress artifacts.
+*   **Preview** / **Export** (sticky, default **Auto**): *Auto* is a fast half-size decode on screen (full-size PPG on X-Trans) and AHD for export. For the preview, Auto and Linear are fastest; the others decode at full size. **AHD** is balanced, **VNG** smooth, **PPG** fast with clean edges, **DCB** and **DHT** favor fine detail, **AAHD** softens edges to suppress artifacts.
 *   A hint under them says so when the open frame is not a Bayer or X-Trans RAW.
 
 **Highlights: Recovery** (Transparency only, default **Off**): recovers a clipped highlight on a camera RAW. **Off** leaves it flat, or magenta if one channel clipped first. **Blend** recovers a plausible neutral from the unclipped channels, right for sun, sky, chrome or glass. **Reconstruct** is libraw's more aggressive level and can misjudge a saturated-color highlight. Greyed out on a scanner TIFF, JPEG or other rendered file and on a merged bracket (the merge recovers highlights itself), hidden outside Transparency, inert under Narrowband.
@@ -1028,6 +1029,7 @@ Capture film directly into NegPy. Two collapsible sections.
 
 *   **Format**: `TIFF` or `TIFF (mono)` (one 16-bit gray plane, for B&W negatives).
 *   **Frames**: `1-6`, `1,2,5`, or empty for all. The strip preview writes its picks here. The line above **Scan** states frame count, resolution, extra passes and approximate disk use.
+*   **Eject When Done** (on by default): returns the strip after a batch. Off keeps it loaded with its frame picks and previews, so more frames scan without a new preview, until **Eject** or the scanner's own idle timeout.
 *   **Depth**, **Autofocus**, hardware **Auto-exposure**: shown only when the device offers them (not on the OpticFilm 8200i SE).
 *   **Prescan**: a low-DPI full-window preview; drag a crop and the next Scan uses that hardware ROI.
 *   **Exposure**: shown when the scanner has `scan-exposure-time` (some genesys devices); overrides the exposure time, in µs, ms or s.
@@ -1042,6 +1044,7 @@ Capture film directly into NegPy. Two collapsible sections.
 *   **Film**: Color negative, B&W negative, Slide or Kodachrome. Sets how frame boundaries are read, whether IR and ICE are offered (not for B&W or Kodachrome), and metering: a color negative is metered per channel to take the orange mask off before conversion; other films keep the factory balance.
 *   **Film format**: frame length (135, 66, 645 and so on). **Auto** where the holder narrows it; set it for loose film in a masked carrier. Shown only where the transport measures the film.
 *   **Exposure** (**Meter Frame…** / **Unlock**): nkscan meters every frame on its own, so a strip end, which meters on the bare light past the cut, keeps a color negative's orange mask and scans with a different color. **Meter Frame…** meters one frame of the loaded strip (pick one inside the strip, such as frame 2) and every later scan on this scanner reuses its exposure, across strips and restarts, until **Unlock**. Meter again for each new roll.
+*   **Debug log** (Off, Debug, Trace): writes nkscan's diagnostics to `nkscan.log` in the NegPy folder; the folder button opens it. Trace adds every command sent to the scanner and is what a bug report usually needs. Set it before you reproduce a problem, then attach the file.
 
 Controls follow what the unit reports; an LS-50 hides Samples and Superfine. The release builds include **nkscan**; from source, see [CONTRIBUTING.md](../CONTRIBUTING.md). On Linux, USB needs a udev rule for vendor `04b0`; FireWire/SCSI needs the `sg` module.
 
@@ -1054,8 +1057,8 @@ During a preview, a progress bar shows, **Cancel** reads **Stop Preview** (keeps
 
 Copy-stand capture with a camera in **PC Remote** mode over USB (macOS/Linux). With a NegPy **Scanlight**, it captures narrowband R/G/B triplets from film-stock presets; without, one white-light exposure. Frames go to the hot folder and into Trichrome Mode.
 
-*   **Live View & Scan**: click the image to aim the focus magnifier, click again for the full frame. **Focus** (`F`) runs the camera's autofocus over the tether; the body's own shutter button does not work while tethered. ISO, shutter and aperture are set from the toolbar, or locked by a calibrated RGB preset.
-*   **Preset**: shows its RGB levels, ISO, shutter and aperture and forces them each frame. **+** calibrates: place the rectangle on clear film base, name it, run it. It solves a shutter and per-channel LED levels just under clipping, or says which way to adjust and saves nothing. **Create a manual preset…** sets one by hand.
+*   **Live View & Scan**: click the image to aim the focus magnifier, click again for the full frame. **Focus** (`F`) runs the camera's autofocus over the tether; the body's own shutter button does not work while tethered. ISO, shutter and aperture are set from the toolbar, or locked by a calibrated preset.
+*   **Preset**: shows its LED levels, ISO, shutter and aperture and forces them each frame. **+** calibrates: place the rectangle on clear film base, name it, run it. It solves a shutter and per-channel LED levels just under clipping, or says which way to adjust and saves nothing. On a Scanlight with a white LED, **Light: White (B&W)** calibrates one white-light exposure for B&W negatives instead, and the status line says where the base landed. **Create a manual preset…** sets one by hand.
 *   **Scan** and **Retake**: **Scan** shoots into a per-roll subfolder, auto-numbered, and imports; **Retake** shoots again without advancing. **Delay between exposures** pauses between R, G and B for bodies that lock up.
 *   **Narrowband**: RGB-lit scans render more saturated; the Calibration card's **Narrowband** toggle corrects this.
 

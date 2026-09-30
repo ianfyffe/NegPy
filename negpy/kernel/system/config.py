@@ -69,8 +69,8 @@ DEFAULT_WORKSPACE_CONFIG = WorkspaceConfig(
     geometry=GeometryConfig(
         rotation=0,
         fine_rotation=0.0,
-        autocrop_offset=1,
-        autocrop_ratio=AspectRatio.R_3_2,
+        autocrop_offset=0,
+        autocrop_ratio=AspectRatio.FREE,
     ),
     lab=LabConfig(
         clahe_strength=0.0,

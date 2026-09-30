@@ -204,6 +204,38 @@ def test_calibration_uses_disposable_scratch_without_touching_roll(tmp_path, mon
     assert not FakeCalibrationService.written_path.parent.exists()
 
 
+def test_white_calibration_request_runs_the_white_solve(tmp_path, monkeypatch):
+    import negpy.desktop.workers.capture_worker as capture_worker_module
+
+    worker = CaptureWorker()
+    calls: dict = {}
+
+    class FakeCalibrationService:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def calibrate(self, *_args, **_kwargs):
+            raise AssertionError("an RGB solve for a white request")
+
+        def calibrate_white(self, _roi, _scratch, **kwargs):
+            calls.update(kwargs)
+            return SimpleNamespace()
+
+    monkeypatch.setattr(capture_worker_module, "CalibrationService", FakeCalibrationService)
+    monkeypatch.setattr(worker, "_ensure_light", lambda _port: FakeLight())
+    monkeypatch.setattr(worker, "_acquire_camera", lambda: object())
+    finished = []
+    worker.calibration_finished.connect(finished.append)
+
+    worker.run_calibration(
+        CalibrationRequest(
+            roi=Roi(0, 0, 1, 1), output_folder=str(tmp_path), settle_s=0, white=True, start_levels=(240,), start_shutter="1/15"
+        )
+    )
+
+    assert finished and calls["start_level"] == 240 and calls["start_shutter"] == "1/15"
+
+
 class ClaimedCamera:
     """A body on the bus whose USB claim another program holds (gphoto -53)."""
 

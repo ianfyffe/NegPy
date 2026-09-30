@@ -1,8 +1,9 @@
+import os
 from enum import StrEnum
 
 import qtawesome as qta
-from PyQt6.QtCore import Qt, pyqtSlot
-from PyQt6.QtGui import QIntValidator
+from PyQt6.QtCore import Qt, QUrl, pyqtSlot
+from PyQt6.QtGui import QDesktopServices, QIntValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,6 +31,7 @@ from negpy.desktop.view.styles.templates import (
     StatusStrip,
 )
 from negpy.desktop.view.styles.theme import THEME
+from negpy.desktop.view.widgets.choice_button import ChoiceButton
 from negpy.infrastructure.scanners.base import ScannerCapabilities, ScannerDevice
 from negpy.infrastructure.scanners.params import (
     DEFAULT_N_PASSES,
@@ -40,6 +42,7 @@ from negpy.infrastructure.scanners.params import (
     MultiExposureMode,
     film_passes_infrared,
 )
+from negpy.infrastructure.scanners import nkscan_log
 from negpy.infrastructure.scanners.registry import DEFAULT_BACKEND_ID, backend_choices
 from negpy.infrastructure.scanners.settings import OUTPUT_FORMATS, ScannerSettings
 
@@ -167,6 +170,7 @@ class ScanSidebar(QWidget):
         self._device_ir = False
         self._init_ui()
         self._connect_signals()
+        self._sync_debug_log()
         install_wheel_guards(self)
 
     # ── settings persistence ──────────────────────────────────────────
@@ -240,6 +244,25 @@ class ScanSidebar(QWidget):
         device_row_widget = QWidget()
         device_row_widget.setLayout(device_row)
         device_form.addRow("Device", device_row_widget)
+
+        debug_log_row = QHBoxLayout()
+        debug_log_row.setContentsMargins(0, 0, 0, 0)
+        self.debug_log_btn = ChoiceButton(
+            tuple(("", level.title()) for level in nkscan_log.LEVELS),
+            "Write nkscan's diagnostics to nkscan.log in the NegPy folder, to attach to a bug report. "
+            "Debug records each scan's decisions; Trace also records every command sent to the scanner "
+            "and is what a bug report usually needs.",
+        )
+        level = self._settings.nkscan_log_level
+        self.debug_log_btn.setCurrentIndex(nkscan_log.LEVELS.index(level) if level in nkscan_log.LEVELS else 0)
+        self.debug_log_folder_btn = _icon_button("fa5s.folder-open", "Show nkscan.log in its folder")
+        debug_log_row.addWidget(self.debug_log_btn)
+        debug_log_row.addStretch(1)
+        debug_log_row.addWidget(self.debug_log_folder_btn)
+        self.debug_log_widget = QWidget()
+        self.debug_log_widget.setLayout(debug_log_row)
+        self.debug_log_label = QLabel("Debug log")
+        device_form.addRow(self.debug_log_label, self.debug_log_widget)
         layout.addLayout(device_form)
 
         # ── CAPS INFO ───────────────────────────────────────
@@ -430,6 +453,15 @@ class ScanSidebar(QWidget):
         self.frame_spec_label.setVisible(False)
         self.frame_spec_edit.setVisible(False)
 
+        self.eject_after_check = QCheckBox("Eject When Done")
+        self.eject_after_check.setToolTip(
+            "Return the strip after a batch. Off keeps it loaded, with its previews, for more "
+            "frames; the scanner may still return it by itself when idle."
+        )
+        self.eject_after_check.setChecked(self._settings.eject_after_batch)
+        layout.addWidget(self.eject_after_check)
+        self.eject_after_check.setVisible(False)
+
         # Scan window (strip/roll feeders): set once from a preview, reused per frame.
         scan_window_row = QHBoxLayout()
         scan_window_row.setContentsMargins(0, 0, 0, 0)
@@ -516,6 +548,8 @@ class ScanSidebar(QWidget):
     def _connect_signals(self) -> None:
         self.refresh_btn.clicked.connect(self._on_refresh)
         self.eject_btn.clicked.connect(self._on_eject)
+        self.debug_log_btn.currentChanged.connect(self._on_debug_log_changed)
+        self.debug_log_folder_btn.clicked.connect(self._on_show_debug_log)
         self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
         self.browse_btn.clicked.connect(self._on_browse)
@@ -529,6 +563,7 @@ class ScanSidebar(QWidget):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.passes_slider.valueChanged.connect(self._on_passes_slider_changed)
         self.autofocus_check.toggled.connect(lambda: self._update_settings_from_ui())
+        self.eject_after_check.toggled.connect(lambda: self._update_settings_from_ui())
         self.ae_check.toggled.connect(lambda: self._on_ae_toggled())
         self.clean_check.toggled.connect(lambda on: self._on_ir_pass_toggled(self.ir_check, on))
         self.superfine_check.toggled.connect(lambda: self._update_settings_from_ui())
@@ -569,6 +604,7 @@ class ScanSidebar(QWidget):
 
     def _request_devices(self) -> None:
         """Request device list from the scan worker thread."""
+        self._sync_debug_log()
         self.controller.set_scan_backend(self._current_backend_id())
         self.device_combo.clear()
         self.device_combo.addItem("Detecting scanners…", None)
@@ -588,6 +624,36 @@ class ScanSidebar(QWidget):
         # _current_backend_id(). None are needed today.
         self._update_settings_from_ui()
         self._request_devices()
+
+    def _sync_debug_log(self) -> None:
+        # Before the device request, so the log holds the probe that opens the unit.
+        is_nkscan = self._current_backend_id() == "nkscan"
+        self.debug_log_label.setVisible(is_nkscan)
+        self.debug_log_widget.setVisible(is_nkscan)
+        if is_nkscan:
+            self._apply_debug_log(self._settings.nkscan_log_level)
+
+    def _on_debug_log_changed(self, index: int) -> None:
+        self._apply_debug_log(nkscan_log.LEVELS[index])
+
+    def _apply_debug_log(self, level: str) -> None:
+        """Start `level` and save it; a level that cannot start shows and saves Off."""
+        from dataclasses import replace
+
+        if not nkscan_log.set_level(level):
+            level = "off"
+            self.debug_log_btn.blockSignals(True)
+            self.debug_log_btn.setCurrentIndex(0)
+            self.debug_log_btn.blockSignals(False)
+            self.status_strip.set_message("nkscan is not installed, so there is no debug log to write.")
+        if level != self._settings.nkscan_log_level:
+            self.settings = replace(self._settings, nkscan_log_level=level)
+
+    def _on_show_debug_log(self) -> None:
+        path = nkscan_log.log_path()
+        folder = os.path.dirname(path)
+        os.makedirs(folder, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _on_eject(self) -> None:
         device = self._current_device()
@@ -655,6 +721,7 @@ class ScanSidebar(QWidget):
             self.eject_btn.setVisible(False)
             self.frame_spec_label.setVisible(False)
             self.frame_spec_edit.setVisible(False)
+            self.eject_after_check.setVisible(False)
             self.scan_window_row_label.setVisible(False)
             self.scan_window_widget.setVisible(False)
             self.scan_window_status.setVisible(False)
@@ -907,6 +974,7 @@ class ScanSidebar(QWidget):
         is_strip = _reaches_a_strip(caps)
         self.frame_spec_label.setVisible(is_strip)
         self.frame_spec_edit.setVisible(is_strip)
+        self.eject_after_check.setVisible(is_strip and caps.can_eject)
         if is_strip:
             self._sync_frame_spec()
 
@@ -1440,6 +1508,7 @@ class ScanSidebar(QWidget):
                         frame_windows=frame_windows,
                         frame_offset_modifier_mm=self._settings.frame_offset_modifier_mm,
                         frame_offsets=self._settings.frame_offsets,
+                        eject_when_done=self._settings.eject_after_batch,
                     )
                 )
             else:
@@ -1584,5 +1653,6 @@ class ScanSidebar(QWidget):
             output_folder=self.folder_edit.text().strip(),
             output_format=self.fmt_combo.currentText(),
             filename_pattern=self.pattern_edit.text().strip() or '{{ date }}_{{ "%03d" % seq }}',
+            eject_after_batch=self.eject_after_check.isChecked(),
         )
         self._update_summary()

@@ -375,7 +375,7 @@ class TestConfigDeserialization(unittest.TestCase):
         config = WorkspaceConfig.from_flat_dict({"export_fmt": "PSD", "export_resolution_mode": "contact_sheet", "autocrop_ratio": "13:17"})
         self.assertEqual(config.export.export_fmt, ExportFormat.JPEG)
         self.assertEqual(config.export.export_resolution_mode, ExportResolutionMode.ORIGINAL)
-        self.assertEqual(config.geometry.autocrop_ratio, AspectRatio.R_3_2)
+        self.assertEqual(config.geometry.autocrop_ratio, AspectRatio.FREE)
 
     def test_no_sub_config_is_missing_from_the_known_keys_set(self):
         """`from_flat_dict` validates incoming keys against a hand-maintained

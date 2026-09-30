@@ -37,13 +37,6 @@ if not QApplication.instance():
     _app = QApplication(sys.argv)
 
 
-def _peek_state() -> AppState:
-    """AppState with the shipped autocrop inset off: a peek test compares whole buffers,
-    so the frame must reach the canvas at its own size."""
-    cfg = AppState().config
-    return AppState(config=replace(cfg, geometry=replace(cfg.geometry, autocrop_offset=0)))
-
-
 def _slide_config(cfg):
     from negpy.features.process.models import ProcessMode
 
@@ -123,6 +116,63 @@ class TestAppController(unittest.TestCase):
             self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
         mock_rolls.touch_roll.assert_called_once_with(self.controller.session.repo, "roll-a")
         mirror.assert_called_once_with("roll-a")
+
+    def test_keystone_solve_clears_lines_after_config_update(self):
+        self.controller.state.active_tool = ToolMode.KEYSTONE_LINES
+        self.controller.state.preview_raw = np.zeros((100, 120), dtype=np.float32)
+        self.controller.request_render = MagicMock()
+        self.mock_session_manager.update_config.side_effect = lambda config, **_kwargs: setattr(self.controller.state, "config", config)
+        edges = {
+            "left": ((0.1, 0.1), (0.1, 0.9)),
+            "right": ((0.9, 0.1), (0.9, 0.9)),
+            "top": ((0.1, 0.1), (0.9, 0.1)),
+            "bottom": ((0.1, 0.9), (0.9, 0.9)),
+        }
+        cleared = []
+        self.controller.keystone_lines_cleared.connect(
+            lambda: cleared.append(
+                (
+                    self.controller.state.config.geometry.converge_v,
+                    self.controller.state.config.geometry.converge_h,
+                    dict(self.controller._keystone_lines),
+                    self.controller.state.active_tool,
+                )
+            )
+        )
+
+        with patch("negpy.desktop.controller.solve_keystone_from_edges", return_value=(8.0, -6.0)):
+            for edge, (point1, point2) in edges.items():
+                self.controller.handle_keystone_line_marked(edge, *point1, *point2)
+
+        self.assertEqual(cleared, [(8.0, -6.0, {}, ToolMode.KEYSTONE_LINES)])
+        self.mock_session_manager.update_config.assert_called_once()
+        self.assertTrue(self.mock_session_manager.update_config.call_args.kwargs["persist"])
+        self.controller.request_render.assert_called_once_with()
+
+    def test_keystone_solve_error_keeps_lines_and_does_not_emit_clear(self):
+        self.controller.state.active_tool = ToolMode.KEYSTONE_LINES
+        self.controller.state.preview_raw = np.zeros((100, 120), dtype=np.float32)
+        self.controller.request_render = MagicMock()
+        self.controller.set_status = MagicMock()
+        edges = {
+            "left": ((0.1, 0.1), (0.1, 0.9)),
+            "right": ((0.9, 0.1), (0.9, 0.9)),
+            "top": ((0.1, 0.1), (0.9, 0.1)),
+            "bottom": ((0.1, 0.9), (0.9, 0.9)),
+        }
+        cleared = MagicMock()
+        self.controller.keystone_lines_cleared.connect(cleared)
+
+        with patch("negpy.desktop.controller.solve_keystone_from_edges", side_effect=ValueError("invalid edge")):
+            for edge, (point1, point2) in edges.items():
+                self.controller.handle_keystone_line_marked(edge, *point1, *point2)
+
+        self.assertEqual(set(self.controller._keystone_lines), set(edges))
+        self.assertEqual(self.controller.state.active_tool, ToolMode.KEYSTONE_LINES)
+        cleared.assert_not_called()
+        self.mock_session_manager.update_config.assert_not_called()
+        self.controller.request_render.assert_not_called()
+        self.controller.set_status.assert_called_once_with("invalid edge", 3000, "warning")
 
     def test_half_frame_override_round_trip(self):
         self.controller.session.repo.get_global_setting.return_value = None
@@ -4916,7 +4966,7 @@ class TestNegativePeekColor(unittest.TestCase):
 
     def setUp(self):
         self.mock_session_manager = MagicMock(spec=DesktopSessionManager)
-        self.mock_session_manager.state = _peek_state()
+        self.mock_session_manager.state = AppState()
         self.mock_session_manager.repo = MagicMock()
         with (
             patch("negpy.desktop.controller.RenderWorker") as mock_rw_class,
@@ -5060,7 +5110,7 @@ class TestEmbeddedPeek(unittest.TestCase):
         import numpy as np
 
         self.mock_session_manager = MagicMock(spec=DesktopSessionManager)
-        self.mock_session_manager.state = _peek_state()
+        self.mock_session_manager.state = AppState()
         self.mock_session_manager.repo = MagicMock()
         with (
             patch("negpy.desktop.controller.RenderWorker") as mock_rw_class,
@@ -5157,7 +5207,7 @@ class TestCompareFlatPeekInteraction(unittest.TestCase):
         import numpy as np
 
         self.mock_session_manager = MagicMock(spec=DesktopSessionManager)
-        self.mock_session_manager.state = _peek_state()
+        self.mock_session_manager.state = AppState()
         self.mock_session_manager.repo = MagicMock()
         with (
             patch("negpy.desktop.controller.RenderWorker") as mock_rw_class,

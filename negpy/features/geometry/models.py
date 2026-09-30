@@ -152,4 +152,4 @@ class GeometryConfig:
         try:
             object.__setattr__(self, "autocrop_ratio", AspectRatio(self.autocrop_ratio))
         except ValueError:
-            object.__setattr__(self, "autocrop_ratio", AspectRatio.R_3_2)
+            object.__setattr__(self, "autocrop_ratio", AspectRatio.FREE)

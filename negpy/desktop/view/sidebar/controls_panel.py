@@ -44,11 +44,7 @@ from negpy.desktop.view.sidebar.retouch import RetouchSidebar
 from negpy.desktop.view.sidebar.local import LocalSidebar
 from negpy.desktop.view.sidebar.finish import FinishSidebar
 
-_DEMOSAIC_FIELDS = (
-    "demosaic_preview",
-    "demosaic_export",
-    "highlight_reconstruction",
-)
+_DEMOSAIC_FIELDS = ("highlight_reconstruction",)
 # GeometryConfig is split across three cards. The rect auto crop resolves, the rotation
 # and the easel movements are this frame's own placement and stay on Geometry; what the
 # detector looks for and how the scanning lens bends are the roll's.
@@ -64,7 +60,6 @@ _LENS_FIELDS = (
     "lens_ca_from_metadata",
 )
 _SENSOR_FIELDS = (
-    "linear_raw",
     "sensor_profile",
     "crosstalk_profile",
     "crosstalk_strength",
@@ -72,6 +67,9 @@ _SENSOR_FIELDS = (
 )
 # ProcessConfig is split across five cards. Each tuple is both the card's reset scope and
 # its modified count, so a field is resettable from the one card that counts it.
+# Linear RAW, Narrowband and the two demosaic choices are in none: they describe the rig and
+# the decode, not this frame's look, so they come from the scanning setup and no reset -- a
+# card's or the frame's (_with_scan_setup) -- changes them.
 # locked_floors/locked_ceils/locked_neutral_axis are in none: they are Roll Analysis's measured result.
 _FILM_FIELDS = (
     "process_mode",
@@ -637,6 +635,14 @@ class ControlsPanel(QWidget):
                 "(a building, a door frame) and the image rotates to make it level or plumb. "
                 "Applies once per line; Esc cancels an in-progress line",
                 "straighten",
+            )
+        )
+        geo.keystone_lines_btn.setToolTip(
+            tooltip_with_shortcut(
+                "Tilt and swing with reference lines — drag a short line along each of the four "
+                "rebate edges (top, bottom, left, right); NegPy solves the Tilt and Swing that make "
+                "them parallel and square again. Stays open until you toggle it off",
+                "keystone_lines",
             )
         )
         crop.offset_slider.setToolTip(

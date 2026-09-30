@@ -5,7 +5,7 @@ panels are built against has to be the config a fresh frame and every reset path
 (DEFAULT_WORKSPACE_CONFIG).
 """
 
-from dataclasses import fields
+from dataclasses import fields, is_dataclass
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,8 +13,7 @@ import pytest
 from negpy.desktop.session import AppState
 from negpy.desktop.view.sidebar.controls_panel import ControlsPanel
 from negpy.domain.models import WorkspaceConfig
-from negpy.features.exposure.models import EXPOSURE_CONSTANTS, ExposureConfig
-from negpy.features.process.models import ProcessConfig
+from negpy.features.exposure.models import EXPOSURE_CONSTANTS
 from negpy.kernel.system.config import DEFAULT_WORKSPACE_CONFIG
 
 
@@ -22,16 +21,19 @@ def test_a_fresh_session_starts_on_the_shipped_config():
     assert AppState().config == DEFAULT_WORKSPACE_CONFIG
 
 
-def test_the_exposure_and_process_dataclasses_carry_the_shipped_defaults():
-    """ExposureConfig()/ProcessConfig() are what from_flat_dict falls back to for a key a
-    saved edit is missing, so a field's own default cannot disagree with the shipped one.
-    Geometry is not held to this: the shipped autocrop ratio and offset are a fresh frame's,
-    not what an internal GeometryConfig() means."""
-    for section, cls in (("exposure", ExposureConfig), ("process", ProcessConfig)):
-        shipped = getattr(DEFAULT_WORKSPACE_CONFIG, section)
-        bare = getattr(WorkspaceConfig(), section)
-        for f in fields(cls):
-            assert getattr(bare, f.name) == getattr(shipped, f.name), f"{section}.{f.name}"
+def test_the_dataclass_defaults_carry_the_shipped_values():
+    """DEFAULT_WORKSPACE_CONFIG spells out what the app ships; a dataclass's own default is
+    what from_flat_dict falls back to for a key a saved edit is missing. A field that
+    disagrees ships one value and recovers as another, field by field so a failure names it.
+    """
+    bare, shipped = WorkspaceConfig(), DEFAULT_WORKSPACE_CONFIG
+    for section in fields(bare):
+        bare_section, shipped_section = getattr(bare, section.name), getattr(shipped, section.name)
+        if not is_dataclass(bare_section):
+            assert bare_section == shipped_section, section.name
+            continue
+        for f in fields(bare_section):
+            assert getattr(bare_section, f.name) == getattr(shipped_section, f.name), f"{section.name}.{f.name}"
 
 
 @pytest.fixture
