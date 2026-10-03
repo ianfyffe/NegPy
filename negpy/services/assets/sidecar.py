@@ -1,29 +1,41 @@
-"""``.negpy`` edit sidecars: a plain-file copy of one frame's edit next to its source.
+"""``.negpy`` edit sidecars: a plain-file copy of one frame's edit next to its source,
+and one ``.negpy-roll`` file per folder roll.
 
-Format 2 is an envelope: ``saved_at`` (the DB row's ``updated_at``, so a sidecar this
+Format 3 is an envelope: ``saved_at`` (the DB row's ``updated_at``, so a sidecar this
 machine mirrored compares equal to its row, not newer), ``source_hash``, ``mark`` and
 ``mark_at`` (the mark's own time), the ``edit`` (flat config), named ``work_prints`` with
-their ``updated_at`` and ``deleted_work_prints`` (name: deletion time). A frame with a mark
-or work prints but no saved edit has a null ``edit`` and ``saved_at``. A file without
-``mark_at`` dates a mark by ``saved_at`` and carries no clear. A format-1 file is a bare
-flat config and has no timestamp, so it only ever fills a DB miss.
+their ``updated_at``, ``deleted_work_prints`` (name: deletion time), ``roll_locks``, the
+cards the frame keeps locked in its folder roll, and ``roll_cards``, every card the writer
+knew, so a lock set says nothing of a card added after it was written. A frame with a mark or
+work prints but no saved edit has a null ``edit`` and ``saved_at``. A file without
+``mark_at`` dates a mark by ``saved_at`` and carries no clear; a format-2 file has no ``roll_locks``. A
+format-1 file is a bare flat config and has no timestamp, so it only ever fills a DB miss.
+Roll ids are per machine, so a baseline source naming the frame's folder roll is written
+``roll:`` and read back as the folder roll here.
+
+The roll file carries what a folder roll holds for all its frames (defaults, scenes,
+baselines, section pushes, half-frame mode), stamped with the roll's ``updated_at``.
 """
 
 import json
 import os
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, NamedTuple, Optional
 
 from negpy.domain.models import WorkspaceConfig
 from negpy.kernel.system.logging import get_logger
+from negpy.services.assets import rolls
 from negpy.services.assets.rolls import unforked_hash
 
 logger = get_logger(__name__)
 
 SIDECAR_EXT = ".negpy"
-SIDECAR_FORMAT = 2
+FOLDER_ROLL_SOURCE = "roll:"
+SIDECAR_FORMAT = 3
+ROLL_SIDECAR_NAME = ".negpy-roll"
+ROLL_SIDECAR_FORMAT = 1
 _MARKS = ("keeper", "excluded")
 DECLINED_KEY = "sidecar_offers_declined"
 
@@ -51,6 +63,9 @@ class Sidecar:
     mark_at: Optional[float] = None
     work_prints: Dict[str, SidecarWorkPrint] = field(default_factory=dict)
     deleted_work_prints: Dict[str, float] = field(default_factory=dict)
+    # None when the file does not say: format 2, no folder roll, or a frame forked in it.
+    roll_locks: Optional[tuple] = None
+    roll_cards: Optional[tuple] = None
 
     @property
     def work_print_stamps(self) -> Dict[str, float]:
@@ -73,6 +88,8 @@ class SidecarScan:
     edit: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
     prints: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False, compare=False)
     source_hash: str = ""
+    roll_locks: Optional[tuple] = None
+    roll_cards: Optional[tuple] = None
 
     @property
     def has_edit(self) -> bool:
@@ -104,6 +121,8 @@ class SidecarScan:
             mark_at=self.mark_at,
             work_prints=work_prints,
             deleted_work_prints=dict(self.deleted_work_prints),
+            roll_locks=self.roll_locks,
+            roll_cards=self.roll_cards,
         )
 
 
@@ -161,6 +180,8 @@ def _to_payload(sidecar: Sidecar) -> Dict[str, Any]:
             for name, wp in sidecar.work_prints.items()
         },
         "deleted_work_prints": dict(sidecar.deleted_work_prints),
+        "roll_locks": list(sidecar.roll_locks) if sidecar.roll_locks is not None else None,
+        "roll_cards": list(sidecar.roll_cards) if sidecar.roll_cards is not None else None,
     }
 
 
@@ -174,6 +195,8 @@ def _scan_payload(data: Dict[str, Any]) -> Optional[SidecarScan]:
     saved_at = float(saved_at) if isinstance(saved_at, (int, float)) and edit is not None else None
     mark_at = data.get("mark_at")
     mark = data.get("mark")
+    locks = data.get("roll_locks")
+    known = data.get("roll_cards")
     prints: Dict[str, Dict[str, Any]] = {}
     stamps: Dict[str, float] = {}
     for name, entry in (data.get("work_prints") or {}).items():
@@ -198,6 +221,8 @@ def _scan_payload(data: Dict[str, Any]) -> Optional[SidecarScan]:
         edit=edit,
         prints=prints,
         source_hash=str(data.get("source_hash") or ""),
+        roll_locks=tuple(str(c) for c in locks) if isinstance(locks, list) else None,
+        roll_cards=tuple(str(c) for c in known) if isinstance(known, list) else None,
     )
 
 
@@ -223,9 +248,52 @@ def read_sidecar(path: str) -> Optional[Sidecar]:
         return None
 
 
-def sidecar_from_repo(repo, file_hash: str) -> Optional[Sidecar]:
-    """This hash's saved edit, mark and work prints as a sidecar. None when the frame has
-    none of them; the edit is None without a saved edit."""
+def _folder_roll(repo, source_path: str) -> Optional[str]:
+    return rolls.folder_roll_id_for_path(repo, os.path.dirname(source_path)) if source_path else None
+
+
+def _roll_locks(repo, file_hash: str, source_path: str) -> Optional[tuple]:
+    roll_id = _folder_roll(repo, source_path) if unforked_hash(file_hash) == file_hash else None
+    if roll_id is None or rolls.is_forked(repo, roll_id, file_hash):
+        return None
+    return tuple(sorted(rolls.frame_override_cards(repo, roll_id, file_hash)))
+
+
+def restore_roll_locks(repo, file_hash: str, source_path: str, sidecar: Sidecar) -> bool:
+    """Set the frame's locks in its folder roll from the sidecar. The file's locks decide
+    each card its writer knew; every other card, or all of them in a file that does not say,
+    is locked where the edit differs from this roll's defaults, and none unlocks. A fork
+    hash has no locks of its own to set. True when the locks changed."""
+    roll_id = _folder_roll(repo, source_path) if unforked_hash(file_hash) == file_hash else None
+    if roll_id is None or rolls.is_forked(repo, roll_id, file_hash) or sidecar.config is None:
+        return False
+    current = rolls.frame_override_cards(repo, roll_id, file_hash)
+    cards = current | rolls.diverged_cards(rolls.roll_defaults(repo, roll_id), sidecar.config)
+    if sidecar.roll_locks is not None:
+        known = set(sidecar.roll_cards or ())
+        cards = set(sidecar.roll_locks) | {card for card in cards if card not in known}
+    if cards == current:
+        return False
+    rolls.set_frame_locks(repo, roll_id, file_hash, cards)
+    return True
+
+
+def _rebind_source(config: WorkspaceConfig, old: str, new: str) -> WorkspaceConfig:
+    if config.process.baseline_source != old:
+        return config
+    return replace(config, process=replace(config.process, baseline_source=new))
+
+
+def sidecar_edit(repo, source_path: str, config: WorkspaceConfig) -> WorkspaceConfig:
+    """A sidecar's edit for the frame at *source_path*: a folder-roll baseline source binds
+    to that frame's folder roll, or to none without one."""
+    roll_id = _folder_roll(repo, source_path)
+    return _rebind_source(config, FOLDER_ROLL_SOURCE, f"roll:{roll_id}" if roll_id else "")
+
+
+def sidecar_from_repo(repo, file_hash: str, source_path: str = "") -> Optional[Sidecar]:
+    """This hash's saved edit, mark, work prints and folder-roll locks as a sidecar. None
+    when the frame has none of them; the edit and locks are None without a saved edit."""
     record = repo.load_file_record(file_hash)
     mark_record = repo.load_mark_record(file_hash)
     saved_prints = repo.load_work_prints(file_hash)
@@ -233,14 +301,22 @@ def sidecar_from_repo(repo, file_hash: str) -> Optional[Sidecar]:
     if record is None and mark_record is None and not saved_prints and not tombstones:
         return None
     stamps = repo.load_work_print_stamps(file_hash)
+    roll_id = _folder_roll(repo, source_path)
+    locks = _roll_locks(repo, file_hash, source_path) if record else None
+
+    def portable(cfg: WorkspaceConfig) -> WorkspaceConfig:
+        return _rebind_source(cfg, f"roll:{roll_id}", FOLDER_ROLL_SOURCE) if roll_id else cfg
+
     return Sidecar(
-        config=record[0] if record else None,
+        config=portable(record[0]) if record else None,
         saved_at=record[1] if record else None,
         source_hash=file_hash,
         mark=mark_record[0] if mark_record else None,
         mark_at=mark_record[1] if mark_record else None,
-        work_prints={name: SidecarWorkPrint(created_at, cfg, stamps.get(name)) for name, created_at, cfg in saved_prints},
+        work_prints={name: SidecarWorkPrint(created_at, portable(cfg), stamps.get(name)) for name, created_at, cfg in saved_prints},
         deleted_work_prints=tombstones,
+        roll_locks=locks,
+        roll_cards=tuple(sorted(rolls.ROLL_DEFAULT_FIELDS)) if locks is not None else None,
     )
 
 
@@ -286,24 +362,33 @@ def merge_sidecar_extras(repo, file_hash: str, source_path: str, sidecar: "Sidec
     if mark_wins:
         repo.save_file_mark(file_hash, sidecar.mark, file_path=source_path, marked_at=sidecar.mark_at)
         changed = local_mark != sidecar.mark
+    local_bind: Optional[str] = None
     for name, ((when, deleted), held) in take.items():
         if deleted:
             repo.delete_work_print(file_hash, name, deleted_at=when)
             changed = changed or held
         elif (wp := sidecar.work_print(name)) is not None:
-            repo.save_work_print(file_hash, name, wp.config, created_at=wp.created_at or None, updated_at=wp.stamp)
+            if local_bind is None:
+                roll_id = _folder_roll(repo, source_path)
+                local_bind = f"roll:{roll_id}" if roll_id else ""
+            config = _rebind_source(wp.config, FOLDER_ROLL_SOURCE, local_bind)
+            repo.save_work_print(file_hash, name, config, created_at=wp.created_at or None, updated_at=wp.stamp)
             changed = True
     return changed
 
 
 def promote_sidecar(repo, file_hash: str, source_path: str, sidecar: Sidecar) -> Optional[WorkspaceConfig]:
-    """Make the sidecar's edit this hash's saved edit, then merge its mark and work prints
-    (``merge_sidecar_extras``). A sidecar without an edit leaves the edit here alone and
-    returns None."""
+    """Make the sidecar's edit this hash's saved edit and its folder-roll locks, then merge
+    its mark and work prints (``merge_sidecar_extras``). A sidecar without an edit leaves the
+    edit here alone and returns None. A folder-roll baseline source binds to the folder roll
+    here, or to none without one."""
+    config = None
     if sidecar.config is not None:
-        repo.save_file_settings(file_hash, sidecar.config, file_path=source_path, updated_at=sidecar.saved_at or time.time())
+        config = sidecar_edit(repo, source_path, sidecar.config)
+        repo.save_file_settings(file_hash, config, file_path=source_path, updated_at=sidecar.saved_at or time.time())
+        restore_roll_locks(repo, file_hash, source_path, sidecar)
     merge_sidecar_extras(repo, file_hash, source_path, sidecar)
-    return sidecar.config
+    return config
 
 
 def newer_sidecar(repo, file_hash: str, source_path: str, half: int = 0) -> Optional[Sidecar]:
@@ -453,14 +538,133 @@ def offers_from_plan(repo, plan: SidecarPlan) -> list[SidecarOffer]:
     return offers
 
 
+def _offer_key(offer) -> str:
+    return f"roll:{offer.roll_id}" if isinstance(offer, RollSidecarOffer) else offer.asset["hash"]
+
+
 def decline_sidecar_offers(repo, offers) -> None:
     """Remember these sidecar versions as declined; a later save to the file asks again."""
     if not offers:
         return
     declined = dict(repo.get_global_setting(DECLINED_KEY, default=None) or {})
     for offer in offers:
-        declined[offer.asset["hash"]] = offer.sidecar.saved_at
+        declined[_offer_key(offer)] = offer.sidecar.saved_at
     repo.save_global_setting(DECLINED_KEY, declined)
+
+
+@dataclass(frozen=True)
+class RollSidecar:
+    """One folder roll's ``.negpy-roll`` file. ``state`` holds ``rolls.PORTABLE_FIELDS``."""
+
+    saved_at: float
+    name: str = ""
+    half_frame_mode: bool = False
+    state: Dict[str, Any] = field(default_factory=dict)
+
+
+class RollSidecarOffer(NamedTuple):
+    roll_id: str
+    name: str
+    sidecar: RollSidecar
+
+
+def roll_sidecar_path(folder: str) -> str:
+    return os.path.join(folder, ROLL_SIDECAR_NAME)
+
+
+def write_roll_sidecar(folder: str, sidecar: RollSidecar) -> str:
+    """Write the roll file into *folder*, atomically. Returns the path written."""
+    path = roll_sidecar_path(folder)
+    payload = {
+        "roll_sidecar_format": ROLL_SIDECAR_FORMAT,
+        "saved_at": sidecar.saved_at,
+        "name": sidecar.name,
+        "half_frame_mode": sidecar.half_frame_mode,
+        **{key: sidecar.state.get(key) for key in rolls.PORTABLE_FIELDS},
+    }
+    _write_json(path, payload)
+    return path
+
+
+def load_roll_sidecar(folder: str) -> Optional[RollSidecar]:
+    """The roll file in *folder*. None if absent, malformed or without a time."""
+    data = _read_json(roll_sidecar_path(folder))
+    saved_at = data.get("saved_at") if data else None
+    if data is None or "roll_sidecar_format" not in data or not isinstance(saved_at, (int, float)):
+        return None
+    return RollSidecar(
+        saved_at=float(saved_at),
+        name=str(data.get("name") or ""),
+        half_frame_mode=bool(data.get("half_frame_mode")),
+        state={key: data[key] for key in rolls.PORTABLE_FIELDS if isinstance(data.get(key), dict)},
+    )
+
+
+def roll_sidecar_from_repo(repo, roll_id: str) -> Optional[tuple[str, RollSidecar]]:
+    """(folder, file) to write for a folder roll this machine has changed. None for a virtual
+    roll, or when the folder's file was saved after the state here: writing it would hide
+    that newer state from every machine. A file that cannot be read is left alone too: it
+    may hold newer state."""
+    entry = rolls.roll_for_id(repo, roll_id)
+    saved_at = rolls.roll_updated_at(repo, roll_id)
+    if not entry or entry.get("kind") != "folder" or not entry.get("folder_path") or saved_at is None:
+        return None
+    on_disk = load_roll_sidecar(entry["folder_path"])
+    if on_disk is None and os.path.lexists(roll_sidecar_path(entry["folder_path"])):
+        logger.warning("Roll file in %s cannot be read; not writing over it", entry["folder_path"])
+        return None
+    if on_disk is not None and on_disk.saved_at > saved_at:
+        return None
+    state = {key: entry[key] for key in rolls.PORTABLE_FIELDS if entry.get(key)}
+    return entry["folder_path"], RollSidecar(saved_at, entry.get("name") or "", rolls.roll_half_frame_mode(repo, roll_id), state)
+
+
+def export_roll_sidecar(repo, roll_id: str) -> Optional[str]:
+    """Write a folder roll's file, dating state no change here has dated yet unless the
+    folder already has a file. Returns the path, or None when nothing was written."""
+    entry = rolls.roll_for_id(repo, roll_id) or {}
+    folder = entry.get("folder_path") or ""
+    if entry.get("kind") != "folder" or not os.path.isdir(folder):
+        return None
+    if (
+        rolls.roll_updated_at(repo, roll_id) is None
+        and rolls.has_portable_state(repo, roll_id)
+        and not os.path.lexists(roll_sidecar_path(folder))
+    ):
+        rolls.touch_roll(repo, roll_id)
+    found = roll_sidecar_from_repo(repo, roll_id)
+    return write_roll_sidecar(*found) if found is not None else None
+
+
+def adopt_roll_sidecar(repo, roll_id: str, sidecar: RollSidecar) -> None:
+    """Make the file this roll's state. The local name stays."""
+    rolls.replace_portable_state(repo, roll_id, sidecar.state, sidecar.half_frame_mode, sidecar.saved_at)
+    entry = rolls.roll_for_id(repo, roll_id)
+    if entry is not None and not entry.get("name") and sidecar.name:
+        rolls.rename_roll(repo, roll_id, sidecar.name)
+
+
+def read_roll_sidecar(repo, roll_id: str, any_age: bool = False) -> Optional[RollSidecarOffer]:
+    """Adopt the folder's roll file when ``rolls.adopts_roll_file``. Otherwise offer
+    it when saved after the state here and not declined; *any_age* offers any version
+    other than the one held here, declined or not."""
+    entry = rolls.roll_for_id(repo, roll_id)
+    if not entry or entry.get("kind") != "folder":
+        return None
+    sidecar = load_roll_sidecar(entry.get("folder_path") or "")
+    if sidecar is None:
+        return None
+    local = rolls.roll_updated_at(repo, roll_id)
+    if rolls.adopts_roll_file(repo, roll_id):
+        adopt_roll_sidecar(repo, roll_id, sidecar)
+        return None
+    offer = RollSidecarOffer(roll_id, entry.get("name") or "", sidecar)
+    if any_age:
+        return offer if sidecar.saved_at != local else None
+    declined = repo.get_global_setting(DECLINED_KEY, default=None) or {}
+    if sidecar.saved_at <= (local or 0.0) or declined.get(_offer_key(offer)) == sidecar.saved_at:
+        return None
+    return offer
 
 
 def read_frame_sidecars(repo, assets, reader: Optional[SidecarReader] = None) -> tuple[list[str], list[str]]:
@@ -530,10 +734,11 @@ def promote_sidecars(repo, assets) -> None:
 
 
 class SidecarMirror:
-    """Keeps each frame's sidecar equal to its DB rows.
+    """Keeps each frame's sidecar equal to its DB rows, and each changed folder roll's file
+    equal to its roll.
 
-    Frames are marked dirty as they are saved and written in one flush, so a slider drag
-    costs one file write, not one per tick. The flush reads the rows back from
+    Frames and rolls are marked dirty as they are saved and written in one flush, so a
+    slider drag costs one file write, not one per tick. The flush reads the rows back from
     the repo, which is what makes the file match the DB rather than the in-flight config.
     Before writing, a frame takes what its file holds that is newer: the mark and work
     prints (``merge_sidecar_extras``), and the edit when it has none here
@@ -544,6 +749,7 @@ class SidecarMirror:
         self._repo = repo
         self._on_merged = on_merged
         self._dirty: Dict[str, tuple[str, int]] = {}
+        self._dirty_rolls: set[str] = set()
         self._unwritable_dirs: set[str] = set()
 
     def mark_dirty(self, file_hash: str, source_path: str, half: int = 0) -> None:
@@ -551,13 +757,19 @@ class SidecarMirror:
         if file_hash and source_path and unforked_hash(file_hash) == file_hash:
             self._dirty[file_hash] = (source_path, half)
 
+    def mark_roll_dirty(self, roll_id: str) -> None:
+        entry = rolls.roll_for_id(self._repo, roll_id) if roll_id else None
+        if entry and entry.get("kind") == "folder":
+            self._dirty_rolls.add(roll_id)
+
     def pending(self) -> int:
-        return len(self._dirty)
+        return len(self._dirty) + len(self._dirty_rolls)
 
     def flush(self) -> tuple[int, int]:
-        """Write every dirty frame. Returns (written, failed); a folder that refuses a write
-        is skipped for the rest of the session."""
+        """Write every dirty frame and roll. Returns (written, failed); a folder that
+        refuses a write is skipped for the rest of the session."""
         pending, self._dirty = self._dirty, {}
+        pending_rolls, self._dirty_rolls = self._dirty_rolls, set()
         written = failed = 0
         merged: list[str] = []
         for file_hash, (source_path, half) in pending.items():
@@ -567,10 +779,16 @@ class SidecarMirror:
             if on_disk is not None and merge_sidecar_extras(self._repo, file_hash, source_path, on_disk):
                 merged.append(file_hash)
             load_or_promote(self._repo, file_hash, source_path, half=half)
-            sidecar = sidecar_from_repo(self._repo, file_hash)
+            sidecar = sidecar_from_repo(self._repo, file_hash, source_path)
             if sidecar is None:
                 continue
             ok = self._write(os.path.dirname(source_path), write_sidecar, source_path, sidecar, half=half)
+            written, failed = written + ok, failed + (not ok)
+        for roll_id in pending_rolls:
+            found = roll_sidecar_from_repo(self._repo, roll_id)
+            if found is None or os.path.normpath(found[0]) in self._unwritable_dirs or not os.path.isdir(found[0]):
+                continue
+            ok = self._write(os.path.normpath(found[0]), write_roll_sidecar, *found)
             written, failed = written + ok, failed + (not ok)
         if merged and self._on_merged is not None:
             self._on_merged(merged)

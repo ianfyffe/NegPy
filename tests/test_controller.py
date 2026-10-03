@@ -978,7 +978,7 @@ class TestAppController(unittest.TestCase):
 
         with (
             patch("negpy.desktop.controller.load_or_promote", return_value=None),
-            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h, *_: row if h == "hash3" else None),
             patch("negpy.desktop.controller.write_sidecar") as mock_write,
         ):
             written, failed = self.controller._write_edit_sidecars([unsaved, saved, composite])
@@ -999,7 +999,7 @@ class TestAppController(unittest.TestCase):
 
         with (
             patch("negpy.desktop.controller.load_or_promote", return_value=None) as mock_promote,
-            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h, *_: row if h == "hash3" else None),
             patch("negpy.desktop.controller.write_sidecar") as mock_write,
         ):
             written, failed = self.controller._write_edit_sidecars([fork, saved])
@@ -1024,7 +1024,7 @@ class TestAppController(unittest.TestCase):
 
         with (
             patch("negpy.desktop.controller.load_or_promote", return_value=None),
-            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h, *_: row if h == "hash3" else None),
             patch("negpy.desktop.controller.write_sidecar") as mock_write,
         ):
             self.controller.export_edit_sidecars()
@@ -1090,11 +1090,14 @@ class TestAppController(unittest.TestCase):
         self.mock_session_manager.reload_current_file.assert_called_once()
         refresh.assert_called_once_with(["hash1"])
 
-    def _load_sidecar_file(self, frame: dict, sidecar, path: str = "/tmp/a.negpy", merged: bool = False):
+    def _load_sidecar_file(self, frame: dict, sidecar, path: str = "/tmp/a.negpy", merged: bool = False, roll_offer=None):
         state = self.mock_session_manager.state
         state.uploaded_files = [frame]
         state.selected_file_idx = 0
         with (
+            patch("negpy.desktop.controller.rolls.folder_roll_id_for_path", return_value="r1"),
+            patch("negpy.desktop.controller.read_roll_sidecar", return_value=roll_offer),
+            patch("negpy.desktop.controller.restore_roll_locks", return_value=False),
             patch("negpy.desktop.controller.read_sidecar", return_value=sidecar),
             patch("negpy.desktop.controller.merge_sidecar_extras", return_value=merged) as merge,
             patch.object(self.controller, "set_status") as status,
@@ -1115,6 +1118,22 @@ class TestAppController(unittest.TestCase):
         self.mock_session_manager.load_edit_from_sidecar.assert_called_once_with(cfg, saved_at=50.0)
         self.mock_session_manager.work_prints_changed.emit.assert_called_once()
 
+    def test_loading_the_frames_own_sidecar_restores_its_roll_locks(self):
+        from negpy.services.assets.sidecar import Sidecar
+
+        frame = {"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}
+        with patch("negpy.desktop.controller.restore_roll_locks", return_value=True) as restore:
+            with patch.object(self.controller, "_current_asset", return_value=frame):
+                with (
+                    patch("negpy.desktop.controller.read_sidecar", return_value=Sidecar(WorkspaceConfig(), saved_at=8.0)),
+                    patch("negpy.desktop.controller.rolls.folder_roll_id_for_path", return_value=None),
+                    patch("negpy.desktop.controller.merge_sidecar_extras", return_value=False),
+                ):
+                    self.controller.load_edit_from_sidecar("/tmp/a.negpy")
+
+        restore.assert_called_once()
+        self.mock_session_manager.locks_changed.emit.assert_called_once_with([frame])
+
     def test_loading_another_sidecar_or_into_a_fork_takes_only_the_edit(self):
         from negpy.services.assets.sidecar import Sidecar
 
@@ -1128,6 +1147,18 @@ class TestAppController(unittest.TestCase):
             self.assertTrue(ok)
             merge.assert_not_called()
             self.mock_session_manager.load_edit_from_sidecar.assert_called_once_with(cfg, saved_at=None)
+
+    def test_loading_the_frames_own_sidecar_ends_when_the_roll_file_changes_half_frame(self):
+        """Re-discovery replaces the whole-frame asset, so its sidecar is not the one to load."""
+        from negpy.services.assets.sidecar import Sidecar
+
+        frame = {"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}
+        for shown, loads in ((True, 0), (False, 1)):
+            self.mock_session_manager.load_edit_from_sidecar.reset_mock()
+            with patch.object(self.controller, "_show_sidecar_offers", return_value=shown) as show:
+                self._load_sidecar_file(frame, Sidecar(WorkspaceConfig(), saved_at=8.0), roll_offer=MagicMock())
+            show.assert_called_once()
+            self.assertEqual(self.mock_session_manager.load_edit_from_sidecar.call_count, loads)
 
     def test_loading_a_sidecar_without_an_edit_keeps_the_edit_here(self):
         from negpy.services.assets.sidecar import Sidecar
@@ -1149,6 +1180,134 @@ class TestAppController(unittest.TestCase):
 
         self.assertFalse(ok)
         status.assert_not_called()
+
+    def test_export_sidecars_writes_the_folders_roll_file(self):
+        from negpy.services.assets.sidecar import Sidecar
+
+        self._wire_repo_store()
+        repo = self.controller.session.repo
+        roll_id = rolls.recognize_folder(repo, "/tmp")
+        row = Sidecar(config=WorkspaceConfig(), saved_at=5.0, source_hash="hash3")
+
+        with (
+            patch("negpy.desktop.controller.load_or_promote", return_value=None),
+            patch("negpy.desktop.controller.sidecar_from_repo", return_value=row),
+            patch("negpy.desktop.controller.write_sidecar"),
+            patch("negpy.desktop.controller.export_roll_sidecar") as export,
+        ):
+            self.controller._write_edit_sidecars([{"name": f"{h}.dng", "path": f"/tmp/{h}.dng", "hash": h} for h in ("h1", "h2")])
+
+        export.assert_called_once_with(repo, roll_id)
+
+    def _roll_folder_with_file(self, folder: str, saved_at: float, half_frame_mode: bool = False) -> str:
+        from negpy.services.assets.sidecar import RollSidecar, write_roll_sidecar
+
+        roll_id = rolls.recognize_folder(self.controller.session.repo, folder)
+        state = {"defaults": {"hue_trim": 2.0}}
+        write_roll_sidecar(folder, RollSidecar(saved_at=saved_at, half_frame_mode=half_frame_mode, state=state))
+        for name in ("a.tif", "b.tif"):
+            open(os.path.join(folder, name), "wb").close()
+        return roll_id
+
+    def _discover(self, open_paths) -> list:
+        """Run *open_paths* up to the discovery request it makes; returns those requests."""
+        requests = []
+        with patch.object(self.controller, "_start_asset_discovery", side_effect=requests.append):
+            open_paths()
+        return requests
+
+    def test_opening_a_folder_reads_its_roll_file_before_discovery(self):
+        """The roll file's half-frame mode decides which assets discovery makes."""
+        self._wire_repo_store()
+        seen = []
+        self.controller.half_frame_mode_changed.connect(seen.append)
+        with tempfile.TemporaryDirectory() as folder:
+            roll_id = self._roll_folder_with_file(folder, saved_at=10.0, half_frame_mode=True)
+            requests = self._discover(lambda: self.controller.open_library_folders([folder]))
+
+        self.assertEqual(self.controller.state.active_roll_id, roll_id)
+        self.assertTrue(requests[0].half_frame)
+        self.assertEqual(seen[-1], True)
+        self.assertEqual(rolls.roll_defaults(self.controller.session.repo, roll_id), {"hue_trim": 2.0})
+
+    def test_restoring_the_session_reads_its_roll_file_before_discovery(self):
+        store = self._wire_repo_store()
+        with tempfile.TemporaryDirectory() as folder:
+            roll_id = self._roll_folder_with_file(folder, saved_at=10.0, half_frame_mode=True)
+            store["session_files"] = [os.path.join(folder, n) for n in ("a.tif", "b.tif")]
+            requests = self._discover(self.controller.restore_session)
+
+        self.assertEqual(self.controller.state.active_roll_id, roll_id)
+        self.assertTrue(requests[0].half_frame)
+        self.assertEqual(rolls.roll_defaults(self.controller.session.repo, roll_id), {"hue_trim": 2.0})
+
+    def test_adding_a_folder_to_the_session_joins_its_newer_roll_file_to_the_offer(self):
+        """A roll with its own state here is offered the file, not replaced by it; each added
+        folder's offer waits for the next sidecar dialog."""
+        from negpy.services.assets.sidecar import RollSidecarOffer
+
+        self._wire_repo_store()
+        repo = self.controller.session.repo
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            roll_ids = [self._roll_folder_with_file(f, saved_at=10.0) for f in (first, second)]
+            for roll_id in roll_ids:
+                rolls.set_roll_defaults(repo, roll_id, hue_trim=9.0)
+                rolls.touch_roll(repo, roll_id, 5.0)
+            self._discover(lambda: self.controller.request_asset_discovery([first], auto_open=True))
+            self._discover(lambda: self.controller.request_asset_discovery([os.path.join(second, "a.tif")]))
+            with (
+                patch("negpy.desktop.controller.offers_from_plan", return_value=[]),
+                patch("negpy.desktop.controller.QTimer.singleShot", side_effect=lambda _ms, fn: fn()),
+                patch.object(self.controller, "_show_sidecar_offers") as show,
+            ):
+                self._scan_planned()
+
+        offers = show.call_args.args[0]
+        self.assertTrue(all(isinstance(o, RollSidecarOffer) for o in offers))
+        self.assertEqual([o.roll_id for o in offers], roll_ids)
+        self.assertEqual([rolls.roll_defaults(repo, r) for r in roll_ids], [{"hue_trim": 9.0}] * 2)
+
+    def test_a_newer_roll_file_leads_the_next_offer_once(self):
+        from negpy.services.assets.sidecar import RollSidecar, RollSidecarOffer, Sidecar, SidecarOffer
+
+        roll = RollSidecarOffer("r1", "Roll", RollSidecar(saved_at=9.0))
+        frame = SidecarOffer({"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}, Sidecar(WorkspaceConfig(), saved_at=8.0))
+        with (
+            patch("negpy.desktop.controller.read_roll_sidecar", return_value=roll),
+            patch("negpy.desktop.controller.offers_from_plan", return_value=[frame]),
+            patch("negpy.desktop.controller.QTimer.singleShot", side_effect=lambda _ms, fn: fn()),
+            patch.object(self.controller, "_show_sidecar_offers") as show,
+        ):
+            self.controller._read_roll_sidecars(["r1"])
+            self._scan_planned()
+            self._scan_planned()
+
+        self.assertEqual([c.args[0] for c in show.call_args_list], [[roll, frame], [frame]])
+
+    def test_loading_a_roll_offer_adopts_it_before_the_frames_and_rediscovers_a_half_frame_change(self):
+        from negpy.services.assets.sidecar import RollSidecar, RollSidecarOffer, Sidecar, SidecarOffer
+
+        self._wire_repo_store()
+        state = self.mock_session_manager.state
+        state.active_roll_id = "r1"
+        state.uploaded_files = [{"name": f"{h}.dng", "path": f"/tmp/{h}.dng", "hash": h} for h in ("hash1", "hash2")]
+        roll = RollSidecarOffer("r1", "Roll", RollSidecar(saved_at=9.0, half_frame_mode=True))
+        frame = SidecarOffer(state.uploaded_files[0], Sidecar(WorkspaceConfig(), saved_at=8.0))
+        calls = []
+        with (
+            patch("negpy.desktop.controller.adopt_roll_sidecar", side_effect=lambda *a: calls.append("roll")),
+            patch("negpy.desktop.controller.promote_sidecar", side_effect=lambda *a: calls.append("frame")),
+            patch("negpy.desktop.controller.decline_sidecar_offers"),
+            patch.object(self.controller, "_rediscover_loaded") as rediscover,
+            patch.object(self.controller, "refresh_thumbnails_for") as refresh,
+            patch.object(self.controller, "set_status") as status,
+        ):
+            self.controller.apply_sidecar_offers([roll, frame], [])
+
+        self.assertEqual(calls, ["roll", "frame"])
+        rediscover.assert_called_once()
+        refresh.assert_called_once_with(["hash1", "hash2"])
+        status.assert_called_once_with("Loaded roll settings and 1 edit from sidecars", 4000)
 
     def _scan_planned(self, plan=None, generation=None) -> None:
         from negpy.services.assets.sidecar import SidecarPlan
@@ -1581,6 +1740,46 @@ class TestAppController(unittest.TestCase):
 
         self.assertEqual(self.controller.apply_roll_card("sensor"), 0)
         self.assertEqual(rolls.roll_defaults(self.controller.session.repo, roll_id), {})
+
+    def test_apply_to_roll_mirrors_the_roll_file_and_the_active_frame_only(self):
+        """Apply to Roll changes the roll and the active frame's lock, never the other
+        frames' rows: two files to write, not one per frame."""
+        self._wire_repo_store()
+        repo = self.controller.session.repo
+        roll_id = rolls.recognize_folder(repo, "/roll")
+        rolls.set_frame_override(repo, roll_id, "h1", "sensor", locked=True)
+        state = self.mock_session_manager.state
+        state.sidecars_enabled = True
+        state.active_roll_id = roll_id
+        state.uploaded_files = [{"name": f"{h}.dng", "path": f"/roll/{h}.dng", "hash": h} for h in ("h1", "h2", "h3", "h4")]
+        state.selected_file_idx = 0
+        state.current_file_hash = "h1"
+        state.stale_thumbnails = set()
+        self.mock_session_manager.frame_locks_changed.side_effect = lambda _roll, asset: self.controller._mirror_sidecars_for([asset])
+
+        self.controller.apply_roll_card("sensor")
+
+        self.mock_session_manager.frame_locks_changed.assert_called_once_with(roll_id, state.uploaded_files[0])
+        repo.save_file_settings.assert_not_called()
+        self.assertEqual(set(self.controller._sidecar_mirror._dirty), {"h1"})
+        self.assertEqual(self.controller._sidecar_mirror._dirty_rolls, {roll_id})
+        self.assertEqual(self.controller._sidecar_mirror.pending(), 2)
+
+    def test_a_lock_change_on_the_active_frame_reaches_its_sidecar_once(self):
+        """Frame and Reset to Roll both change the lock set, which the frame's sidecar carries;
+        a click that leaves it as it was does not."""
+        self._wire_repo_store()
+        roll_id = rolls.create_virtual_roll(self.controller.session.repo, "Portra", [])
+        state = self.mock_session_manager.state
+        state.active_roll_id = roll_id
+        state.uploaded_files = [{"name": "a.dng", "path": "/a.dng", "hash": "h1"}]
+        state.selected_file_idx = 0
+        state.current_file_hash = "h1"
+
+        self.controller.set_roll_card_locked("lens", True)
+        self.controller.set_roll_card_locked("lens", True)
+
+        self.mock_session_manager.frame_locks_changed.assert_called_once_with(roll_id, state.uploaded_files[0])
 
     def test_a_frame_section_reads_frame_until_it_is_pushed(self):
         from negpy.services.assets import rolls
@@ -4417,11 +4616,12 @@ class TestDiscoveryProgressPopup(unittest.TestCase):
         self.assertEqual(order, ["finished", "thumbs"])
 
     def test_discovery_scans_sidecars_after_the_frames_load_and_offers_after_the_scan(self):
-        from negpy.services.assets.sidecar import Sidecar, SidecarOffer, SidecarPlan
+        from negpy.services.assets.sidecar import RollSidecar, RollSidecarOffer, SidecarPlan
 
         order = []
         asset = {"name": "r", "path": "/r.dng", "hash": "h1"}
-        offer = SidecarOffer(asset, Sidecar(WorkspaceConfig(), saved_at=9.0))
+        roll = RollSidecarOffer("r1", "Roll", RollSidecar(saved_at=9.0))
+        self.controller._pending_roll_offers = {"r1": roll}
         self.controller.generate_missing_thumbnails = MagicMock()
         self.controller._replace_after_discovery = True
         self.mock_session_manager.add_files.side_effect = lambda _p, validated_info=None: order.append("add_files")
@@ -4431,14 +4631,13 @@ class TestDiscoveryProgressPopup(unittest.TestCase):
 
         with (
             patch("negpy.desktop.controller.QTimer.singleShot", side_effect=lambda _ms, fn: fn()),
-            patch("negpy.desktop.controller.offers_from_plan", return_value=[offer]),
             patch.object(self.controller, "_show_sidecar_offers") as show,
         ):
             self.controller._on_discovery_finished([asset])
             self.assertEqual(order, ["add_files", ("scan", self.controller._sidecar_scan_generation)])
             show.assert_not_called()
             self.controller._on_sidecar_scan_planned(self.controller._sidecar_scan_generation, SidecarPlan())
-        show.assert_called_once_with([offer])
+        show.assert_called_once_with([roll])
 
     def test_thumbnail_queue_does_not_delay_a_new_folder_discovery(self):
         state = self.mock_session_manager.state

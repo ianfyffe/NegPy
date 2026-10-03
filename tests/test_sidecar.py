@@ -121,12 +121,13 @@ def test_write_payload_is_envelope_around_to_dict_json(tmp_path):
     _write(src, cfg, saved_at=123.5, source_hash="h7", mark="keeper")
     with open(sidecar_path_for(src), "r", encoding="utf-8") as f:
         data = json.load(f)
-    assert data["sidecar_format"] == 2
+    assert data["sidecar_format"] == 3
     assert data["saved_at"] == 123.5
     assert data["source_hash"] == "h7"
     assert data["mark"] == "keeper"
     assert data["edit"] == json.loads(json.dumps(cfg.to_dict(), default=str))
     assert data["work_prints"] == {}
+    assert data["roll_locks"] is None
 
 
 def test_format1_bare_config_still_loads(tmp_path):
@@ -345,6 +346,19 @@ def test_roll_fork_never_reads_or_writes_the_sidecar(tmp_path, repo):
     repo.delete_file_settings("h_f#roll:r1")
     assert read_frame_sidecars(repo, [fork]) == ([], [])
     assert repo.load_file_record("h_f#roll:r1") is None
+
+
+def test_touch_file_settings_advances_updated_at_only(tmp_path, repo):
+    src = str(tmp_path / "IMG_t.NEF")
+    cfg = _rich_config()
+    repo.save_file_settings("h_t", cfg, file_path=src, updated_at=10.0)
+    repo.touch_file_settings("h_t", updated_at=20.0)
+    record = repo.load_file_record("h_t")
+    assert record is not None and record[1] == 20.0
+    assert record[0].to_dict()["density"] == cfg.to_dict()["density"]
+    # No row: a no-op, not a stub row.
+    repo.touch_file_settings("missing")
+    assert repo.load_file_record("missing") is None
 
 
 def test_mark_change_travels_on_its_own_time(tmp_path, repo):
@@ -578,8 +592,8 @@ def test_updated_at_backfilled_for_rows_from_before_the_column(tmp_path):
 def test_a_mark_without_an_edit_round_trips_with_a_null_edit(tmp_path, repo):
     src = str(tmp_path / "IMG_k.NEF")
     repo.save_file_mark("h_k", "keeper", file_path=src, marked_at=40.0)
-    sc = sidecar_from_repo(repo, "h_k")
-    assert sc is not None and (sc.config, sc.saved_at, sc.mark, sc.mark_at) == (None, None, "keeper", 40.0)
+    sc = sidecar_from_repo(repo, "h_k", src)
+    assert sc is not None and (sc.config, sc.saved_at, sc.mark, sc.mark_at, sc.roll_locks) == (None, None, "keeper", 40.0, None)
 
     write_sidecar(src, sc)
     with open(sidecar_path_for(src), encoding="utf-8") as f:
@@ -643,7 +657,7 @@ def test_a_cleared_mark_travels(tmp_path, repo):
     repo.save_file_mark("h_c", None, file_path=src, marked_at=20.0)
     assert repo.load_file_marks() == {} and repo.load_file_marks_by_path() == {}
     assert repo.database_stats()["file_marks"] == 0
-    sc = sidecar_from_repo(repo, "h_c")
+    sc = sidecar_from_repo(repo, "h_c", src)
     assert sc is not None and (sc.mark, sc.mark_at) == (None, 20.0)
 
     other = StorageRepository(str(tmp_path / "o_edits.db"), str(tmp_path / "o_settings.db"))
@@ -746,7 +760,7 @@ def test_a_deleted_work_print_stays_deleted_when_the_file_still_holds_it(tmp_pat
     src, asset = _frame(tmp_path)
     repo.save_file_settings("h_wp", WorkspaceConfig(), file_path=src)
     repo.save_work_print("h_wp", "v1", WorkspaceConfig(), created_at=5.0)
-    write_sidecar(src, sidecar_from_repo(repo, "h_wp"))
+    write_sidecar(src, sidecar_from_repo(repo, "h_wp", src))
     repo.delete_work_print("h_wp", "v1")
 
     assert read_frame_sidecars(repo, [asset]) == ([], [])
@@ -757,7 +771,7 @@ def test_a_renamed_work_print_is_not_duplicated_by_the_file(tmp_path, repo):
     src, asset = _frame(tmp_path)
     repo.save_file_settings("h_wp", WorkspaceConfig(), file_path=src)
     repo.save_work_print("h_wp", "v1", WorkspaceConfig(), created_at=5.0)
-    write_sidecar(src, sidecar_from_repo(repo, "h_wp"))
+    write_sidecar(src, sidecar_from_repo(repo, "h_wp", src))
     repo.rename_work_print("h_wp", "v1", "final")
 
     read_frame_sidecars(repo, [asset])
@@ -774,7 +788,7 @@ def test_a_deletion_and_a_rename_travel_to_a_machine_that_holds_the_print(tmp_pa
         r.save_work_print("h_wp", "v1", WorkspaceConfig(), created_at=6.0)
     repo.delete_work_print("h_wp", "gone")
     repo.rename_work_print("h_wp", "v1", "final")
-    write_sidecar(src, sidecar_from_repo(repo, "h_wp"))
+    write_sidecar(src, sidecar_from_repo(repo, "h_wp", src))
 
     assert read_frame_sidecars(other, [asset]) == ([], ["h_wp"])
     assert other.list_work_prints("h_wp") == ["final"]
@@ -814,10 +828,11 @@ def test_a_file_without_tombstones_reads_as_none(tmp_path):
     assert loaded is not None and loaded.deleted_work_prints == {}
 
 
-def test_a_tombstone_alone_writes_a_sidecar(repo):
+def test_a_tombstone_alone_writes_a_sidecar(tmp_path, repo):
+    src = str(tmp_path / "IMG_t1.NEF")
     repo.save_work_print("h_t1", "v1", WorkspaceConfig(), created_at=5.0)
     repo.delete_work_print("h_t1", "v1", deleted_at=9.0)
-    sc = sidecar_from_repo(repo, "h_t1")
+    sc = sidecar_from_repo(repo, "h_t1", src)
     assert sc is not None and (sc.config, sc.work_prints, sc.deleted_work_prints) == (None, {}, {"v1": 9.0})
 
 
@@ -849,7 +864,7 @@ def test_the_mirror_keeps_a_newer_mark_and_work_print_already_in_the_file(tmp_pa
     mirror_a.mark_dirty("h", src)
     mirror_a.flush()
 
-    b.save_file_settings("h", WorkspaceConfig(), file_path=src, updated_at=300.0)
+    b.touch_file_settings("h", 300.0)
     merged = []
     mirror_b = SidecarMirror(b, on_merged=merged.extend)
     mirror_b.mark_dirty("h", src)
@@ -884,19 +899,21 @@ def _edited_roll(tmp_path, repo, count: int = 3) -> list[dict]:
 
 
 def test_discovery_parses_each_file_once_and_builds_no_config_it_does_not_apply(tmp_path, repo, monkeypatch):
+    from negpy.services.assets import rolls as rolls_module
     from negpy.services.assets import sidecar as sidecar_module
 
     assets = _edited_roll(tmp_path, repo)
-    reads, builds = [], []
-    real_read, real_build = sidecar_module._read_json, WorkspaceConfig.from_flat_dict
+    reads, builds, roll_reads = [], [], []
+    real_read, real_build, real_rolls = sidecar_module._read_json, WorkspaceConfig.from_flat_dict, rolls_module._read
     monkeypatch.setattr(sidecar_module, "_read_json", lambda path: reads.append(path) or real_read(path))
     monkeypatch.setattr(WorkspaceConfig, "from_flat_dict", staticmethod(lambda d: builds.append(1) or real_build(d)))
+    monkeypatch.setattr(rolls_module, "_read", lambda r: roll_reads.append(1) or real_rolls(r))
 
     reader = SidecarReader()
     assert read_frame_sidecars(repo, assets, reader) == ([], [])
     assert pending_sidecar_offers(repo, assets, reader) == []
     assert len(reads) == len(assets)
-    assert builds == []
+    assert builds == [] and roll_reads == []
 
 
 def test_an_unchanged_file_is_not_read_or_merged_again(tmp_path, repo, monkeypatch):

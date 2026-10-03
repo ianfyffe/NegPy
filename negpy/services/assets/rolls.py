@@ -33,6 +33,7 @@ IMPORT_SOURCES_KEY = "roll_import_sources"
 DISMISSED_FOLDERS_KEY = "dismissed_folder_rolls"
 ROLL_PATH_SEP = "/"
 DISCOVERY_FILTERS_KEY = "roll_discovery_filters"
+HALF_FRAME_MODE_KEY = "half_frame_mode_by_roll"
 DEFAULT_DISCOVERY_FILTERS = ("export",)
 _FORK_SEP = "#roll:"
 
@@ -44,6 +45,67 @@ def _read(repo: Any) -> Dict[str, dict]:
 
 def _write(repo: Any, store: Dict[str, dict]) -> None:
     repo.save_global_setting(ROLLS_KEY, store)
+
+
+def _stamp(entry: dict, when: Optional[float] = None) -> None:
+    """Date a change to what the roll file carries; compared against the file's ``saved_at``."""
+    entry["updated_at"] = when if when is not None else time.time()
+
+
+def touch_roll(repo: Any, roll_id: str, when: Optional[float] = None) -> None:
+    """Date a change to roll state stored outside the roll entry (its half-frame mode)."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is not None:
+        _stamp(entry, when)
+        _write(repo, store)
+
+
+def roll_updated_at(repo: Any, roll_id: str) -> Optional[float]:
+    """When this machine last changed what the roll file carries; None before any change."""
+    entry = roll_for_id(repo, roll_id)
+    stamp = entry.get("updated_at") if entry else None
+    return float(stamp) if isinstance(stamp, (int, float)) else None
+
+
+# The roll entry fields a roll file carries. Paths, forks, locks and the id stay local.
+PORTABLE_FIELDS = ("defaults", "normalization", "scenes", "section_pushes")
+
+
+def roll_half_frame_mode(repo: Any, roll_id: str) -> bool:
+    by_roll = repo.get_global_setting(HALF_FRAME_MODE_KEY, default=None)
+    return bool(by_roll.get(roll_id, False)) if isinstance(by_roll, dict) else False
+
+
+def has_portable_state(repo: Any, roll_id: str) -> bool:
+    """Whether the roll holds anything its roll file would replace."""
+    entry = roll_for_id(repo, roll_id) or {}
+    by_roll = repo.get_global_setting(HALF_FRAME_MODE_KEY, default=None)
+    return any(entry.get(k) for k in PORTABLE_FIELDS) or (isinstance(by_roll, dict) and roll_id in by_roll)
+
+
+def adopts_roll_file(repo: Any, roll_id: str) -> bool:
+    """Whether the roll takes its folder's roll file without asking: it holds nothing here
+    yet, and its folder's roll was not deleted here before."""
+    entry = roll_for_id(repo, roll_id) or {}
+    return roll_updated_at(repo, roll_id) is None and not has_portable_state(repo, roll_id) and not entry.get("recognized_after_delete")
+
+
+def replace_portable_state(repo: Any, roll_id: str, values: Dict[str, Any], half_frame_mode: bool, updated_at: float) -> None:
+    """Replace what a roll file carries, stamped with the file's time so it reads as current."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return
+    for key in PORTABLE_FIELDS:
+        if values.get(key):
+            entry[key] = values[key]
+        else:
+            entry.pop(key, None)
+    _stamp(entry, updated_at)
+    _write(repo, store)
+    by_roll = repo.get_global_setting(HALF_FRAME_MODE_KEY, default=None)
+    repo.save_global_setting(HALF_FRAME_MODE_KEY, {**(by_roll if isinstance(by_roll, dict) else {}), roll_id: bool(half_frame_mode)})
 
 
 def saved_rolls(repo: Any) -> Dict[str, dict]:
@@ -67,6 +129,21 @@ def folder_roll_id_for_path(repo: Any, path: str) -> Optional[str]:
         if entry.get("kind") == "folder" and _folder_key(entry.get("folder_path") or "") == key:
             return roll_id
     return None
+
+
+def folder_rolls_holding(repo: Any, paths: List[str]) -> List[str]:
+    """The folder rolls recognizing each path, or the folder a file path is in, once each."""
+    by_folder = {
+        _folder_key(entry["folder_path"]): roll_id
+        for roll_id, entry in _read(repo).items()
+        if entry.get("kind") == "folder" and entry.get("folder_path")
+    }
+    found: Dict[str, None] = {}
+    for path in paths:
+        roll_id = by_folder.get(_folder_key(path if os.path.isdir(path) else os.path.dirname(path)))
+        if roll_id is not None:
+            found[roll_id] = None
+    return list(found)
 
 
 def roll_folder_name(text: str) -> Optional[str]:
@@ -102,7 +179,8 @@ def next_roll_name(name: str, taken: Callable[[str], bool]) -> str:
 
 def recognize_folder(repo: Any, path: str, name: str = "") -> str:
     """Mark *path* as a recognized folder roll. Idempotent: returns the existing id
-    when the folder is already recognized, without touching its stored name."""
+    when the folder is already recognized, without touching its stored name. A folder
+    whose roll was deleted is offered its roll file rather than taking it."""
     dismissed = _dismissed_folders(repo)
     kept = [p for p in dismissed if _folder_key(p) != _folder_key(path)]
     if kept != dismissed:
@@ -119,6 +197,8 @@ def recognize_folder(repo: Any, path: str, name: str = "") -> str:
         "extra_paths": [],
         "created_at": time.time(),
     }
+    if kept != dismissed:
+        store[roll_id]["recognized_after_delete"] = True
     _write(repo, store)
     return roll_id
 
@@ -572,6 +652,7 @@ def set_roll_defaults(repo: Any, roll_id: str, **fields: Any) -> None:
     defaults = dict(entry.get("defaults", {}))
     defaults.update(fields)
     entry["defaults"] = defaults
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -610,12 +691,34 @@ def set_frame_override(repo: Any, roll_id: str, file_hash: str, card_key: str, l
         cards.add(card_key)
     else:
         cards.discard(card_key)
+    _write_frame_locks(repo, store, entry, file_hash, cards)
+
+
+def set_frame_locks(repo: Any, roll_id: str, file_hash: str, cards) -> None:
+    """Replace one frame's locked cards within one roll. Unknown card keys are dropped."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is not None:
+        _write_frame_locks(repo, store, entry, file_hash, {c for c in cards if c in ROLL_DEFAULT_FIELDS})
+
+
+def _write_frame_locks(repo: Any, store: Dict[str, dict], entry: dict, file_hash: str, cards: set) -> None:
+    overrides = dict(entry.get("frame_overrides", {}))
     if cards:
         overrides[file_hash] = sorted(cards)
     else:
         overrides.pop(file_hash, None)
     entry["frame_overrides"] = overrides
     _write(repo, store)
+
+
+def diverged_cards(defaults: Dict[str, Any], config: "WorkspaceConfig") -> set:
+    """The cards on which *config* differs from a roll field the roll has set."""
+    return {
+        card_key
+        for card_key, (section, names) in ROLL_DEFAULT_FIELDS.items()
+        if any(n in defaults and not same_value(getattr(getattr(config, section), n), defaults[n]) for n in names)
+    }
 
 
 def resolve_roll_config(repo: Any, roll_id: Optional[str], file_hash: str, config: "WorkspaceConfig") -> "WorkspaceConfig":
@@ -661,6 +764,7 @@ def set_section_push(repo: Any, roll_id: str, section_key: str, values: Dict[str
     pushes = dict(entry.get("section_pushes", {}))
     pushes[section_key] = {**pushes.get(section_key, {}), **values}
     entry["section_pushes"] = pushes
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -705,6 +809,7 @@ def set_roll_normalization(
     if entry is None:
         return
     entry["normalization"] = {"floors": list(floors), "ceils": list(ceils), "cast": list(cast), "outliers": list(outliers), "axis": axis}
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -735,6 +840,7 @@ def _edit_scenes(repo: Any, roll_id: str, edit) -> Any:
     scenes = dict(entry.get("scenes", {}))
     result = edit(scenes)
     entry["scenes"] = scenes
+    _stamp(entry)
     _write(repo, store)
     return result
 
