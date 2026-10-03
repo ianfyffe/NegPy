@@ -14,13 +14,16 @@ Roll ids are per machine, so a baseline source naming the frame's folder roll is
 ``roll:`` and read back as the folder roll here.
 
 The roll file carries what a folder roll holds for all its frames (defaults, scenes,
-baselines, section pushes, half-frame mode), stamped with the roll's ``updated_at``.
+baselines, section pushes, half-frame mode), stamped with the roll's ``updated_at``, and
+the roll's identity: ``roll_uid``, the same on every computer, and the ``name`` (its leaf,
+without the folder rows each computer puts above it) with its own time, ``name_at``. A format-2 file with a null ``saved_at`` carries the identity alone.
 """
 
 import json
 import os
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, NamedTuple, Optional
 
@@ -35,7 +38,7 @@ SIDECAR_EXT = ".negpy"
 FOLDER_ROLL_SOURCE = "roll:"
 SIDECAR_FORMAT = 3
 ROLL_SIDECAR_NAME = ".negpy-roll"
-ROLL_SIDECAR_FORMAT = 1
+ROLL_SIDECAR_FORMAT = 2
 _MARKS = ("keeper", "excluded")
 DECLINED_KEY = "sidecar_offers_declined"
 
@@ -133,10 +136,12 @@ def sidecar_path_for(source_path: str, half: int = 0) -> str:
     return os.path.join(os.path.dirname(source_path), base + suffix + SIDECAR_EXT)
 
 
-def write_sidecar(source_path: str, sidecar: Sidecar, half: int = 0) -> str:
-    """Write the sidecar as JSON next to the source, atomically. Returns the path written."""
+def write_sidecar(source_path: str, sidecar: Sidecar, half: int = 0) -> Optional[str]:
+    """Write the sidecar as JSON next to the source, atomically. Returns the path written, or
+    None when the source's folder is gone: a sidecar never creates a folder."""
     path = sidecar_path_for(source_path, half)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.isdir(os.path.dirname(path) or "."):
+        return None
     _write_json(path, _to_payload(sidecar))
     return path
 
@@ -554,12 +559,16 @@ def decline_sidecar_offers(repo, offers) -> None:
 
 @dataclass(frozen=True)
 class RollSidecar:
-    """One folder roll's ``.negpy-roll`` file. ``state`` holds ``rolls.PORTABLE_FIELDS``."""
+    """One folder roll's ``.negpy-roll`` file. ``state`` holds ``rolls.PORTABLE_FIELDS``;
+    ``saved_at`` is None for a file that carries only the roll's identity and name."""
 
-    saved_at: float
+    saved_at: Optional[float]
     name: str = ""
     half_frame_mode: bool = False
     state: Dict[str, Any] = field(default_factory=dict)
+    roll_uid: str = ""
+    name_at: Optional[float] = None
+    former_names: tuple = ()
 
 
 class RollSidecarOffer(NamedTuple):
@@ -572,93 +581,202 @@ def roll_sidecar_path(folder: str) -> str:
     return os.path.join(folder, ROLL_SIDECAR_NAME)
 
 
-def write_roll_sidecar(folder: str, sidecar: RollSidecar) -> str:
-    """Write the roll file into *folder*, atomically. Returns the path written."""
-    path = roll_sidecar_path(folder)
-    payload = {
+def _time(value: Any) -> Optional[float]:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _roll_payload(sidecar: RollSidecar) -> Dict[str, Any]:
+    return {
         "roll_sidecar_format": ROLL_SIDECAR_FORMAT,
         "saved_at": sidecar.saved_at,
+        "roll_uid": sidecar.roll_uid or None,
         "name": sidecar.name,
+        "name_at": sidecar.name_at,
+        "former_names": list(sidecar.former_names),
         "half_frame_mode": sidecar.half_frame_mode,
         **{key: sidecar.state.get(key) for key in rolls.PORTABLE_FIELDS},
     }
-    _write_json(path, payload)
+
+
+def write_roll_sidecar(folder: str, sidecar: RollSidecar) -> str:
+    """Write the roll file into *folder*, atomically. Returns the path written."""
+    path = roll_sidecar_path(folder)
+    _write_json(path, _roll_payload(sidecar))
     return path
 
 
+def _roll_file(data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    return data if data is not None and "roll_sidecar_format" in data else None
+
+
 def load_roll_sidecar(folder: str) -> Optional[RollSidecar]:
-    """The roll file in *folder*. None if absent, malformed or without a time."""
-    data = _read_json(roll_sidecar_path(folder))
-    saved_at = data.get("saved_at") if data else None
-    if data is None or "roll_sidecar_format" not in data or not isinstance(saved_at, (int, float)):
+    """The roll file in *folder*. None if absent or malformed."""
+    data = _roll_file(_read_json(roll_sidecar_path(folder)))
+    if data is None:
         return None
+    saved_at = _time(data.get("saved_at"))
     return RollSidecar(
-        saved_at=float(saved_at),
+        saved_at=saved_at,
         name=str(data.get("name") or ""),
-        half_frame_mode=bool(data.get("half_frame_mode")),
-        state={key: data[key] for key in rolls.PORTABLE_FIELDS if isinstance(data.get(key), dict)},
+        half_frame_mode=bool(data.get("half_frame_mode")) if saved_at is not None else False,
+        state={key: data[key] for key in rolls.PORTABLE_FIELDS if isinstance(data.get(key), dict)} if saved_at is not None else {},
+        roll_uid=str(data.get("roll_uid") or ""),
+        name_at=_time(data.get("name_at")),
+        former_names=_names(data.get("former_names")),
     )
 
 
-def roll_sidecar_from_repo(repo, roll_id: str) -> Optional[tuple[str, RollSidecar]]:
-    """(folder, file) to write for a folder roll this machine has changed. None for a virtual
-    roll, or when the folder's file was saved after the state here: writing it would hide
-    that newer state from every machine. A file that cannot be read is left alone too: it
-    may hold newer state."""
+def _names(value: Any) -> tuple:
+    return tuple(n for n in value if isinstance(n, str)) if isinstance(value, list) else ()
+
+
+def plan_roll_file_write(repo, roll_id: str, on_disk: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The payload to write over a folder roll's file (*on_disk*, None without one), or None.
+    State goes only over an older file, and never over a newer one; the uid (a copy's own,
+    else the file's, else the roll's), the later name's leaf and both sides' former names go
+    either way. A roll never changed here writes its identity alone. Reads only."""
     entry = rolls.roll_for_id(repo, roll_id)
-    saved_at = rolls.roll_updated_at(repo, roll_id)
-    if not entry or entry.get("kind") != "folder" or not entry.get("folder_path") or saved_at is None:
+    if not entry or entry.get("kind") != "folder":
         return None
-    on_disk = load_roll_sidecar(entry["folder_path"])
-    if on_disk is None and os.path.lexists(roll_sidecar_path(entry["folder_path"])):
-        logger.warning("Roll file in %s cannot be read; not writing over it", entry["folder_path"])
+    file = _roll_file(on_disk)
+    file_at = _time(file.get("saved_at")) if file else None
+    local_at = rolls.roll_updated_at(repo, roll_id)
+    file_uid = str(file.get("roll_uid") or "") if file else ""
+    uid = (entry.get("roll_uid") if entry.get("roll_uid_unwritten") else "") or file_uid or entry.get("roll_uid") or uuid.uuid4().hex
+    former = tuple(dict.fromkeys([*_names(file.get("former_names") if file else None), *rolls.former_folder_names(repo, roll_id)]))
+    name, name_at = rolls.name_leaf(entry.get("name") or ""), rolls.name_updated_at(repo, roll_id)
+    file_name_at = _time(file.get("name_at")) if file else None
+    copy = bool(entry.get("roll_uid_unwritten"))
+    if file is not None and not copy and file_name_at is not None and (name_at is None or file_name_at > name_at):
+        name, name_at = str(file.get("name") or ""), file_name_at
+    if file is None or file_at is None or (local_at is not None and local_at >= file_at):
+        if local_at is None:
+            payload = _roll_payload(RollSidecar(None, name, roll_uid=uid, name_at=name_at, former_names=former))
+        else:
+            state = {key: entry[key] for key in rolls.PORTABLE_FIELDS if entry.get(key)}
+            half = rolls.roll_half_frame_mode(repo, roll_id)
+            payload = _roll_payload(RollSidecar(local_at, name, half, state, uid, name_at, former))
+    else:
+        if not copy and (name_at is None or name_at == file_name_at):
+            name, name_at = file.get("name"), file.get("name_at")
+        payload = {**file, "roll_uid": uid, "name": name, "name_at": name_at, "former_names": list(former)}
+        if not former and "former_names" not in file:
+            del payload["former_names"]
+    return payload if payload != file else None
+
+
+def _unreadable(path: str, data: Optional[Dict[str, Any]]) -> bool:
+    """A roll file that is there but does not read as one: mid-sync, truncated, locked."""
+    return _roll_file(data) is None and os.path.lexists(path)
+
+
+def write_roll_file(repo, roll_id: str) -> Optional[str]:
+    """Write what ``plan_roll_file_write`` plans into the folder roll's file, and keep the
+    uid it names on the roll here. Returns the path, or None when nothing was written. A
+    file that cannot be read is left alone: it may hold newer state."""
+    entry = rolls.roll_for_id(repo, roll_id) or {}
+    folder = entry.get("folder_path") or ""
+    if entry.get("kind") != "folder" or not folder:
         return None
-    if on_disk is not None and on_disk.saved_at > saved_at:
+    path = roll_sidecar_path(folder)
+    on_disk = _read_json(path)
+    if _unreadable(path, on_disk):
+        logger.warning("Roll file %s cannot be read; not writing over it", path)
         return None
-    state = {key: entry[key] for key in rolls.PORTABLE_FIELDS if entry.get(key)}
-    return entry["folder_path"], RollSidecar(saved_at, entry.get("name") or "", rolls.roll_half_frame_mode(repo, roll_id), state)
+    payload = plan_roll_file_write(repo, roll_id, on_disk)
+    if payload is not None:
+        _write_json(path, payload)
+    written = payload if payload is not None else _roll_file(on_disk)
+    if written and written.get("roll_uid"):
+        rolls.set_roll_uid(repo, roll_id, str(written["roll_uid"]))
+    return path if payload is not None else None
 
 
 def export_roll_sidecar(repo, roll_id: str) -> Optional[str]:
     """Write a folder roll's file, dating state no change here has dated yet unless the
-    folder already has a file. Returns the path, or None when nothing was written."""
+    folder's file already holds state. Returns the path, or None when nothing was written."""
     entry = rolls.roll_for_id(repo, roll_id) or {}
     folder = entry.get("folder_path") or ""
     if entry.get("kind") != "folder" or not os.path.isdir(folder):
         return None
-    if (
-        rolls.roll_updated_at(repo, roll_id) is None
-        and rolls.has_portable_state(repo, roll_id)
-        and not os.path.lexists(roll_sidecar_path(folder))
-    ):
-        rolls.touch_roll(repo, roll_id)
-    found = roll_sidecar_from_repo(repo, roll_id)
-    return write_roll_sidecar(*found) if found is not None else None
+    if rolls.roll_updated_at(repo, roll_id) is None and rolls.has_portable_state(repo, roll_id):
+        on_disk = load_roll_sidecar(folder)
+        if (on_disk is None and not os.path.lexists(roll_sidecar_path(folder))) or (on_disk is not None and on_disk.saved_at is None):
+            rolls.touch_roll(repo, roll_id)
+    return write_roll_file(repo, roll_id)
+
+
+def is_copy_of(holder_folder: str, folder: str, uid: str) -> bool:
+    """Whether *folder* is a copy of *holder_folder*: another folder, not another path to the
+    same one, whose own roll file still reads with *uid*."""
+    try:
+        if not os.path.isdir(holder_folder) or os.path.samefile(holder_folder, folder):
+            return False
+    except OSError:
+        return False
+    held = load_roll_sidecar(holder_folder)
+    return held is not None and held.roll_uid == uid
+
+
+def claim_copy(repo, roll_id: str) -> None:
+    """Give a copied folder's roll a uid of its own, unwritten until its file takes it, and
+    date its own name now, so the name the copied file carries never replaces it."""
+    rolls.set_roll_uid(repo, roll_id, uuid.uuid4().hex, unwritten=True)
+    rolls.rename_roll(repo, roll_id, (rolls.roll_for_id(repo, roll_id) or {}).get("name") or "")
+
+
+def take_roll_file_identity(repo, roll_id: str, sidecar: RollSidecar) -> bool:
+    """Take the file's uid, unless another roll here holds it, and its name, as the leaf of the
+    name here, when dated later; a copy keeps its own of both until written. True when the
+    name changed."""
+    entry = rolls.roll_for_id(repo, roll_id)
+    if entry is None:
+        return False
+    uid = sidecar.roll_uid
+    if uid and not entry.get("roll_uid") and not entry.get("roll_uid_unwritten"):
+        holder = rolls.roll_id_for_uid(repo, uid)
+        if holder is None:
+            rolls.set_roll_uid(repo, roll_id, uid)
+        elif is_copy_of((rolls.roll_for_id(repo, holder) or {}).get("folder_path") or "", entry.get("folder_path") or "", uid):
+            claim_copy(repo, roll_id)
+    elif uid and entry.get("roll_uid") != uid and not entry.get("roll_uid_unwritten"):
+        rolls.set_roll_uid(repo, roll_id, uid)
+    local_at = rolls.name_updated_at(repo, roll_id)
+    if rolls.roll_uid_unwritten(repo, roll_id) or not sidecar.name or sidecar.name_at is None:
+        return False
+    if local_at is not None and sidecar.name_at <= local_at:
+        return False
+    name = rolls.with_leaf(entry.get("name") or "", rolls.name_leaf(sidecar.name))
+    rolls.rename_roll(repo, roll_id, name, when=sidecar.name_at)
+    return name != entry.get("name")
 
 
 def adopt_roll_sidecar(repo, roll_id: str, sidecar: RollSidecar) -> None:
-    """Make the file this roll's state. The local name stays."""
-    rolls.replace_portable_state(repo, roll_id, sidecar.state, sidecar.half_frame_mode, sidecar.saved_at)
-    entry = rolls.roll_for_id(repo, roll_id)
-    if entry is not None and not entry.get("name") and sidecar.name:
-        rolls.rename_roll(repo, roll_id, sidecar.name)
+    """Make the file this roll's state, and take its identity and newer name."""
+    take_roll_file_identity(repo, roll_id, sidecar)
+    if sidecar.saved_at is not None:
+        rolls.replace_portable_state(repo, roll_id, sidecar.state, sidecar.half_frame_mode, sidecar.saved_at)
 
 
 def read_roll_sidecar(repo, roll_id: str, any_age: bool = False) -> Optional[RollSidecarOffer]:
-    """Adopt the folder's roll file when ``rolls.adopts_roll_file``. Otherwise offer
-    it when saved after the state here and not declined; *any_age* offers any version
-    other than the one held here, declined or not."""
+    """Take the folder's roll file's identity and newer name, whatever happens to its state.
+    Then adopt the file when ``rolls.adopts_roll_file``, or else offer it when saved after
+    the state here and not declined; *any_age* offers any version other than the one held
+    here, declined or not."""
     entry = rolls.roll_for_id(repo, roll_id)
     if not entry or entry.get("kind") != "folder":
         return None
     sidecar = load_roll_sidecar(entry.get("folder_path") or "")
     if sidecar is None:
         return None
+    take_roll_file_identity(repo, roll_id, sidecar)
+    if sidecar.saved_at is None:
+        return None
     local = rolls.roll_updated_at(repo, roll_id)
     if rolls.adopts_roll_file(repo, roll_id):
         adopt_roll_sidecar(repo, roll_id, sidecar)
         return None
-    offer = RollSidecarOffer(roll_id, entry.get("name") or "", sidecar)
+    offer = RollSidecarOffer(roll_id, (rolls.roll_for_id(repo, roll_id) or entry).get("name") or "", sidecar)
     if any_age:
         return offer if sidecar.saved_at != local else None
     declined = repo.get_global_setting(DECLINED_KEY, default=None) or {}
@@ -765,6 +883,10 @@ class SidecarMirror:
     def pending(self) -> int:
         return len(self._dirty) + len(self._dirty_rolls)
 
+    def rehome_pending(self, old: str, new: str) -> None:
+        """Point the frames waiting for a flush under folder *old* at *new*."""
+        self._dirty = {h: (rolls.moved_path(path, old, new), half) for h, (path, half) in self._dirty.items()}
+
     def flush(self) -> tuple[int, int]:
         """Write every dirty frame and roll. Returns (written, failed); a folder that
         refuses a write is skipped for the rest of the session."""
@@ -783,21 +905,21 @@ class SidecarMirror:
             if sidecar is None:
                 continue
             ok = self._write(os.path.dirname(source_path), write_sidecar, source_path, sidecar, half=half)
-            written, failed = written + ok, failed + (not ok)
+            written, failed = written + (ok is True), failed + (ok is False)
         for roll_id in pending_rolls:
-            found = roll_sidecar_from_repo(self._repo, roll_id)
-            if found is None or os.path.normpath(found[0]) in self._unwritable_dirs or not os.path.isdir(found[0]):
+            folder = os.path.normpath((rolls.roll_for_id(self._repo, roll_id) or {}).get("folder_path") or "")
+            if folder in self._unwritable_dirs or not os.path.isdir(folder):
                 continue
-            ok = self._write(os.path.normpath(found[0]), write_roll_sidecar, *found)
-            written, failed = written + ok, failed + (not ok)
+            ok = self._write(folder, write_roll_file, self._repo, roll_id)
+            written, failed = written + (ok is True), failed + (ok is False)
         if merged and self._on_merged is not None:
             self._on_merged(merged)
         return written, failed
 
-    def _write(self, folder: str, write, *args, **kwargs) -> bool:
+    def _write(self, folder: str, write, *args, **kwargs) -> Optional[bool]:
+        """True when *write* wrote a file, None when it had nothing to write, False when it failed."""
         try:
-            write(*args, **kwargs)
-            return True
+            return True if write(*args, **kwargs) is not None else None
         except OSError as exc:
             self._unwritable_dirs.add(folder)
             logger.warning("Sidecar write failed in %s, skipping that folder: %s", folder, exc)

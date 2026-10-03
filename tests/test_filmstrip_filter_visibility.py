@@ -5,6 +5,7 @@ every frame reads as a blank panel under a full count unless both are told about
 """
 
 import pytest
+from PyQt6.QtCore import QCoreApplication, QEvent
 
 from negpy.desktop.session import AssetListModel
 from negpy.desktop.view.sidebar.session_panel import SessionPanel
@@ -26,11 +27,27 @@ def _files(n, keepers=(), rejected=()):
     ]
 
 
+_panels: list = []
+
+
+@pytest.fixture(autouse=True)
+def _close_panels(qapp):
+    """A mock controller records each signal connection, so a panel and its controller hold
+    each other; closed here, a shown panel is never torn down by the cyclic GC mid-paint."""
+    yield
+    while _panels:
+        panel = _panels.pop()
+        panel.close()
+        panel.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 def _browser(qapp, repo=None, files=None):
     controller = _Controller(repo if repo is not None else _Repo())
     controller.state.uploaded_files = files if files is not None else _files(36)
     controller.session.asset_model = AssetListModel(controller.state)
     panel = SessionPanel(controller)
+    _panels.append(panel)
     panel.resize(300, 700)
     panel.show()
     qapp.processEvents()

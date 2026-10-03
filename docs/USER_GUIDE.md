@@ -145,7 +145,7 @@ Importing never changes the folder. Reorganize on disk, then re-import (or **↻
 Right-click a roll for:
 
 *   **Close Roll…** (**loaded** roll only): empties the Film Strip and returns to the Library. Asks first; edits stay saved.
-*   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default). In a cloud-sync folder (Dropbox, iCloud, OneDrive) the sync can treat that rename as a delete and re-upload.
+*   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default); your other computers follow that rename (Export → Sidecars). In a cloud-sync folder (Dropbox, iCloud, OneDrive) the sync can treat that rename as a delete and re-upload.
 *   **Delete…**: forgets the roll only; folder, images, edits and its `.negpy-roll` file stay. **Import Folder as a Roll…** brings it back and offers the roll file. **Clear Library** in *Manage Database* forgets all rolls.
 *   **Roll Analysis** (**loaded** roll only): runs Roll Analysis ([§10.5](#105-roll-analysis)) and stores the roll's baseline.
 
@@ -994,7 +994,7 @@ The printer's record for this frame: the numbered dodge/burn masks and a card wi
 
 Sidecars carry edits between computers. A frame with no edit here loads its sidecar when its folder opens. A newer mark or work print (saved, renamed or deleted) loads without asking. Edits saved after the ones here are listed in one dialog: **Load Selected** replaces them, **Keep Mine** keeps yours and stops asking for those versions. **Load Edit from Sidecar…** (right-click a frame or the image) replaces the frame's edit with a chosen `.negpy` whatever its age, as one undo step; the frame's own sidecar also brings a newer mark or work print. The newer copy wins by its saved time, so keep the computers' clocks close.
 
-The roll file holds the card defaults, scenes, Roll Analysis baselines, the Half Frame setting and the cards each frame locks. A roll new to a computer takes it without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
+The roll file holds the card defaults, scenes, Roll Analysis baselines, the Half Frame setting and the cards each frame locks. A roll new to a computer takes it without asking; a newer one is listed first in the dialog as **Roll settings**. It also gives the roll one id on every computer: a rename reaches the others without a dialog, and when the folder is renamed on one computer, the others follow it on **↻**, import or open, keep everything, and never rename anything on disk. A copied folder becomes a roll of its own; a roll on an unmounted share waits until the share is back. A virtual roll has no roll file. With Keep Current off nothing is written: a new name stays on this computer, and a roll that never wrote its file comes back as a new roll when its folder is renamed.
 
 <!-- panel:contact_sheet -->
 #### Contact Sheet
