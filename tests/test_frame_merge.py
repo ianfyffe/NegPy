@@ -164,7 +164,7 @@ def test_carry_edit_copies_everything_and_keeps_the_original(tmp_path):
     repo.save_file_settings("red", cfg, file_path=red)
     repo.save_history_step("red", 0, cfg)
     repo.save_work_print("red", "Warm", cfg)
-    repo.save_file_mark("red", "keeper", file_path=red)
+    repo.save_file_mark("red", "keeper", file_path=red, marked_at=100.0)
     roll_id = rolls.create_virtual_roll(repo, "Roll", [red, green, blue, "/other.ARW"])
     rolls.fork_edit(repo, roll_id, "red", red, cfg)
     rolls.set_frame_override(repo, roll_id, "red", "film", True)
@@ -177,6 +177,10 @@ def test_carry_edit_copies_everything_and_keeps_the_original(tmp_path):
     assert repo.load_work_print("new", "Warm").rgbscan == RgbScanConfig()
     assert repo.load_file_marks()["new"] == "keeper"
     assert repo.load_file_marks_by_path()[new_path] == "keeper"
+    # Sidecars compare these stamps, so a copied row needs one: the mark keeps its time.
+    assert repo.load_mark_record("new") == ("keeper", 100.0)
+    assert repo.load_work_print_stamps("new")["Warm"] > 0
+    assert repo.load_file_record(rolls.roll_edit_hash("new", roll_id))[1] > 0
     assert repo.load_file_settings(rolls.roll_edit_hash("new", roll_id)).rgbscan == RgbScanConfig()
     entry = rolls.roll_for_id(repo, roll_id)
     assert entry["member_paths"] == [new_path, "/other.ARW"]
@@ -223,7 +227,7 @@ def test_a_sidecar_moves_only_when_the_red_exposure_has_one(tmp_path):
 
     write_sidecar(red, cfg)
     assert carry_sidecar(red, new_path, cfg, "rgb") is True
-    assert load_sidecar(new_path).rgbscan == RgbScanConfig()
+    assert load_sidecar(new_path).config.rgbscan == RgbScanConfig()
 
 
 def _finish(tmp_path, monkeypatch, results, trash=True):
@@ -298,6 +302,9 @@ def test_finish_swaps_the_frame_and_trashes_its_exposures(tmp_path, monkeypatch)
     assert swapped[1]["path"] == out and swapped[1]["hash"] == "new"
     assert ctrl.session.repo.load_file_settings("new") is not None
     assert trashed == [red, green, blue, sidecar_path_for(red)]
+    # Keep Current writes the merged file's sidecar, after the queue left by the sources is flushed.
+    ctrl.flush_sidecars.assert_called_once()
+    assert [a["path"] for a in ctrl._mirror_sidecars_for.call_args.args[0]] == [out]
 
 
 def test_finish_keeps_the_exposures_of_a_frame_that_failed(tmp_path, monkeypatch):

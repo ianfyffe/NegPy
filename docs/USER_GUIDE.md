@@ -250,7 +250,7 @@ Thumbnails are positives. Until you open a frame, it shows a quick inversion of 
 Right-click a thumbnail, or use shortcuts, to mark frames (multi-selection works):
 
 *   **Keep**: a check badge.
-*   **Reject**: a cross badge and dimming. Batch exports and sidecar writes skip it. The file never changes.
+*   **Reject**: a cross badge and dimming. Batch exports and Export Sidecars skip it; Keep Current still mirrors the mark. The file never changes.
 
 #### Reading the badges
 
@@ -662,7 +662,7 @@ A **work print** is a named version of this frame, like the test prints kept on 
 *   **Right-click** for **Export This Version…**, **Rename…** or **Delete**.
 *   **Load Metadata** (off by default; a global setting, the same for every frame and roll) restores a work print's saved metadata when you load it; off keeps the metadata on screen now and ignores the print's.
 
-Work prints are never pruned. They live in the database, not in `.negpy` sidecars.
+Work prints are never pruned. They live in the database and travel in `.negpy` sidecars.
 
 ### Edit history
 
@@ -1001,7 +1001,9 @@ The printer's record for this frame, as described under Dodge & Burn. **Preview*
 <!-- panel:export_sidecars -->
 #### Sidecars
 
-**Save on Export** writes a `.negpy` sidecar next to each source on export. **Export Sidecars** writes them for all visible frames at once. Edits always stay in the database too. A frame with no edit in the database takes its sidecar when its folder opens. **Load Edit from Sidecar…** (right-click a frame) replaces the frame's edit with a chosen `.negpy`, as one undo step.
+**Keep Current** mirrors each frame's edit, mark and work prints to a `.negpy` sidecar next to its source as you work. **Save on Export** writes a `.negpy` sidecar next to each source on export. **Export Sidecars** writes them for all visible frames at once. Edits always stay in the database too. Undo history, composites, a roll's own copy of a frame, flat-field profiles and presets stay on this computer.
+
+When a folder opens, a frame with no edit in the database takes its sidecar, and a newer mark or work print (saved, renamed or deleted) loads without asking. Edits saved after the ones here are listed in one dialog: **Load Selected** replaces them, and **Keep Mine** keeps yours and stops asking for those versions. The newer copy wins by its saved time, so keep the computers' clocks close. **Load Edit from Sidecar…** (right-click a frame) replaces the frame's edit with a chosen `.negpy`, as one undo step; the frame's own sidecar also brings its newer mark and work prints.
 
 <!-- panel:contact_sheet -->
 #### Contact Sheet
@@ -1221,7 +1223,7 @@ The button reads **"Open Releases Page"** when NegPy cannot update itself: a sou
 
 ## Additional Info
 
-*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. Optional `.negpy` sidecars mirror them.
+*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. Optional `.negpy` sidecars mirror them and carry them between computers.
 *   **Saving edits**: written on export, on frame switch, or on save; closing mid-edit before any of these loses unsaved changes.
 *   **Keyboard shortcuts**: [KEYBOARD.md](KEYBOARD.md)
 *   **Filename templating**: [TEMPLATING.md](TEMPLATING.md)

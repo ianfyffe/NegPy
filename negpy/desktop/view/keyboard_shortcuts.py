@@ -567,6 +567,7 @@ class ShortcutManager:
             "toggle_gear_catalog": lambda: right.gear_panel.show_catalog_btn.click(),
             "toggle_semantic_search": lambda: self.window.session_panel.file_browser.semantic_btn.click(),
             "toggle_positive_source": lambda: controls.process_sidebar.positive_source_btn.click(),
+            "toggle_keep_current": lambda: right.export_sidebar.keep_current_btn.click(),
             "persistent_settings": lambda: open_sticky_dialog(self.window, controller),
             "open_preferences": lambda: _open_preferences(self.window, controller),
             "save_work_print": self.window.right_panel.history_panel.save_work_print,

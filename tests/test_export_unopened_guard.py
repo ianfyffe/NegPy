@@ -2,9 +2,17 @@
 a quick source-preview inversion, but the export runs the full pipeline with the live session
 settings. The open frame is exempt: its preview is the export."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from negpy.desktop.controller import AppController
+
+
+@pytest.fixture(autouse=True)
+def _no_sidecars():
+    with patch("negpy.desktop.controller.promote_sidecars"):
+        yield
 
 
 def _controller(saved_hashes: set, current: str = "") -> MagicMock:
@@ -40,6 +48,19 @@ def test_the_open_frame_is_exempt_even_without_a_saved_edit():
 
     ok = AppController._confirm_unopened_frames(controller, [{"hash": "open"}])
 
+    assert ok is True
+    controller._confirm_bulk_export.assert_not_called()
+
+
+def test_a_sidecar_still_unread_by_discovery_fills_before_the_count():
+    controller = _controller(set())
+    files = [{"hash": "n1", "path": "/n1.dng"}]
+    with patch("negpy.desktop.controller.promote_sidecars", side_effect=lambda *_a: controller._saved.add("n1")) as promote:
+        controller._saved = set()
+        controller.session.repo.saved_hashes.side_effect = lambda hashes: {h for h in hashes if h in controller._saved}
+        ok = AppController._confirm_unopened_frames(controller, files)
+
+    promote.assert_called_once_with(controller.session.repo, files)
     assert ok is True
     controller._confirm_bulk_export.assert_not_called()
 

@@ -1016,6 +1016,7 @@ def test_a_resplit_remaps_a_roll_forked_half_too(tmp_path):
 
     x, y, _ = repo.load_file_settings(forked).retouch.manual_dust_spots[0]
     assert (x, y) == pytest.approx(remap_point(0.4, 0.4, 1, old, new))
+    ctrl.session.frames_edited_offscreen.emit.assert_called_once_with([forked])
 
 
 def test_a_resplit_decodes_no_scan_without_saved_half_edits(tmp_path):
