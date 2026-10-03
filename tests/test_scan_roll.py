@@ -1,3 +1,4 @@
+import os
 from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -168,3 +169,26 @@ def test_a_scan_into_another_roll_reads_that_rolls_split_profile():
     AppController._on_scan_finished(c, "/out/Roll002/a.tif")
 
     assert seen == [{"split_x": 0.4, "split_axis": "y"}]
+
+
+def test_scan_as_roll_reads_the_folders_roll_file_before_the_mode_dates_the_roll(tmp_path):
+    from negpy.services.assets import rolls
+    from negpy.services.assets.sidecar import RollSidecar, roll_sidecar_from_repo, write_roll_sidecar
+
+    folder = str(tmp_path / "R1")
+    os.mkdir(folder)
+    write_roll_sidecar(folder, RollSidecar(saved_at=1000.0, name="R1", state={"defaults": {"hue_trim": 2.0}}, trichrome_mode=False))
+    req = SimpleNamespace(white_mode=False, rgb_mode=True, white_process_mode="auto", roll_name="R1", frame_number=1, as_roll=True)
+    c = _controller(capture_req=req)
+    c._pending_roll_offers = {}
+    c._read_roll_sidecars = MethodType(AppController._read_roll_sidecars, c)
+
+    AppController._on_capture_finished(c, [os.path.join(folder, n) for n in ("r.ARW", "g.ARW", "b.ARW")])
+
+    roll_id = folder_roll_id_for_path(c.session.repo, folder)
+    assert rolls.roll_defaults(c.session.repo, roll_id) == {"hue_trim": 2.0}
+    assert rolls.roll_trichrome_mode(c.session.repo, roll_id) is True
+    assert rolls.roll_updated_at(c.session.repo, roll_id) > 1000.0
+    c._mirror_roll.assert_called_once_with(roll_id)
+    _, written = roll_sidecar_from_repo(c.session.repo, roll_id)
+    assert written.state == {"defaults": {"hue_trim": 2.0}} and written.trichrome_mode is True

@@ -994,7 +994,7 @@ The printer's record for this frame: the numbered dodge/burn masks and a card wi
 
 Sidecars carry edits between computers. A frame with no edit here loads its sidecar when its folder opens. A newer mark or work print (saved, renamed or deleted) loads without asking. Edits saved after the ones here are listed in one dialog: **Load Selected** replaces them, **Keep Mine** keeps yours and stops asking for those versions. **Load Edit from Sidecar…** (right-click a frame or the image) replaces the frame's edit with a chosen `.negpy` whatever its age, as one undo step; the frame's own sidecar also brings a newer mark or work print. The newer copy wins by its saved time, so keep the computers' clocks close.
 
-The roll file holds the card defaults, scenes, Roll Analysis baselines, the Half Frame setting and the cards each frame locks. A roll new to a computer takes it without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
+The roll file holds the card defaults, scenes, Roll Analysis baselines, Half Frame and Trichrome Mode, the half-frame crop and split, and the cards each frame locks. A roll new to a computer takes it without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
 
 <!-- panel:contact_sheet -->
 #### Contact Sheet
