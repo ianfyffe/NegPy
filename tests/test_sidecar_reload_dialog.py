@@ -3,7 +3,7 @@ dialog decides nothing."""
 
 from negpy.desktop.view.widgets.sidecar_reload_dialog import SidecarReloadDialog
 from negpy.domain.models import WorkspaceConfig
-from negpy.services.assets.sidecar import Sidecar, SidecarOffer
+from negpy.services.assets.sidecar import RollSidecar, RollSidecarOffer, Sidecar, SidecarOffer
 
 
 def _offers(n: int) -> list[SidecarOffer]:
@@ -30,3 +30,13 @@ def test_keep_mine_and_close(qapp):
     closed = SidecarReloadDialog(_offers(1))
     closed.reject()
     assert closed.decision is None
+
+
+def test_roll_settings_lead_and_load_with_the_frames(qapp):
+    roll = RollSidecarOffer("r1", "Portra", RollSidecar(saved_at=5.0))
+    dlg = SidecarReloadDialog([*_offers(2), roll])
+    assert dlg._checks[0][0].text().startswith("Roll settings  ·  ")
+    assert dlg.selected_offers()[0] is roll
+    dlg._checks[1][0].setChecked(False)
+    dlg._load()
+    assert dlg.selected_offers() == [roll, dlg._checks[2][1]]

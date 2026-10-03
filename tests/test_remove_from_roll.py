@@ -112,6 +112,7 @@ def _controller():
     repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
     repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
     ctrl.set_status = MagicMock()
+    ctrl._mirror_roll = MagicMock()
     ctrl.state = MagicMock()
     return ctrl, store
 
@@ -138,6 +139,40 @@ def test_the_controller_removes_both_halves_and_deletes_the_fork_after_the_unloa
 
     assert order == [("unload", [0, 1]), ("delete", rolls.roll_edit_hash("h1#1", roll_id))]
     assert rolls.roll_for_id(repo, roll_id)["member_paths"] == ["/a/2.tif"]
+
+
+def test_the_controller_remirrors_the_roll_and_each_locked_frame():
+    from negpy.desktop.controller import AppController
+
+    ctrl, _ = _controller()
+    repo = ctrl.session.repo
+    roll_id = rolls.recognize_folder(repo, "/scans/roll_a")
+    rolls.set_frame_override(repo, roll_id, "h1", "film", True)
+    locked, plain = {"path": "/scans/roll_a/1.tif", "hash": "h1"}, {"path": "/scans/roll_a/2.tif", "hash": "h2"}
+    ctrl.state.active_roll_id = roll_id
+    ctrl.state.uploaded_files = [locked, plain]
+
+    AppController.request_remove_from_roll(ctrl, [0, 1])
+
+    ctrl.session.frame_locks_changed.assert_called_once_with(roll_id, locked)
+    ctrl._mirror_roll.assert_called_once_with(roll_id)
+
+
+def test_a_change_to_what_the_roll_file_carries_dates_the_roll():
+    repo = _repo()
+    roll_id = rolls.recognize_folder(repo, "/scans/roll_a")
+    rolls.add_extra_members(repo, roll_id, ["/elsewhere/c.nef"])
+    rolls.remove_members(repo, roll_id, ["/elsewhere/c.nef"], [])
+    assert rolls.roll_updated_at(repo, roll_id) is None
+
+    rolls.remove_members(repo, roll_id, ["/scans/roll_a/1.tif"], [])
+    removed_at = rolls.roll_updated_at(repo, roll_id)
+    assert removed_at is not None
+    assert rolls.excluded_names(repo, roll_id) == ["1.tif"]
+
+    rolls.add_extra_members(repo, roll_id, ["/scans/roll_a/1.tif"])
+    assert rolls.roll_updated_at(repo, roll_id) >= removed_at
+    assert rolls.excluded_names(repo, roll_id) == []
 
 
 def test_nothing_goes_without_an_open_roll_or_a_frame():

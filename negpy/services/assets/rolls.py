@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, Collection, Dict, List, Optiona
 from negpy.features.metadata.models import GEAR_FIELDS, PROCESS_FIELDS, SCANNING_FIELDS
 from negpy.features.geometry.models import with_auto_crop_field
 from negpy.features.process.models import neutral_axis_tuple, with_film_fields
+from negpy.services.assets import half_frame
 from negpy.services.assets.library import folder_counts
 
 if TYPE_CHECKING:
@@ -34,6 +35,8 @@ IMPORT_SOURCES_KEY = "roll_import_sources"
 DISMISSED_FOLDERS_KEY = "dismissed_folder_rolls"
 ROLL_PATH_SEP = "/"
 DISCOVERY_FILTERS_KEY = "roll_discovery_filters"
+HALF_FRAME_MODE_KEY = "half_frame_mode_by_roll"
+TRICHROME_MODE_KEY = "rgbscan_mode_by_roll"
 DEFAULT_DISCOVERY_FILTERS = ("export",)
 _FORK_SEP = "#roll:"
 
@@ -54,6 +57,112 @@ def _view(repo: Any) -> Dict[str, dict]:
 
 def _write(repo: Any, store: Dict[str, dict]) -> None:
     repo.save_global_setting(ROLLS_KEY, store)
+
+
+def _stamp(entry: dict, when: Optional[float] = None) -> None:
+    """Date a change to what the roll file carries; compared against the file's ``saved_at``."""
+    entry["updated_at"] = when if when is not None else time.time()
+
+
+def touch_roll(repo: Any, roll_id: str, when: Optional[float] = None) -> None:
+    """Date a change to roll state stored outside the roll entry: its modes and half-frame split profile."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is not None:
+        _stamp(entry, when)
+        _write(repo, store)
+
+
+def roll_updated_at(repo: Any, roll_id: str) -> Optional[float]:
+    """When this machine last changed what the roll file carries; None before any change."""
+    entry = roll_for_id(repo, roll_id)
+    stamp = entry.get("updated_at") if entry else None
+    return float(stamp) if isinstance(stamp, (int, float)) else None
+
+
+# The roll entry fields a roll file carries. Paths, forks, locks and the id stay local.
+PORTABLE_FIELDS = ("defaults", "normalization", "scenes", "section_pushes")
+
+
+def roll_mode(repo: Any, key: str, roll_id: str) -> Optional[bool]:
+    """The roll's own Half Frame (``HALF_FRAME_MODE_KEY``) or Trichrome Mode (``TRICHROME_MODE_KEY``); None
+    when it has none."""
+    by_roll = repo.get_global_setting(key, default=None)
+    return bool(by_roll[roll_id]) if isinstance(by_roll, dict) and roll_id in by_roll else None
+
+
+def set_roll_mode(repo: Any, key: str, roll_id: str, enabled: bool) -> None:
+    by_roll = repo.get_global_setting(key, default=None)
+    repo.save_global_setting(key, {**(by_roll if isinstance(by_roll, dict) else {}), roll_id: bool(enabled)})
+
+
+def mark_trichrome_chosen(repo: Any, roll_id: str, changed: bool) -> bool:
+    """Record the roll's Trichrome Mode as chosen, not only recorded by its first discovery; only a chosen
+    mode travels in the roll file. A first choice or a *changed* mode dates the roll and returns True."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None or (entry.get("trichrome_chosen") and not changed):
+        return False
+    entry["trichrome_chosen"] = True
+    _stamp(entry)
+    _write(repo, store)
+    return True
+
+
+def has_portable_state(repo: Any, roll_id: str) -> bool:
+    """Whether the roll holds anything its roll file would replace. A Trichrome Mode does not count:
+    choosing one dates the roll."""
+    entry = roll_for_id(repo, roll_id) or {}
+    return (
+        any(entry.get(k) for k in PORTABLE_FIELDS)
+        or bool(entry.get("excluded_paths"))
+        or roll_mode(repo, HALF_FRAME_MODE_KEY, roll_id) is not None
+        or half_frame.roll_half_frame_profile(repo, roll_id) is not None
+    )
+
+
+def adopts_roll_file(repo: Any, roll_id: str) -> bool:
+    """Whether the roll takes its folder's roll file without asking: it holds nothing here
+    yet, and its folder's roll was not deleted here before."""
+    entry = roll_for_id(repo, roll_id) or {}
+    return roll_updated_at(repo, roll_id) is None and not has_portable_state(repo, roll_id) and not entry.get("recognized_after_delete")
+
+
+def replace_portable_state(
+    repo: Any,
+    roll_id: str,
+    values: Dict[str, Any],
+    updated_at: float,
+    *,
+    half_frame_mode: bool,
+    trichrome_mode: Optional[bool],
+    half_frame_profile: Optional[dict],
+    excluded: Sequence[str] = (),
+) -> None:
+    """Replace what a roll file carries, stamped with the file's time so it reads as current. A
+    *trichrome_mode* of None leaves the mode here; a *half_frame_profile* of None drops the roll's own.
+    *excluded* names the files removed from the roll, by name in its folder."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return
+    for key in PORTABLE_FIELDS:
+        if values.get(key):
+            entry[key] = values[key]
+        else:
+            entry.pop(key, None)
+    if excluded and entry.get("folder_path"):
+        entry["excluded_paths"] = [os.path.join(entry["folder_path"], name) for name in excluded]
+    else:
+        entry.pop("excluded_paths", None)
+    if trichrome_mode is not None:
+        entry["trichrome_chosen"] = True
+    _stamp(entry, updated_at)
+    _write(repo, store)
+    set_roll_mode(repo, HALF_FRAME_MODE_KEY, roll_id, half_frame_mode)
+    if trichrome_mode is not None:
+        set_roll_mode(repo, TRICHROME_MODE_KEY, roll_id, trichrome_mode)
+    half_frame.set_roll_half_frame_profile(repo, roll_id, half_frame_profile)
 
 
 def saved_rolls(repo: Any) -> Dict[str, dict]:
@@ -77,6 +186,21 @@ def folder_roll_id_for_path(repo: Any, path: str) -> Optional[str]:
         if entry.get("kind") == "folder" and _folder_key(entry.get("folder_path") or "") == key:
             return roll_id
     return None
+
+
+def folder_rolls_holding(repo: Any, paths: List[str]) -> List[str]:
+    """The folder rolls recognizing each path, or the folder a file path is in, once each."""
+    by_folder = {
+        _folder_key(entry["folder_path"]): roll_id
+        for roll_id, entry in _read(repo).items()
+        if entry.get("kind") == "folder" and entry.get("folder_path")
+    }
+    found: Dict[str, None] = {}
+    for path in paths:
+        roll_id = by_folder.get(_folder_key(path if os.path.isdir(path) else os.path.dirname(path)))
+        if roll_id is not None:
+            found[roll_id] = None
+    return list(found)
 
 
 def roll_folder_name(text: str) -> Optional[str]:
@@ -112,7 +236,8 @@ def next_roll_name(name: str, taken: Callable[[str], bool]) -> str:
 
 def recognize_folder(repo: Any, path: str, name: str = "") -> str:
     """Mark *path* as a recognized folder roll. Idempotent: returns the existing id
-    when the folder is already recognized, without touching its stored name."""
+    when the folder is already recognized, without touching its stored name. A folder
+    whose roll was deleted is offered its roll file rather than taking it."""
     dismissed = _dismissed_folders(repo)
     kept = [p for p in dismissed if _folder_key(p) != _folder_key(path)]
     if kept != dismissed:
@@ -129,6 +254,8 @@ def recognize_folder(repo: Any, path: str, name: str = "") -> str:
         "extra_paths": [],
         "created_at": time.time(),
     }
+    if kept != dismissed:
+        store[roll_id]["recognized_after_delete"] = True
     _write(repo, store)
     return roll_id
 
@@ -288,6 +415,7 @@ def add_extra_members(repo: Any, roll_id: str, paths: List[str], parts: Sequence
         entry[key] = [*entry[key], *new]
         if kept != excluded:
             entry["excluded_paths"] = kept
+            _stamp(entry)
         _write(repo, store)
 
 
@@ -300,6 +428,7 @@ def remove_members(repo: Any, roll_id: str, paths: List[str], hashes: List[str])
     entry = store.get(roll_id)
     if entry is None:
         return []
+    portable = (entry.get("excluded_paths") or [], entry.get("scenes") or {})
     gone = {_folder_key(p) for p in paths}
     for key in ("extra_paths", "member_paths"):
         if key in entry:
@@ -320,8 +449,16 @@ def remove_members(repo: Any, roll_id: str, paths: List[str], hashes: List[str])
     forked = [h for h in entry.get("forked_hashes", []) if h in drop]
     if forked:
         entry["forked_hashes"] = [h for h in entry["forked_hashes"] if h not in drop]
+    if (entry.get("excluded_paths") or [], entry.get("scenes") or {}) != portable:
+        _stamp(entry)
     _write(repo, store)
     return forked
+
+
+def excluded_names(repo: Any, roll_id: str) -> List[str]:
+    """The names of the files removed from a folder roll, all in its own folder, as its roll file carries them."""
+    entry = roll_for_id(repo, roll_id) or {}
+    return sorted(os.path.basename(p) for p in entry.get("excluded_paths", ()))
 
 
 def excluded_paths(repo: Any, folders: Sequence[str]) -> frozenset:
@@ -676,6 +813,7 @@ def set_roll_defaults(repo: Any, roll_id: str, **fields: Any) -> None:
     defaults = dict(entry.get("defaults", {}))
     defaults.update(fields)
     entry["defaults"] = defaults
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -697,6 +835,7 @@ def restore_roll_fields(repo: Any, roll_id: str, snapshot: Dict[str, Any]) -> No
         else:
             defaults[name] = value
     entry["defaults"] = defaults
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -741,6 +880,19 @@ def set_frame_override(repo: Any, roll_id: str, file_hash: str, card_key: str, l
         cards.add(card_key)
     else:
         cards.discard(card_key)
+    _write_frame_locks(repo, store, entry, file_hash, cards)
+
+
+def set_frame_locks(repo: Any, roll_id: str, file_hash: str, cards) -> None:
+    """Replace one frame's locked cards within one roll. Unknown card keys are dropped."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is not None:
+        _write_frame_locks(repo, store, entry, file_hash, {c for c in cards if c in ROLL_DEFAULT_FIELDS})
+
+
+def _write_frame_locks(repo: Any, store: Dict[str, dict], entry: dict, file_hash: str, cards: set) -> None:
+    overrides = dict(entry.get("frame_overrides", {}))
     if cards:
         overrides[file_hash] = sorted(cards)
     else:
@@ -755,6 +907,17 @@ def holds_own_crop(card_key: str, config: "WorkspaceConfig") -> bool:
     roll, and it never locks the card."""
     geometry = config.geometry
     return card_key == "auto_crop" and geometry.crop_rect is not None and not geometry.crop_from_auto
+
+
+def diverged_cards(defaults: Dict[str, Any], config: "WorkspaceConfig") -> set:
+    """The cards on which *config* differs from a roll field the roll has set. Never Auto Crop on a
+    hand-drawn crop (``holds_own_crop``)."""
+    return {
+        card_key
+        for card_key, (section, names) in ROLL_DEFAULT_FIELDS.items()
+        if not holds_own_crop(card_key, config)
+        and any(n in defaults and not same_value(getattr(getattr(config, section), n), defaults[n]) for n in names)
+    }
 
 
 def resolve_roll_config(repo: Any, roll_id: Optional[str], file_hash: str, config: "WorkspaceConfig") -> "WorkspaceConfig":
@@ -801,6 +964,7 @@ def set_section_push(repo: Any, roll_id: str, section_key: str, values: Dict[str
     pushes = dict(entry.get("section_pushes", {}))
     pushes[section_key] = {**pushes.get(section_key, {}), **values}
     entry["section_pushes"] = pushes
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -866,6 +1030,7 @@ def set_roll_normalization(
     if entry is None:
         return
     entry["normalization"] = {"floors": list(floors), "ceils": list(ceils), "cast": list(cast), "outliers": list(outliers), "axis": axis}
+    _stamp(entry)
     _write(repo, store)
 
 
@@ -896,6 +1061,7 @@ def _edit_scenes(repo: Any, roll_id: str, edit) -> Any:
     scenes = dict(entry.get("scenes", {}))
     result = edit(scenes)
     entry["scenes"] = scenes
+    _stamp(entry)
     _write(repo, store)
     return result
 

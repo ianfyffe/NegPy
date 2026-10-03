@@ -121,6 +121,29 @@ class TestBatchAutoCropController:
 
         set_override.assert_called_once_with(self.session.repo, "roll", "b", "auto_crop", True)
 
+    def test_finish_mirrors_the_lock_it_adds_and_leaves_a_held_lock_alone(self) -> None:
+        asset = {"name": "b.dng", "path": "/roll/b.dng", "hash": "b"}
+        other = WorkspaceConfig()
+        self.controller.state.current_file_hash = "a"
+        self.session.config_for_asset.return_value = other
+        fingerprint = _autocrop_fingerprint(other, self.controller.state.workspace_color_space)
+        for held in (set(), {"auto_crop"}):
+            token = self.controller._begin_batch("autocrop", "Auto-cropping all frames", True)
+            self.controller._autocrop_batch_token = token
+            self.controller._autocrop_frame_rolls = {"b": "roll"}
+            self.controller._autocrop_dispatched = 1
+            self.controller._autocrop_preflight_skipped = 0
+            with (
+                patch("negpy.desktop.controller.rolls.roll_defaults", return_value={"crop_from_auto": False}),
+                patch("negpy.desktop.controller.rolls.frame_override_cards", return_value=held),
+                patch("negpy.desktop.controller.rolls.set_frame_override"),
+            ):
+                self.controller._on_batch_autocrop_finished(
+                    [BatchAutoCropResult(asset, fingerprint, (0.1, 0.1, 0.9, 0.9), 0.0, 0.9, False)]
+                )
+
+        self.session.frame_locks_changed.assert_called_once_with("roll", asset)
+
     def _finish_one(self, latest: WorkspaceConfig, started: bool, saved_now) -> None:
         asset = {"name": "b.dng", "path": "/roll/b.dng", "hash": "b"}
         self.controller.state.current_file_hash = "a"
