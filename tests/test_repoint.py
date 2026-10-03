@@ -155,10 +155,10 @@ def test_the_saved_session_and_library_lists_follow(repo):
     assert repo.get_global_setting("library_roots") == [_in(NEW, "sub")]
 
 
-def test_edit_mark_and_embedding_paths_follow(repo):
+def test_edit_mark_and_embedding_paths_follow_without_dating_the_edit(repo):
     cfg = DEFAULT_WORKSPACE_CONFIG
-    repo.save_file_settings("h1", cfg, file_path=_in(OLD, "a.tif"))
-    repo.save_file_settings("h2", cfg, file_path="/other/roll_a/b.tif")
+    repo.save_file_settings("h1", cfg, file_path=_in(OLD, "a.tif"), updated_at=5.0)
+    repo.save_file_settings("h2", cfg, file_path="/other/roll_a/b.tif", updated_at=6.0)
     repo.save_file_mark("h1", "keeper", file_path=_in(OLD, "a.tif"))
     repo.save_embedding("h1", np.zeros(4, dtype=np.float32), "m1", file_path=_in(OLD, "a.tif"))
 
@@ -166,6 +166,7 @@ def test_edit_mark_and_embedding_paths_follow(repo):
 
     assert repo.load_file_settings_by_path(_in(NEW, "a.tif"))[0] == "h1"
     assert repo.load_file_settings_by_path(_in(OLD, "a.tif")) is None
+    assert repo.load_file_updated_at("h1") == 5.0
     assert repo.load_file_settings_by_path("/other/roll_a/b.tif")[0] == "h2"
     assert repo.load_file_marks_by_path() == {_in(NEW, "a.tif"): "keeper"}
     assert repo.load_all_embeddings("m1")["h1"][0] == _in(NEW, "a.tif")
@@ -175,8 +176,8 @@ def test_source_paths_inside_saved_configs_follow(repo):
     cfg = DEFAULT_WORKSPACE_CONFIG
     triplet = replace(cfg, rgbscan=RgbScanConfig(enabled=True, green_path=_in(OLD, "g.tif"), blue_path=_in(OLD, "b.tif")))
     stitched = replace(cfg, stitch=replace(cfg.stitch, stitch_enabled=True, stitch_paths=(_in(OLD, "2.tif"),)))
-    repo.save_file_settings("h1", triplet, file_path=_in(OLD, "r.tif"))
-    repo.save_file_settings("s1", stitched)
+    repo.save_file_settings("h1", triplet, file_path=_in(OLD, "r.tif"), updated_at=5.0)
+    repo.save_file_settings("s1", stitched, updated_at=7.0)
     repo.save_work_print("h1", "Print 1", triplet)
     repo.save_history_step("h1", 0, triplet)
 
@@ -187,6 +188,7 @@ def test_source_paths_inside_saved_configs_follow(repo):
     assert repo.load_file_settings("s1").stitch.stitch_paths == (_in(NEW, "2.tif"),)
     assert repo.load_work_print("h1", "Print 1").rgbscan.green_path == _in(NEW, "g.tif")
     assert repo.load_history_step("h1", 0).rgbscan.blue_path == _in(NEW, "b.tif")
+    assert (repo.load_file_updated_at("h1"), repo.load_file_updated_at("s1")) == (5.0, 7.0)
 
 
 def test_repointing_again_or_onto_itself_changes_nothing(repo):

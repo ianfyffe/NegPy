@@ -110,7 +110,8 @@ def repoint_folder(repo: Any, old: str, new: str) -> None:
     """Rewrite every stored path equal to *old* or under it to the same place under *new*:
     rolls (folders, extra and member paths), composites, Trichrome triplets, the saved
     session, the import sources, dismissed folders and library roots, the path columns of
-    edits, marks and embeddings, and the source paths inside saved configs. Idempotent."""
+    edits, marks and embeddings, and the source paths inside saved configs. A saved edit
+    keeps its ``updated_at``, because a path change is not an edit. Idempotent."""
     if not old or not new or os.path.normcase(os.path.normpath(old)) == os.path.normcase(os.path.normpath(new)):
         return
     _repoint_rolls(repo, old, new)

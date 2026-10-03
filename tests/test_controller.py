@@ -965,54 +965,284 @@ class TestAppController(unittest.TestCase):
         self.assertTrue(saved["hash2"].process.use_luma_average)
         self.mock_session_manager.config_for_asset.assert_any_call(state.uploaded_files[1])
 
-    def test_write_edit_sidecars_uses_hydrated_base_not_active_edit(self):
-        """A frame with no saved edit must get its own hydrated config written to its
-        sidecar, never the active frame's edit (which load_or_promote would later promote
-        into that file's persistent DB row)."""
-        from negpy.domain.models import GeometryConfig
+    def test_write_edit_sidecars_writes_saved_rows_only(self):
+        """A frame with no saved edit gets no sidecar: the active frame's edit must never
+        land beside another file, and a defaults sidecar would read as a newer edit on
+        another machine. A saved frame's sidecar comes from its own DB row."""
+        from negpy.services.assets.sidecar import Sidecar
 
-        state = self.mock_session_manager.state
-        state.config = replace(state.config, geometry=GeometryConfig(crop_rect=(0.1, 0.1, 0.9, 0.9)))
-        hydrated = WorkspaceConfig()
-        self.mock_session_manager.config_for_asset.return_value = hydrated
-        frame = {"name": "b.dng", "path": "/tmp/b.dng", "hash": "hash2"}
+        unsaved = {"name": "b.dng", "path": "/tmp/b.dng", "hash": "hash2"}
+        saved = {"name": "c.dng", "path": "/tmp/c.dng", "hash": "hash3", "half": 2}
+        composite = {"name": "s.dng", "path": "/tmp/s.dng", "hash": "hash4", "stitch_paths": ["/tmp/a.dng"]}
+        row = Sidecar(config=WorkspaceConfig(), saved_at=5.0, source_hash="hash3")
 
         with (
             patch("negpy.desktop.controller.load_or_promote", return_value=None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
             patch("negpy.desktop.controller.write_sidecar") as mock_write,
         ):
-            written, failed = self.controller._write_edit_sidecars([frame])
+            written, failed = self.controller._write_edit_sidecars([unsaved, saved, composite])
 
         self.assertEqual((written, failed), (1, 0))
-        self.mock_session_manager.config_for_asset.assert_called_once_with(frame)
-        params = mock_write.call_args.args[1]
-        self.assertIs(params, hydrated)
-        self.assertIsNone(params.geometry.crop_rect)
+        self.mock_session_manager.config_for_asset.assert_not_called()
+        mock_write.assert_called_once_with("/tmp/c.dng", row, half=2)
 
-    def test_write_edit_sidecars_never_rehomes_a_forked_frame(self):
+    def test_write_edit_sidecars_skips_roll_fork(self):
+        """A roll-forked edit shares its source path with the shared frame. Writing it would
+        clobber the shared sidecar, and load_or_promote would rehome the shared edit onto the
+        fork, so the writer both Export and Export Sidecars use skips it, as the mirror does."""
+        from negpy.services.assets.sidecar import Sidecar
+
+        fork = {"name": "e.dng", "path": "/tmp/e.dng", "hash": "hash5#roll:r1"}
+        saved = {"name": "c.dng", "path": "/tmp/c.dng", "hash": "hash3"}
+        row = Sidecar(config=WorkspaceConfig(), saved_at=5.0, source_hash="hash3")
+
+        with (
+            patch("negpy.desktop.controller.load_or_promote", return_value=None) as mock_promote,
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.write_sidecar") as mock_write,
+        ):
+            written, failed = self.controller._write_edit_sidecars([fork, saved])
+
+        self.assertEqual((written, failed), (1, 0))
+        mock_write.assert_called_once_with("/tmp/c.dng", row, half=0)
+        # The fork never reaches load_or_promote, so the shared edit is not rehomed onto it.
+        self.assertNotIn("hash5#roll:r1", [c.args[1] for c in mock_promote.call_args_list])
+
+    def test_export_sidecars_action_skips_roll_fork(self):
+        """The Export Sidecars button drives the same fork-safe writer."""
+        from negpy.services.assets.sidecar import Sidecar
+
+        state = self.mock_session_manager.state
+        state.uploaded_files = [
+            {"name": "e.dng", "path": "/tmp/e.dng", "hash": "hash5#roll:r1"},
+            {"name": "c.dng", "path": "/tmp/c.dng", "hash": "hash3"},
+        ]
+        self.mock_session_manager.asset_model = MagicMock()
+        self.mock_session_manager.asset_model.visible_actual_indices_ordered.return_value = [0, 1]
+        row = Sidecar(config=WorkspaceConfig(), saved_at=5.0, source_hash="hash3")
+
+        with (
+            patch("negpy.desktop.controller.load_or_promote", return_value=None),
+            patch("negpy.desktop.controller.sidecar_from_repo", side_effect=lambda repo, h: row if h == "hash3" else None),
+            patch("negpy.desktop.controller.write_sidecar") as mock_write,
+        ):
+            self.controller.export_edit_sidecars()
+
+        mock_write.assert_called_once_with("/tmp/c.dng", row, half=0)
+
+    def test_marks_and_work_prints_refresh_when_the_mirror_takes_them_from_a_file(self):
+        state = self.mock_session_manager.state
+        state.current_file_hash = "hash1#roll:r1"
+        emitted = []
+        self.mock_session_manager.work_prints_changed.emit.side_effect = lambda: emitted.append(True)
+
+        self.controller._on_sidecar_extras_merged(["hash2"])
+        self.mock_session_manager.refresh_marks.assert_called_once()
+        self.assertEqual(emitted, [])
+
+        self.controller._on_sidecar_extras_merged(["hash1"])
+        self.assertEqual(emitted, [True])
+
+    def test_mirror_queues_current_frame_only_when_enabled(self):
+        from negpy.domain.models import ExportConfig
+
+        state = self.mock_session_manager.state
+        state.uploaded_files = [{"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}]
+        state.selected_file_idx = 0
+        state.current_file_hash = "hash1"
+
+        state.sidecars_enabled = False
+        self.controller._mirror_current_sidecar()
+        self.assertEqual(self.controller._sidecar_mirror.pending(), 0)
+
+        # The mirror reads the app-wide preference, not the per-frame config: a frame reset
+        # never stops it.
+        state.config = replace(state.config, export=ExportConfig())
+        state.sidecars_enabled = True
+        self.controller._mirror_current_sidecar()
+        self.assertEqual(self.controller._sidecar_mirror.pending(), 1)
+        self.assertTrue(self.controller._sidecar_flush_timer.isActive())
+
+        with patch.object(self.controller._sidecar_mirror, "flush", return_value=(1, 0)) as flush:
+            self.controller.flush_sidecars()
+        flush.assert_called_once()
+        self.assertFalse(self.controller._sidecar_flush_timer.isActive())
+
+    def test_apply_sidecar_offers_promotes_declines_and_reloads(self):
+        from negpy.services.assets.sidecar import Sidecar, SidecarOffer
+
+        state = self.mock_session_manager.state
+        state.current_file_hash = "hash1"
+        a = SidecarOffer({"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}, Sidecar(WorkspaceConfig(), saved_at=9.0))
+        b = SidecarOffer({"name": "b.dng", "path": "/tmp/b.dng", "hash": "hash2"}, Sidecar(WorkspaceConfig(), saved_at=8.0))
+
+        with (
+            patch("negpy.desktop.controller.promote_sidecar") as promote,
+            patch("negpy.desktop.controller.decline_sidecar_offers") as decline,
+            patch.object(self.controller, "refresh_thumbnails_for") as refresh,
+        ):
+            self.controller.apply_sidecar_offers([a], [b])
+
+        promote.assert_called_once_with(self.mock_session_manager.repo, "hash1", "/tmp/a.dng", a.sidecar)
+        decline.assert_called_once_with(self.mock_session_manager.repo, [b])
+        self.mock_session_manager.refresh_marks.assert_called_once()
+        self.mock_session_manager.reload_current_file.assert_called_once()
+        refresh.assert_called_once_with(["hash1"])
+
+    def _load_sidecar_file(self, frame: dict, sidecar, path: str = "/tmp/a.negpy", merged: bool = False):
+        state = self.mock_session_manager.state
+        state.uploaded_files = [frame]
+        state.selected_file_idx = 0
+        with (
+            patch("negpy.desktop.controller.read_sidecar", return_value=sidecar),
+            patch("negpy.desktop.controller.merge_sidecar_extras", return_value=merged) as merge,
+            patch.object(self.controller, "set_status") as status,
+        ):
+            ok = self.controller.load_edit_from_sidecar(path)
+        return ok, merge, status
+
+    def test_loading_the_frames_own_sidecar_keeps_its_saved_time_and_takes_its_extras(self):
+        from negpy.services.assets.sidecar import Sidecar
+
+        cfg = WorkspaceConfig()
+        ok, merge, _ = self._load_sidecar_file(
+            {"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}, Sidecar(cfg, saved_at=50.0), merged=True
+        )
+
+        self.assertTrue(ok)
+        merge.assert_called_once()
+        self.mock_session_manager.load_edit_from_sidecar.assert_called_once_with(cfg, saved_at=50.0)
+        self.mock_session_manager.work_prints_changed.emit.assert_called_once()
+
+    def test_loading_another_sidecar_or_into_a_fork_takes_only_the_edit(self):
+        from negpy.services.assets.sidecar import Sidecar
+
+        cfg = WorkspaceConfig()
+        for frame, path in (
+            ({"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}, "/tmp/b.negpy"),
+            ({"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1#roll:r1"}, "/tmp/a.negpy"),
+        ):
+            self.mock_session_manager.load_edit_from_sidecar.reset_mock()
+            ok, merge, _ = self._load_sidecar_file(frame, Sidecar(cfg, saved_at=50.0), path=path)
+            self.assertTrue(ok)
+            merge.assert_not_called()
+            self.mock_session_manager.load_edit_from_sidecar.assert_called_once_with(cfg, saved_at=None)
+
+    def test_loading_a_sidecar_without_an_edit_keeps_the_edit_here(self):
+        from negpy.services.assets.sidecar import Sidecar
+
+        frame = {"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}
+        for merged, message in (
+            (True, "a.negpy holds no edit; loaded its mark and work prints"),
+            (False, "a.negpy holds no edit"),
+        ):
+            self.mock_session_manager.load_edit_from_sidecar.reset_mock()
+            ok, merge, status = self._load_sidecar_file(frame, Sidecar(None, mark="keeper", mark_at=5.0), merged=merged)
+            self.assertTrue(ok)
+            merge.assert_called_once()
+            self.mock_session_manager.load_edit_from_sidecar.assert_not_called()
+            status.assert_called_once_with(message, 4000)
+
+    def test_loading_an_unreadable_sidecar_reports_false(self):
+        ok, _, status = self._load_sidecar_file({"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}, None)
+
+        self.assertFalse(ok)
+        status.assert_not_called()
+
+    def _scan_planned(self, plan=None, generation=None) -> None:
+        from negpy.services.assets.sidecar import SidecarPlan
+
+        gen = self.controller._sidecar_scan_generation if generation is None else generation
+        self.controller._on_sidecar_scan_planned(gen, plan if plan is not None else SidecarPlan())
+
+    def test_a_sidecar_scan_reports_what_it_loaded_and_refreshes_filled_thumbnails(self):
+        state = self.mock_session_manager.state
+        state.current_file_hash = "hash2"
+        emitted = []
+        self.mock_session_manager.work_prints_changed.emit.side_effect = lambda: emitted.append(True)
+        for applied, message in (
+            ((["hash1"], []), "Loaded 1 edit from sidecars"),
+            ((["hash1"], ["hash2", "hash3"]), "Loaded 1 edit and the marks or work prints of 2 frames from sidecars"),
+        ):
+            with (
+                patch("negpy.desktop.controller.apply_sidecar_plan", return_value=applied),
+                patch.object(self.controller, "refresh_thumbnails_for") as refresh,
+                patch.object(self.controller, "set_status") as status,
+            ):
+                self._scan_planned()
+            status.assert_called_once_with(message, 4000)
+            refresh.assert_called_once_with(["hash1"])
+        self.assertEqual(emitted, [True])
+        self.assertEqual(self.mock_session_manager.refresh_marks.call_count, 2)
+
+        with (
+            patch("negpy.desktop.controller.apply_sidecar_plan", return_value=([], [])),
+            patch.object(self.controller, "set_status") as status,
+        ):
+            self._scan_planned()
+        status.assert_not_called()
+
+    def test_a_superseded_sidecar_scan_is_dropped(self):
+        from negpy.services.assets.sidecar import SidecarPlan
+
+        asset = {"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}
+        self.mock_session_manager.state.uploaded_files = [asset]
+        stale = self.controller._sidecar_scan_generation
+        self.controller._supersede_sidecar_scan()
+        with (
+            patch("negpy.desktop.controller.apply_sidecar_plan") as apply,
+            patch.object(self.controller, "_show_sidecar_offers") as show,
+        ):
+            self._scan_planned(SidecarPlan(fill=[(asset, MagicMock())]), generation=stale)
+        apply.assert_not_called()
+        show.assert_not_called()
+
+    def test_a_superseded_scans_frames_join_the_next_one_unless_the_session_emptied(self):
+        state = self.mock_session_manager.state
+        a, b = ({"name": f"{h}.dng", "path": f"/tmp/{h}.dng", "hash": h} for h in ("hash1", "hash2"))
+        requests = []
+        self.controller.sidecar_scan_requested.disconnect(self.controller.sidecar_scan_worker.scan)
+        self.controller.sidecar_scan_requested.connect(lambda gen, assets: requests.append((gen, [x["hash"] for x in assets])))
+
+        state.uploaded_files = [a]
+        self.controller._request_sidecar_scan([a])
+        state.uploaded_files = [a, b]
+        self.controller._request_sidecar_scan([b])
+        self.assertEqual([hashes for _, hashes in requests], [["hash1"], ["hash1", "hash2"]])
+        self.assertEqual(requests[-1][0], self.controller._sidecar_scan_generation)
+        self.assertEqual(self.controller.sidecar_scan_worker._wanted, self.controller._sidecar_scan_generation)
+
+        # A frame no longer loaded is not scanned, and an emptied session carries nothing.
+        state.uploaded_files = [b]
+        self.controller._request_sidecar_scan([])
+        self.assertEqual(requests[-1][1], ["hash2"])
+        self.controller._drop_sidecar_scan()
+        state.uploaded_files = []
+        self.controller._request_sidecar_scan([])
+        self.assertEqual(requests[-1][1], [])
+
+    def test_a_planned_entry_for_a_frame_no_longer_loaded_is_dropped(self):
+        from negpy.services.assets.sidecar import SidecarPlan
+
+        gone = {"name": "a.dng", "path": "/tmp/a.dng", "hash": "hash1"}
+        self.mock_session_manager.state.uploaded_files = []
+        plan = SidecarPlan(fill=[(gone, MagicMock())], merge=[(gone, MagicMock())], offer=[(gone, MagicMock())])
+        with patch("negpy.desktop.controller.apply_sidecar_plan", return_value=([], [])) as apply:
+            self._scan_planned(plan)
+        applied = apply.call_args.args[1]
+        self.assertEqual((applied.fill, applied.merge, applied.offer), ([], [], []))
+
+    def test_write_edit_sidecars_never_touches_a_forked_frame(self):
         frame = {"name": "b.dng", "path": "/tmp/b.dng", "hash": "hash2#roll:r1"}
         with (
-            patch("negpy.desktop.controller.load_or_promote", return_value=None) as mock_load,
-            patch("negpy.desktop.controller.write_sidecar"),
+            patch("negpy.desktop.controller.load_or_promote") as mock_load,
+            patch("negpy.desktop.controller.write_sidecar") as mock_write,
         ):
             self.controller._write_edit_sidecars([frame])
 
-        self.assertTrue(mock_load.call_args.kwargs["forked"])
-
-    def test_discovery_promotes_sidecars_before_adding_files(self):
-        state = self.mock_session_manager.state
-        state.uploaded_files = []
-        order = []
-        self.mock_session_manager.add_files.side_effect = lambda *_a, **_k: order.append("add")
-        self.mock_session_manager.asset_model = MagicMock()
-        self.controller.generate_missing_thumbnails = MagicMock()
-        discovered = [{"name": "a", "path": "/a.dng", "hash": "h1"}]
-
-        with patch("negpy.desktop.controller.promote_sidecars", side_effect=lambda *_a: order.append("promote")) as mock_promote:
-            self.controller._on_discovery_finished(discovered)
-
-        mock_promote.assert_called_once_with(self.mock_session_manager.repo, discovered)
-        self.assertEqual(order[:2], ["promote", "add"])
+        mock_load.assert_not_called()
+        mock_write.assert_not_called()
 
     def _wire_repo_store(self) -> dict:
         """Backs the mocked repo's global settings with a real dict, so a roll write
@@ -2691,6 +2921,7 @@ class TestBatchExportFiltering(unittest.TestCase):
         self.mock_session_manager.state = AppState()
         self.mock_session_manager.repo = MagicMock()
         self.mock_session_manager.repo.load_file_settings.return_value = None
+        self.mock_session_manager.repo.load_file_settings_by_path.return_value = None
 
         self.mock_session_manager.state.uploaded_files = [
             {"name": "IMG_0001.cr2", "path": "/tmp/IMG_0001.cr2", "hash": "h1"},
@@ -4160,6 +4391,30 @@ class TestDiscoveryProgressPopup(unittest.TestCase):
         self.controller._on_discovery_finished([{"name": "r", "path": "/r.dng", "hash": "h1"}])
 
         self.assertEqual(order, ["finished", "thumbs"])
+
+    def test_discovery_scans_sidecars_after_the_frames_load_and_offers_after_the_scan(self):
+        from negpy.services.assets.sidecar import Sidecar, SidecarOffer, SidecarPlan
+
+        order = []
+        asset = {"name": "r", "path": "/r.dng", "hash": "h1"}
+        offer = SidecarOffer(asset, Sidecar(WorkspaceConfig(), saved_at=9.0))
+        self.controller.generate_missing_thumbnails = MagicMock()
+        self.controller._replace_after_discovery = True
+        self.mock_session_manager.add_files.side_effect = lambda _p, validated_info=None: order.append("add_files")
+        self.mock_session_manager.state.uploaded_files = [asset]
+        self.controller.sidecar_scan_requested.disconnect(self.controller.sidecar_scan_worker.scan)
+        self.controller.sidecar_scan_requested.connect(lambda gen, assets: order.append(("scan", gen)))
+
+        with (
+            patch("negpy.desktop.controller.QTimer.singleShot", side_effect=lambda _ms, fn: fn()),
+            patch("negpy.desktop.controller.offers_from_plan", return_value=[offer]),
+            patch.object(self.controller, "_show_sidecar_offers") as show,
+        ):
+            self.controller._on_discovery_finished([asset])
+            self.assertEqual(order, ["add_files", ("scan", self.controller._sidecar_scan_generation)])
+            show.assert_not_called()
+            self.controller._on_sidecar_scan_planned(self.controller._sidecar_scan_generation, SidecarPlan())
+        show.assert_called_once_with([offer])
 
     def test_thumbnail_queue_does_not_delay_a_new_folder_discovery(self):
         state = self.mock_session_manager.state
@@ -6152,6 +6407,20 @@ class TestLibrarySearch(unittest.TestCase):
 
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["name"], "2026/roll_b")
             self.assertTrue(os.path.isdir(os.path.join(d, "roll_b")))
+
+    def test_request_rename_roll_writes_queued_sidecars_before_the_folder_moves(self):
+        self._dict_repo()
+        from negpy.services.assets.rolls import recognize_folder
+
+        with tempfile.TemporaryDirectory() as d:
+            old_path = os.path.join(d, "roll_a")
+            os.mkdir(old_path)
+            roll_id = recognize_folder(self.controller.session.repo, old_path)
+            seen = []
+            with patch.object(self.controller, "flush_sidecars", side_effect=lambda: seen.append(os.path.isdir(old_path))):
+                self.controller.request_rename_roll(roll_id, "roll_b", True)
+
+            self.assertEqual(seen[0], True)
 
     def test_request_rename_roll_rehomes_the_active_rolls_paths(self):
         self._dict_repo()

@@ -76,6 +76,9 @@ DROPPED_KEYS: frozenset[str] = frozenset(
         # Slide Normalize (a metered stretch through the print curve) was retired: every slide
         # renders through the transfer curve (migrate_flat_config reads it before this pop).
         "e6_normalize",
+        # The sidecar mirror toggle is an app-wide preference, not part of an edit.
+        "sidecars_enabled",
+        "export_sidecars_enabled",
         # Batch metadata sync: Metadata cards are roll defaults, so every frame already carries the roll's values.
         "sync_to_batch",
         # The pixel-grid contact sheet; the darkroom sheet keeps its settings app-wide, not per edit.
