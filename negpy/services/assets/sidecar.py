@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, NamedTuple, Optional
 
 from negpy.domain.models import WorkspaceConfig
 from negpy.kernel.system.logging import get_logger
-from negpy.services.assets import rolls
+from negpy.services.assets import half_frame, rolls
 from negpy.services.assets.rolls import unforked_hash
 
 logger = get_logger(__name__)
@@ -554,12 +554,16 @@ def decline_sidecar_offers(repo, offers) -> None:
 
 @dataclass(frozen=True)
 class RollSidecar:
-    """One folder roll's ``.negpy-roll`` file. ``state`` holds ``rolls.PORTABLE_FIELDS``."""
+    """One folder roll's ``.negpy-roll`` file. ``state`` holds ``rolls.PORTABLE_FIELDS``.
+    ``trichrome_mode`` and ``half_frame_profile`` are None for a file that does not carry them;
+    an empty ``half_frame_profile`` is a roll with none of its own."""
 
     saved_at: float
     name: str = ""
     half_frame_mode: bool = False
     state: Dict[str, Any] = field(default_factory=dict)
+    trichrome_mode: Optional[bool] = None
+    half_frame_profile: Optional[dict] = None
 
 
 class RollSidecarOffer(NamedTuple):
@@ -580,6 +584,8 @@ def write_roll_sidecar(folder: str, sidecar: RollSidecar) -> str:
         "saved_at": sidecar.saved_at,
         "name": sidecar.name,
         "half_frame_mode": sidecar.half_frame_mode,
+        **({"trichrome_mode": sidecar.trichrome_mode} if sidecar.trichrome_mode is not None else {}),
+        **({"half_frame_profile": sidecar.half_frame_profile or None} if sidecar.half_frame_profile is not None else {}),
         **{key: sidecar.state.get(key) for key in rolls.PORTABLE_FIELDS},
     }
     _write_json(path, payload)
@@ -597,7 +603,17 @@ def load_roll_sidecar(folder: str) -> Optional[RollSidecar]:
         name=str(data.get("name") or ""),
         half_frame_mode=bool(data.get("half_frame_mode")),
         state={key: data[key] for key in rolls.PORTABLE_FIELDS if isinstance(data.get(key), dict)},
+        trichrome_mode=data["trichrome_mode"] if isinstance(data.get("trichrome_mode"), bool) else None,
+        half_frame_profile=_profile(data),
     )
+
+
+def _profile(data: Dict[str, Any]) -> Optional[dict]:
+    """The file's half-frame profile: {} for a null one, None when absent or malformed."""
+    if "half_frame_profile" not in data:
+        return None
+    value = data["half_frame_profile"]
+    return {} if value is None else half_frame.valid_half_frame_profile(value)
 
 
 def roll_sidecar_from_repo(repo, roll_id: str) -> Optional[tuple[str, RollSidecar]]:
@@ -616,7 +632,14 @@ def roll_sidecar_from_repo(repo, roll_id: str) -> Optional[tuple[str, RollSideca
     if on_disk is not None and on_disk.saved_at > saved_at:
         return None
     state = {key: entry[key] for key in rolls.PORTABLE_FIELDS if entry.get(key)}
-    return entry["folder_path"], RollSidecar(saved_at, entry.get("name") or "", rolls.roll_half_frame_mode(repo, roll_id), state)
+    return entry["folder_path"], RollSidecar(
+        saved_at,
+        entry.get("name") or "",
+        rolls.roll_half_frame_mode(repo, roll_id),
+        state,
+        rolls.roll_trichrome_mode(repo, roll_id),
+        half_frame.roll_half_frame_profile(repo, roll_id) or {},
+    )
 
 
 def export_roll_sidecar(repo, roll_id: str) -> Optional[str]:
@@ -638,7 +661,9 @@ def export_roll_sidecar(repo, roll_id: str) -> Optional[str]:
 
 def adopt_roll_sidecar(repo, roll_id: str, sidecar: RollSidecar) -> None:
     """Make the file this roll's state. The local name stays."""
-    rolls.replace_portable_state(repo, roll_id, sidecar.state, sidecar.half_frame_mode, sidecar.saved_at)
+    rolls.replace_portable_state(
+        repo, roll_id, sidecar.state, sidecar.half_frame_mode, sidecar.saved_at, sidecar.trichrome_mode, sidecar.half_frame_profile
+    )
     entry = rolls.roll_for_id(repo, roll_id)
     if entry is not None and not entry.get("name") and sidecar.name:
         rolls.rename_roll(repo, roll_id, sidecar.name)

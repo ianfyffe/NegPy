@@ -1009,11 +1009,15 @@ class TestProfilePerRoll:
         from negpy.desktop.controller import AppController
 
         repo, _store = _dict_repo()
-        ctrl = SimpleNamespace(session=SimpleNamespace(repo=repo), state=SimpleNamespace(active_roll_id="roll-a"))
+        mirrored: list = []
+        ctrl = SimpleNamespace(
+            session=SimpleNamespace(repo=repo), state=SimpleNamespace(active_roll_id="roll-a"), _mirror_roll=mirrored.append
+        )
         AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.45, 0.01, "y")
         assert AppController.half_frame_profile(ctrl)["split_axis"] == "y"
         ctrl.state.active_roll_id = None
         AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.5, 0.0, "x")
+        assert mirrored == ["roll-a"]
         assert AppController.half_frame_profile(ctrl)["split_axis"] == "x"
         ctrl.state.active_roll_id = "roll-a"
         assert AppController.half_frame_profile(ctrl)["split_axis"] == "y"
