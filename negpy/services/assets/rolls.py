@@ -5,8 +5,8 @@ folder roll that are not physically in that folder).
 
 Edits are not stored here and are not scoped by roll by default: they stay in the edits
 DB under each frame's own content hash, exactly as if no Roll existed. A Roll only
-decides which files show up when you open it -- with two exceptions. A path a user has
-explicitly forked (``forked_paths``) gets its own edit identity for that roll alone,
+decides which files show up when you open it -- with two exceptions. A frame a user has
+explicitly forked (``forked_hashes``) gets its own edit identity for that roll alone,
 suffixed onto the frame's content hash (``roll_edit_hash``), the same convention
 half-frame scans already use for their two halves. And roll-wide defaults, below, hold
 a handful of film, rig and scanning facts that describe the roll rather than one
@@ -19,7 +19,7 @@ import time
 import uuid
 from dataclasses import replace
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 from negpy.features.metadata.models import GEAR_FIELDS, PROCESS_FIELDS, SCANNING_FIELDS
 from negpy.features.process.models import neutral_axis_tuple, with_film_fields
@@ -68,8 +68,58 @@ def roll_updated_at(repo: Any, roll_id: str) -> Optional[float]:
     return float(stamp) if isinstance(stamp, (int, float)) else None
 
 
-# The roll entry fields a roll file carries. Paths, forks, locks and the id stay local.
+# The roll entry fields a roll file carries. Paths, forks, locks and the id stay local; the
+# file also carries the name and ``roll_uid``, the id every computer knows the roll by.
 PORTABLE_FIELDS = ("defaults", "normalization", "scenes", "section_pushes")
+
+
+def roll_uid(repo: Any, roll_id: str) -> str:
+    """The roll's id in its roll file; empty before the roll has written or read one."""
+    entry = roll_for_id(repo, roll_id)
+    return str(entry.get("roll_uid") or "") if entry else ""
+
+
+def set_roll_uid(repo: Any, roll_id: str, uid: str, unwritten: bool = False) -> None:
+    """Set the roll's uid, unless another folder roll here holds it. *unwritten* marks one its
+    roll file does not hold yet, a copied folder's own: until written it wins over the file's."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None or (entry.get("roll_uid") == uid and bool(entry.get("roll_uid_unwritten")) == unwritten):
+        return
+    if any(rid != roll_id and e.get("kind") == "folder" and e.get("roll_uid") == uid for rid, e in store.items()):
+        return
+    entry["roll_uid"] = uid
+    if unwritten:
+        entry["roll_uid_unwritten"] = True
+    else:
+        entry.pop("roll_uid_unwritten", None)
+    _write(repo, store)
+
+
+def roll_uid_unwritten(repo: Any, roll_id: str) -> bool:
+    entry = roll_for_id(repo, roll_id)
+    return bool(entry and entry.get("roll_uid_unwritten"))
+
+
+def former_folder_names(repo: Any, roll_id: str) -> List[str]:
+    """The names the roll's folder had before a rename here, oldest first."""
+    entry = roll_for_id(repo, roll_id)
+    names = entry.get("former_folder_names") if entry else None
+    return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+
+
+def roll_id_for_uid(repo: Any, uid: str) -> Optional[str]:
+    """The folder roll known here by *uid*, or None."""
+    if not uid:
+        return None
+    return next((rid for rid, entry in _read(repo).items() if entry.get("kind") == "folder" and entry.get("roll_uid") == uid), None)
+
+
+def name_updated_at(repo: Any, roll_id: str) -> Optional[float]:
+    """When the roll was last renamed, here or by a roll file; None before either."""
+    entry = roll_for_id(repo, roll_id)
+    stamp = entry.get("name_updated_at") if entry else None
+    return float(stamp) if isinstance(stamp, (int, float)) else None
 
 
 def roll_half_frame_mode(repo: Any, roll_id: str) -> bool:
@@ -122,6 +172,21 @@ def _folder_key(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
 
 
+def moved_path(path: str, old: str, new: str) -> str:
+    """*path* rebased from folder *old* onto *new* when it is *old* or under it, compared as
+    ``_folder_key`` compares folders; any other path comes back unchanged."""
+    if not path or not old:
+        return path
+    norm, base = os.path.normpath(path), os.path.normpath(old)
+    key, base_key = os.path.normcase(norm), os.path.normcase(base)
+    if key == base_key:
+        return new
+    prefix = base_key.rstrip(os.sep) + os.sep
+    if key.startswith(prefix):
+        return os.path.join(new, norm[len(prefix) :])
+    return path
+
+
 def folder_roll_id_for_path(repo: Any, path: str) -> Optional[str]:
     """The id of the roll recognizing *path*, or None if not yet recognized."""
     key = _folder_key(path)
@@ -144,6 +209,21 @@ def folder_rolls_holding(repo: Any, paths: List[str]) -> List[str]:
         if roll_id is not None:
             found[roll_id] = None
     return list(found)
+
+
+def name_leaf(name: str) -> str:
+    """The roll's own name, without the folder rows above it ("kentmere_400_1")."""
+    return name.rsplit(ROLL_PATH_SEP, 1)[-1]
+
+
+def with_leaf(name: str, leaf: str) -> str:
+    """*name* with its own name replaced by *leaf*; the folder rows above it stay."""
+    return f"{name.rsplit(ROLL_PATH_SEP, 1)[0]}{ROLL_PATH_SEP}{leaf}" if ROLL_PATH_SEP in name else leaf
+
+
+def folder_roll_name(path: str) -> str:
+    """The name a folder roll takes from its folder alone."""
+    return path.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1] or path
 
 
 def roll_folder_name(text: str) -> Optional[str]:
@@ -192,7 +272,7 @@ def recognize_folder(repo: Any, path: str, name: str = "") -> str:
     roll_id = uuid.uuid4().hex
     store[roll_id] = {
         "kind": "folder",
-        "name": name or _import_name(repo, path) or path.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1] or path,
+        "name": name or _import_name(repo, path) or folder_roll_name(path),
         "folder_path": path,
         "extra_paths": [],
         "created_at": time.time(),
@@ -250,22 +330,32 @@ def discover_roll_folders(parent_path: str, filters: Sequence[str]) -> List[str]
     The walk does not enter a roll folder, so its own subfolders (export output, for
     one) never become rolls. Hidden folders and folders matching *filters* are skipped.
     """
-    found = []
+    return list(iter_roll_folders(parent_path, filters))
+
+
+def iter_roll_folders(parent_path: str, filters: Sequence[str]) -> Iterator[str]:
+    """``discover_roll_folders``, walked only as far as it is read."""
     for dirpath, dirnames, _filenames in os.walk(os.path.normpath(parent_path)):
         if folder_counts(dirpath)[0]:
-            found.append(dirpath)
+            yield dirpath
             dirnames[:] = []
         else:
             dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and not matches_discovery_filter(d, filters))
-    return found
 
 
-def import_subfolders_as_rolls(repo: Any, parent_path: str, *, skip_dismissed: bool = False) -> List[str]:
+def import_subfolders_as_rolls(
+    repo: Any,
+    parent_path: str,
+    *,
+    skip_dismissed: bool = False,
+    recognize: Callable[[Any, str, str], Optional[str]] = recognize_folder,
+) -> List[str]:
     """Recognize every roll folder under *parent_path* and remember it as an import source.
 
     Idempotent per folder, so a re-run only creates the missing rolls. A roll is named by
     its path from the folder that holds *parent_path* ("20260901/kentmere_400_1").
-    *skip_dismissed* leaves out folders whose roll was deleted.
+    *skip_dismissed* leaves out folders whose roll was deleted. *recognize* takes
+    ``(repo, path, name)`` and returns the roll id, or None to leave the folder for now.
     """
     parent_path = os.path.normpath(parent_path)
     paths = discover_roll_folders(parent_path, discovery_filters(repo))
@@ -277,9 +367,14 @@ def import_subfolders_as_rolls(repo: Any, parent_path: str, *, skip_dismissed: b
     if skip_dismissed:
         dismissed = {_folder_key(p) for p in _dismissed_folders(repo)}
         paths = [p for p in paths if _folder_key(p) not in dismissed]
+    return [rid for path in paths if (rid := recognize(repo, path, imported_roll_name(path, parent_path)))]
+
+
+def imported_roll_name(path: str, parent_path: str) -> str:
+    """The name Import Subfolders gives the roll folder *path* found under *parent_path*."""
     # The name is a label, so it joins with "/" on every OS; ROLL_PATH_SEP splits it back.
-    base = os.path.dirname(parent_path)
-    return [recognize_folder(repo, path, ROLL_PATH_SEP.join(os.path.relpath(path, base).split(os.sep))) for path in paths]
+    base = os.path.dirname(os.path.normpath(parent_path))
+    return ROLL_PATH_SEP.join(os.path.relpath(path, base).split(os.sep))
 
 
 def _under(key: str, folder_key: str) -> bool:
@@ -434,6 +529,15 @@ def rolls_containing_path(repo: Any, path: str) -> List[str]:
     return out
 
 
+def relabel_roll(repo: Any, roll_id: str, name: str) -> None:
+    """Rename the roll to the name its folder gives it, leaving the name's date alone: a
+    label derived here is not a rename to carry to other computers."""
+    store = _read(repo)
+    if roll_id in store and store[roll_id].get("name") != name:
+        store[roll_id]["name"] = name
+        _write(repo, store)
+
+
 def adopt_replacement(
     repo: Any,
     old_hash: str,
@@ -472,16 +576,20 @@ def adopt_replacement(
     return forked_in
 
 
-def rename_roll(repo: Any, roll_id: str, name: str) -> None:
+def rename_roll(repo: Any, roll_id: str, name: str, when: Optional[float] = None) -> None:
+    """Rename the roll, dated *when* (now by default). The date decides which name a roll
+    file carries; it is not a change to the roll's state, so it does not stamp it."""
     store = _read(repo)
     if roll_id in store:
         store[roll_id]["name"] = name
+        store[roll_id]["name_updated_at"] = when if when is not None else time.time()
         _write(repo, store)
 
 
 def rename_folder_roll_disk(repo: Any, roll_id: str, new_name: str) -> Optional[str]:
     """Rename a folder roll's actual folder on disk to *new_name*, in its current
-    parent directory, and update the roll's own folder_path to match. Returns the
+    parent directory, and update the roll's own folder_path to match, remembering the old
+    name so a computer that knew the folder by it can follow. Returns the
     new path, or None (and nothing is touched) when the roll is not a folder roll,
     its folder is missing, a sibling is already named that, or the OS rename fails
     (no permission, a mount that refuses it). *new_name* equal to the folder's
@@ -505,6 +613,8 @@ def rename_folder_roll_disk(repo: Any, roll_id: str, new_name: str) -> Optional[
     except OSError:
         return None
     entry["folder_path"] = new_path
+    old_name = os.path.basename(os.path.normpath(old_path))
+    entry["former_folder_names"] = [*(n for n in entry.get("former_folder_names", []) if n != old_name), old_name]
     _write(repo, store)
     return new_path
 
