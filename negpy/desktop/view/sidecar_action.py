@@ -22,7 +22,5 @@ def load_edit_from_sidecar(parent, controller) -> None:
     path, _ = QFileDialog.getOpenFileName(parent, "Load Edit from Sidecar", start, "NegPy Sidecars (*.negpy)")
     if not path:
         return
-    if controller.session.load_edit_from_sidecar(path):
-        controller.set_status(f"Loaded edit from {os.path.basename(path)}", 4000)
-    else:
+    if not controller.load_edit_from_sidecar(path):
         QMessageBox.warning(parent, "Sidecar", f"{os.path.basename(path)} is not a readable NegPy sidecar.")

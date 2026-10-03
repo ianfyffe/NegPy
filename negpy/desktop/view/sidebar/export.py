@@ -127,7 +127,7 @@ class ExportSidebar(BaseSidebar):
         self.printing_notes_preview_btn.toggled.connect(lambda checked: self.controller.toggle_printing_notes(force=checked))
         self.controller.printing_notes_changed.connect(self._on_printing_notes_changed)
 
-        self.sidecars_enabled_btn.toggled.connect(lambda _: self.update_timer.start())
+        self.sidecars_enabled_btn.toggled.connect(self.controller.set_sidecars_enabled)
         self.export_sidecars_btn.clicked.connect(self._on_export_sidecars)
 
     def _on_export_sidecars(self) -> None:
@@ -935,9 +935,7 @@ class ExportSidebar(BaseSidebar):
     # --- Edit sidecars -------------------------------------------------------
 
     def _add_sidecars_section(self) -> None:
-        """Collapsible EXPORT EDITS SIDECARS section: on-export toggle + manual export, side by side."""
-        conf = self.state.config.export
-
+        """Collapsible SIDECARS section: the mirror toggle + a write-all-now action, side by side."""
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -947,13 +945,18 @@ class ExportSidebar(BaseSidebar):
 
         self.sidecars_enabled_btn = self._small_toggle(
             "fa5s.file-export",
-            "Save on Export",
-            conf.export_sidecars_enabled,
-            "When on, every export also writes a .negpy edit sidecar next to each source frame. Edits stay in the database too.",
+            "Keep Current",
+            self.state.sidecars_enabled,
+            "When on, each edit, mark and work print is mirrored to a .negpy sidecar next to its source frame. "
+            "Edits stay in the database too.",
         )
         btn_row.addWidget(self.sidecars_enabled_btn)
 
-        self.export_sidecars_btn = labeled_action("fa5s.file-code", " Export Sidecars", "Write edit sidecars for all visible frames now")
+        self.export_sidecars_btn = labeled_action(
+            "fa5s.file-code",
+            " Export Sidecars",
+            "Write a sidecar now for every visible frame with a saved edit, mark or work print",
+        )
         self.export_sidecars_btn.setObjectName("export_sidecars_btn")
         btn_row.addWidget(self.export_sidecars_btn)
 
@@ -1203,7 +1206,6 @@ class ExportSidebar(BaseSidebar):
             export_path=vals["output_path"],
             filename_pattern=vals["filename_pattern"],
             overwrite=vals["overwrite"],
-            export_sidecars_enabled=self.sidecars_enabled_btn.isChecked(),
             contact_sheet_output_path=self.cs_output_path_edit.text(),
         )
 
@@ -1276,7 +1278,7 @@ class ExportSidebar(BaseSidebar):
             # user is actively editing the field, same as ExportSettingsForm._set_text_preserving_edit.
             if not self.cs_output_path_edit.hasFocus():
                 self.cs_output_path_edit.setText(conf.contact_sheet_output_path)
-            self.sidecars_enabled_btn.setChecked(conf.export_sidecars_enabled)
+            self.sidecars_enabled_btn.setChecked(self.state.sidecars_enabled)
             self.printing_notes_preview_btn.setChecked(self.state.printing_notes)
             self.intent_btn.setCurrentIndex(self._state_intent())
             self.flat_peek_btn.setChecked(self.state.flat_peek)

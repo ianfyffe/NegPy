@@ -203,8 +203,6 @@ class ExportConfig:
 
     contact_sheet_output_path: str = ""  # empty = follow export destination rules
 
-    export_sidecars_enabled: bool = False
-
     def __post_init__(self) -> None:
         fmt = coerce_enum(ExportFormat, migrate_export_fmt(self.export_fmt), ExportFormat.JPEG)
         object.__setattr__(self, "export_fmt", fmt)

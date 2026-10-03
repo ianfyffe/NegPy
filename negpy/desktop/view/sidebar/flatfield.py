@@ -15,6 +15,8 @@ from negpy.desktop.view.styles.templates import ICON_BUTTON_WIDTH, field_label, 
 from negpy.desktop.view.widgets.file_dialogs import last_open_folder, pick_start_dir
 
 _NONE_LABEL = "— None —"
+_ADD_HINT = "Add a scan of the bare light source to enable."
+_MISSING_HINT = "This frame's profile is not on this computer. Copy it into the flatfield folder."
 _FILE_FILTER = "Reference images (*.dng *.tif *.tiff *.cr2 *.cr3 *.nef *.arw *.raf *.rw2 *.jpg *.jpeg *.png);;All files (*)"
 
 
@@ -46,7 +48,7 @@ class FlatFieldSidebar(BaseSidebar):
         # add_btn and delete_btn go on the card's FLAT FIELD CORRECTION header (ControlsPanel).
         self.layout.addLayout(row)
 
-        self.hint = hint_label("Add a scan of the bare light source to enable.")
+        self.hint = hint_label(_ADD_HINT)
         self.layout.addWidget(self.hint)
         self._refresh_profiles()
 
@@ -116,9 +118,12 @@ class FlatFieldSidebar(BaseSidebar):
             idx = self.profile_combo.findData(conf.profile_id)
             self.profile_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
+            # A saved id with no file here came from another machine's rig.
+            missing = bool(conf.profile_id) and self.profile_combo.findData(conf.profile_id) < 0
             self.enable_btn.setChecked(conf.apply)
-            self.enable_btn.setEnabled(bool(conf.profile_id))
-            self.hint.setVisible(not conf.profile_id)
+            self.enable_btn.setEnabled(bool(conf.profile_id) and not missing)
+            self.hint.setText(_MISSING_HINT if missing else _ADD_HINT)
+            self.hint.setVisible(not conf.profile_id or missing)
         finally:
             self.block_signals(False)
 
