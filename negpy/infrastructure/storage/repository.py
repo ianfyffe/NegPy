@@ -211,6 +211,16 @@ class StorageRepository(IRepository):
                 (file_hash, settings_json, file_path, updated_at if updated_at is not None else time.time()),
             )
 
+    def touch_file_settings(self, file_hash: str, updated_at: Optional[float] = None) -> None:
+        """Advance a saved edit's ``updated_at`` without changing the edit. A no-op when the
+        hash has no row. A sidecar's edit is dated by this time, so a roll-lock change, which
+        lives outside the edit but travels with it, advances it."""
+        with self._connect(self.edits_db_path) as conn:
+            conn.execute(
+                "UPDATE file_settings SET updated_at = ? WHERE file_hash = ?",
+                (updated_at if updated_at is not None else time.time(), file_hash),
+            )
+
     def load_file_settings(self, file_hash: str) -> Optional[WorkspaceConfig]:
         record = self.load_file_record(file_hash)
         return record[0] if record else None

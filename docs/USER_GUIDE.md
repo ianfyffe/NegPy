@@ -146,7 +146,7 @@ Right-click a roll for:
 
 *   **Close Roll…** (**loaded** roll only): empties the Film Strip and returns to the Library. Asks first; edits stay saved.
 *   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default). In a cloud-sync folder (Dropbox, iCloud, OneDrive) the sync can treat that rename as a delete and re-upload.
-*   **Delete…**: forgets the roll only; folder, images and edits stay. **Import Folder as a Roll…** brings it back. **Clear Library** in *Manage Database* forgets all rolls.
+*   **Delete…**: forgets the roll only; folder, images, edits and its `.negpy-roll` file stay. **Import Folder as a Roll…** brings it back and offers the roll file. **Clear Library** in *Manage Database* forgets all rolls.
 *   **Roll Analysis** (**loaded** roll only): runs Roll Analysis ([§10.5](#105-roll-analysis)) and stores the roll's baseline.
 
 #### Rolls that are not folders
@@ -990,9 +990,11 @@ The printer's record for this frame: the numbered dodge/burn masks and a card wi
 <!-- panel:export_sidecars -->
 #### Sidecars
 
-**Keep Current** mirrors each frame's edit, mark and work prints to a `.negpy` sidecar beside its source. **Export Sidecars** writes them now for every visible frame and reports failures in read-only folders. Edits always stay in the database too. Undo history, stitches, HDR merges, a roll's own copy of a frame, flat-field profiles and presets do not travel.
+**Keep Current** mirrors each frame's edit, mark and work prints to a `.negpy` sidecar beside its source, and each folder roll's settings to a `.negpy-roll` file in its folder. **Export Sidecars** writes them now for every visible frame and reports failures in read-only folders. Edits always stay in the database too. Undo history, stitches, HDR merges, a roll's own copy of a frame, flat-field profiles and presets do not travel.
 
 Sidecars carry edits between computers. A frame with no edit here loads its sidecar when its folder opens. A newer mark or work print (saved, renamed or deleted) loads without asking. Edits saved after the ones here are listed in one dialog: **Load Selected** replaces them, **Keep Mine** keeps yours and stops asking for those versions. **Load Edit from Sidecar…** (right-click a frame or the image) replaces the frame's edit with a chosen `.negpy` whatever its age, as one undo step; the frame's own sidecar also brings a newer mark or work print. The newer copy wins by its saved time, so keep the computers' clocks close.
+
+The roll file holds the card defaults, scenes, Roll Analysis baselines, the Half Frame setting and the cards each frame locks. A roll new to a computer takes it without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
 
 <!-- panel:contact_sheet -->
 #### Contact Sheet
