@@ -364,6 +364,34 @@ class StorageRepository(IRepository):
                 )
         return True
 
+    @staticmethod
+    def _like_containing(text: str) -> str:
+        escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
+
+    def repoint_file_paths(self, contains: str, move: Callable[[str], str]) -> None:
+        """Rewrite the stored path of each edit, mark and embedding to ``move(path)``. Only
+        rows whose path holds *contains* (ASCII case ignored) are read."""
+        with self._connect(self.edits_db_path) as conn:
+            for table in ("file_settings", "file_marks", "image_embeddings"):
+                rows = conn.execute(
+                    f"SELECT rowid, file_path FROM {table} WHERE file_path LIKE ? ESCAPE '\\'", (self._like_containing(contains),)
+                ).fetchall()
+                moved = [(new, rowid) for rowid, path in rows if (new := move(path)) != path]
+                conn.executemany(f"UPDATE {table} SET file_path = ? WHERE rowid = ?", moved)
+
+    def repoint_saved_configs(self, contains: str, move: Callable[[dict], Optional[dict]]) -> None:
+        """Replace each saved edit, work print and history step's flat config with
+        ``move(config)`` where that is not None. Only rows whose JSON holds *contains* are
+        read."""
+        with self._connect(self.edits_db_path) as conn:
+            for table in ("file_settings", "work_prints", "edit_history"):
+                rows = conn.execute(
+                    f"SELECT rowid, settings_json FROM {table} WHERE settings_json LIKE ? ESCAPE '\\'", (self._like_containing(contains),)
+                ).fetchall()
+                moved = [(json.dumps(new, default=str), rowid) for rowid, text in rows if (new := move(json.loads(text))) is not None]
+                conn.executemany(f"UPDATE {table} SET settings_json = ? WHERE rowid = ?", moved)
+
     def save_work_print(self, file_hash: str, name: str, settings: WorkspaceConfig) -> None:
         """Store (or replace) a named version of this frame's edit."""
         with self._connect(self.edits_db_path) as conn:

@@ -1,3 +1,4 @@
+from functools import partial
 from unittest.mock import MagicMock
 
 import pytest
@@ -5,6 +6,7 @@ from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
+from negpy.desktop.controller import AppController
 from negpy.desktop.view.sidebar.library_tree import _FOLDER_ROLE, LibraryTree
 from negpy.desktop.view.styles.theme import THEME
 from negpy.infrastructure.storage.repository import StorageRepository
@@ -27,6 +29,7 @@ def _make(tmp_path) -> LibraryTree:
     repo.initialize()
     controller = MagicMock()
     controller.session.repo = repo
+    controller.request_rename_roll.side_effect = partial(AppController.request_rename_roll, controller)
     return LibraryTree(controller)
 
 
@@ -369,11 +372,10 @@ def test_renaming_a_folder_roll_shows_the_rename_dialog_not_the_plain_one(widget
     roll_id = recognize_folder(widget.repo, str(tree_dirs / "roll_a"))
     _FakeRenameDialog._outcome = ("roll_a_renamed", True)
     monkeypatch.setattr("negpy.desktop.view.sidebar.library_tree.RenameRollDialog", _FakeRenameDialog)
-    widget.controller.request_rename_roll.return_value = True
 
     widget._rename_roll(roll_id, "roll_a")
 
-    widget.controller.request_rename_roll.assert_called_once_with(roll_id, "roll_a_renamed", True)
+    widget.controller.request_rename_roll.assert_called_once_with(roll_id, "roll_a_renamed", True, prefix="")
 
 
 def test_renaming_a_folder_roll_without_the_checkbox_never_touches_disk(widget, tree_dirs, monkeypatch):
@@ -383,7 +385,7 @@ def test_renaming_a_folder_roll_without_the_checkbox_never_touches_disk(widget, 
 
     widget._rename_roll(roll_id, "roll_a")
 
-    widget.controller.request_rename_roll.assert_not_called()
+    widget.controller.request_rename_roll.assert_called_once_with(roll_id, "roll_a_renamed", False, prefix="")
     assert roll_for_id(widget.repo, roll_id)["name"] == "roll_a_renamed"
     assert roll_for_id(widget.repo, roll_id)["folder_path"] == str(tree_dirs / "roll_a")
     assert (tree_dirs / "roll_a").exists()  # nothing on disk moved
@@ -403,7 +405,6 @@ def test_renaming_a_folder_roll_disk_failure_warns_and_does_not_reload(widget, t
     roll_id = recognize_folder(widget.repo, str(tree_dirs / "roll_a"))
     _FakeRenameDialog._outcome = ("roll_b", True)  # already taken, per tree_dirs
     monkeypatch.setattr("negpy.desktop.view.sidebar.library_tree.RenameRollDialog", _FakeRenameDialog)
-    widget.controller.request_rename_roll.return_value = False
     warned = []
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a)))
     reloaded = []
@@ -440,7 +441,7 @@ def test_renaming_a_virtual_roll_never_renames_a_folder(widget, monkeypatch):
 
     widget._rename_roll(roll_id, "Portra")
 
-    widget.controller.request_rename_roll.assert_not_called()
+    widget.controller.request_rename_roll.assert_called_once_with(roll_id, "Portra 400", False, prefix="")
 
 
 def test_the_rename_dialog_hides_the_disk_row_for_a_virtual_roll(qapp):
