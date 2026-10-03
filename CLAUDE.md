@@ -35,7 +35,7 @@ NegPy is a film-negative processing desktop app (PyQt6 + WebGPU). Images flow th
 
 Edits persist in SQLite (`edits.db`, keyed by content hash, each row stamped `updated_at`), optionally mirrored to `.negpy` JSON sidecars next to sources (`negpy/services/assets/sidecar.py`). A sidecar is a format-2 envelope (`saved_at`, `edit`, `mark`, `mark_at`, `work_prints`, `deleted_work_prints`); a bare config only fills a DB miss. `SidecarMirror.flush` writes a frame from its rows after it takes the file's newer mark and work prints. Discovery reads the files off the UI thread (`plan_frame_sidecars`), fills DB misses, merges newer marks and work prints (`apply_sidecar_plan`) and offers newer edits; the DB wins until the user loads one.
 
-A frame's sidecar may add its locks in its folder roll (`roll_locks`, `roll_cards`; `restore_roll_locks`). A folder roll mirrors to `<folder>/.negpy-roll` (`roll_sidecar_from_repo`, never over a newer file), read before each discovery (`controller._read_roll_sidecars`).
+A frame's sidecar may add its locks in its folder roll (`roll_locks`, `roll_cards`; `restore_roll_locks`). A folder roll mirrors to `<folder>/.negpy-roll`, read before each discovery (`controller._read_roll_sidecars`). `sidecar.plan_roll_file_write` writes its state only over an older file and its identity (`roll_uid`, the name's leaf with `name_at`, `former_names`) either way; another computer follows a folder rename by it (`follow.roll_moved_to`).
 
 On Windows, `desktop.py` checks data-folder access before it imports app configuration. A blocked default folder opens a native dialog that suggests Local AppData or another folder; no data is copied. The choice is saved under Local AppData and outranks Documents; `NEGPY_USER_DIR` outranks it.
 

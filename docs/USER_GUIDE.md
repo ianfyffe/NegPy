@@ -148,7 +148,7 @@ Importing never changes the folder. Reorganize on disk, then import again (or **
 Right-click a roll for:
 
 *   **Close Roll…** (loaded roll only): empties the Film Strip. Edits stay saved.
-*   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default). A cloud-sync folder (Dropbox, iCloud, OneDrive) can treat that rename as a delete and upload again.
+*   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default). Your other computers follow that rename (Export → Sidecars). A cloud-sync folder (Dropbox, iCloud, OneDrive) can treat that rename as a delete and upload again.
 *   **Delete…**: forgets the roll only; folder, images, edits and its `.negpy-roll` file stay. **Import Folder as a Roll…** brings it back and offers the roll file. **Clear Library** in *Manage Database* forgets all rolls.
 *   **Roll Analysis** (loaded roll only): runs Roll Analysis ([§10.5](#105-roll-analysis)).
 
@@ -1005,7 +1005,7 @@ The printer's record for this frame, as described under Dodge & Burn. **Preview*
 
 When a folder opens, a frame with no edit in the database takes its sidecar, and a newer mark or work print (saved, renamed or deleted) loads without asking. Edits saved after the ones here are listed in one dialog: **Load Selected** replaces them, and **Keep Mine** keeps yours and stops asking for those versions. The newer copy wins by its saved time, so keep the computers' clocks close. **Load Edit from Sidecar…** (right-click a frame) replaces the frame's edit with a chosen `.negpy`, as one undo step; the frame's own sidecar also brings its newer mark and work prints.
 
-The roll file holds the card defaults, scenes, Roll Analysis baselines, Half Frame and Trichrome Mode, the half-frame crop and split and the files removed from the roll; each frame's sidecar holds the cards it locks. A roll new to a computer takes it without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
+The roll file holds the card defaults, scenes, Roll Analysis baselines, Half Frame and Trichrome Mode, the half-frame crop and split and the files removed from the roll; each frame's sidecar holds the cards it locks. A roll new to a computer takes it without asking; a newer one is listed first in the dialog as **Roll settings**. The file also gives the roll one id on every computer: a rename reaches the others without a dialog, and when a folder is renamed on disk the others follow it on **↻**, import or open, keeping everything. A copied folder becomes a roll of its own. A virtual roll has no roll file.
 
 <!-- panel:contact_sheet -->
 #### Contact Sheet

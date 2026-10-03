@@ -56,7 +56,8 @@ class SessionPanel(QWidget):
     def _connect_signals(self) -> None:
         self.library_tree.rolls_changed.connect(self._on_rolls_changed)
         self.file_browser.library_requested.connect(self.show_library)
-        self.controller.library_cleared.connect(self._on_library_cleared)
+        self.controller.library_cleared.connect(self._reload_library)
+        self.controller.rolls_updated.connect(self._reload_library)
 
     def show_library(self, ask_if_unset: bool = True) -> None:
         """Expand the library section, offering an import when there is no roll yet.
@@ -73,7 +74,7 @@ class SessionPanel(QWidget):
         # library that no longer exists.
         self.controller.invalidate_library_walk()
 
-    def _on_library_cleared(self) -> None:
+    def _reload_library(self) -> None:
         self.library_tree.reload()
         self.controller.invalidate_library_walk()
 
