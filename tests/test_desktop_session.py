@@ -1205,6 +1205,7 @@ class TestDesktopSessionSync(unittest.TestCase):
                 "stitch_transforms": [[1, 0, 0], [0, 1, 0]],
                 "stitch_canvas": [100, 100],
                 "stitch_sizes": [[50, 100], [50, 100]],
+                "stitch_triplets": [[_native("/scans/roll_a/1g.tif"), _native("/scans/roll_a/1b.tif")], ["", ""]],
             },
         ]
 
@@ -1214,6 +1215,7 @@ class TestDesktopSessionSync(unittest.TestCase):
         self.assertEqual(triplet["green_path"], _native("/scans/roll_b/g.tif"))
         self.assertEqual(triplet["blue_path"], _native("/scans/roll_b/b.tif"))
         self.assertEqual(stitch["stitch_paths"], [_native("/scans/roll_b/1.tif"), _native("/scans/roll_b/2.tif")])
+        self.assertEqual(stitch["stitch_triplets"], [[_native("/scans/roll_b/1g.tif"), _native("/scans/roll_b/1b.tif")], ["", ""]])
 
     def test_rehome_folder_paths_is_a_noop_when_nothing_matches(self):
         self.session.state.uploaded_files = [{"name": "c.tif", "path": "/elsewhere/c.tif", "hash": "hc"}]
