@@ -198,3 +198,40 @@ def test_a_changed_member_outside_the_discovery_is_still_caught(tmp_path):
     assert worker._attach_restored_triplets([red], record)[0]["name"] == "f1_r (RGB)"
     (tmp_path / "f1_g.raw").write_bytes(b"recaptured" * 64)
     assert worker._attach_restored_triplets([red], record)[0]["name"] == "f1_r.raw"
+
+
+def test_a_file_claimed_twice_goes_to_the_first_triplet(tmp_path):
+    names = ("r1", "g1", "b1", "b2")
+    for n in names:
+        (tmp_path / n).write_bytes(b"x")
+    p = {n: str(tmp_path / n) for n in names}
+    assets = [{"name": p[n], "path": p[n], "hash": p[n]} for n in names]
+    triplets = {p["r1"]: [p["g1"], p["b1"]], p["g1"]: [p["b2"], p["r1"]]}
+
+    out = AssetDiscoveryWorker()._attach_restored_triplets(assets, triplets)
+    assert [(a["path"], a.get("green_path")) for a in out] == [(p["r1"], p["g1"]), (p["b2"], None)]
+
+
+def test_restored_triplets_count_as_assembled_in_the_report(tmp_path, monkeypatch):
+    """A roll whose triplets all came from the store is not one where nothing assembled."""
+    from tests.test_rgbscan import BLUE, GREEN, RED, _fake_probes
+
+    names = ["f1_r.raw", "f1_g.raw", "f1_b.raw", "stray_r.raw"]
+    for n in names:
+        (tmp_path / n).write_bytes(n.encode() * 64)
+    _fake_probes(monkeypatch, {n: {"r": RED, "g": GREEN, "b": BLUE}[n[-5]] for n in names})
+    p = {n: str(tmp_path / n) for n in names}
+
+    worker = AssetDiscoveryWorker()
+    reports: list = []
+    worker.rgb_grouped.connect(reports.append)
+    worker.finished.connect(lambda assets: None)
+    worker.process(
+        AssetDiscoveryTask(
+            paths=[str(tmp_path)],
+            supported_extensions=(".raw",),
+            rgb_scan=True,
+            restore_triplets={p["f1_r.raw"]: [p["f1_g.raw"], p["f1_b.raw"], True]},
+        )
+    )
+    assert [(r["made"], r["loose"]) for r in reports] == [(1, 1)]
