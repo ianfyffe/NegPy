@@ -21,13 +21,14 @@ Five behaviours of the library shape this module; each is guarded below:
   buffer fills — the X-T5 dies at exactly shot #13, ~1 GB. See the delete in `capture`.
 
 Vendors name the same control differently and expose different subsets of it, so every
-property is looked up rather than assumed — see `_PROPERTIES` and `_MAGNIFIERS`. Only Sony
-bodies have been tested.
+property is looked up rather than assumed — see `_PROPERTIES`, `_MAGNIFIERS` and
+`_AUTOFOCUS`. Only Sony bodies have been tested; the autofocus drive only on a Nikon D7100.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -91,6 +92,41 @@ _MAGNIFIERS = (
 #: Driver entries whose magnifier stops the preview: the body answers every frame request "Device Busy"
 #: until the ratio is back at full frame. The preview loop catches an unlisted body after one stalled frame.
 _STALLING_MAGNIFIER_DRIVERS = frozenset({"Nikon DSC D3300"})
+
+
+@dataclass(frozen=True)
+class _Autofocus:
+    """How one vendor exposes a one-shot autofocus drive.
+
+    `hold_s > 0` means the property is a half-press that the host must release: write 1, wait,
+    write 0. Zero means one write runs the whole drive and returns when it is done.
+    """
+
+    name: str
+    #: Accept the property only as a toggle. Nikon publishes an `autofocus` *radio* under the
+    #: same name as Sony's drive; it sets a library-side "AF on capture" flag and moves nothing.
+    toggle_only: bool = False
+    hold_s: float = 0.0
+
+
+#: How long a Sony half-press is held before release. The drive reports nothing back, so the
+#: hold has to outlast the lens.
+_SONY_AF_HOLD_S = 1.5
+
+#: Pause before a refused half-press release is sent again.
+_AF_RELEASE_RETRY_S = 0.2
+
+#: How long after a drive an empty preview frame is not read as a stalled magnifier. A real
+#: stall is still caught at the first empty frame after it.
+_AF_SETTLE_S = 3.0
+
+#: Tried in order: the first present wins. Nikon blocks inside the library until the drive
+#: ends and refuses with an error when it cannot lock; Canon and Fujifilm run one cycle per
+#: write. Olympus and Panasonic expose only manual-focus drives.
+_AUTOFOCUS = (
+    _Autofocus(name="autofocusdrive"),  # PTP_VENDOR_NIKON, PTP_VENDOR_CANON, PTP_VENDOR_FUJI
+    _Autofocus(name="autofocus", toggle_only=True, hold_s=_SONY_AF_HOLD_S),  # PTP_VENDOR_SONY
+)
 
 #: Where the camera should put the file it just took. Tethered capture wants it in memory,
 #: not on a card: Canon and Nikon default to the card and fail outright without one.
@@ -345,6 +381,10 @@ class GphotoCamera:
         self._magnifier_engaged = False
         self._magnifier_stalls = False
         self._aim_warned = False
+        self._autofocus: Optional[_Autofocus] = None
+        self._autofocus_probed = False
+        self._af_held = False  # a half-press release is owed to the body
+        self._af_quiet_until = 0.0  # monotonic deadline; an autofocus drive is in flight or settling
         self._names: dict[str, Optional[str]] = {}  # settings key → this body's property name
         self._position = (_GRID_W // 2, _GRID_H // 2)
 
@@ -429,6 +469,7 @@ class GphotoCamera:
         if prev is not None and prev.is_alive():
             prev.join(timeout=3.0)  # let a post-shot drain finish before the handle goes away
         with self._lock:
+            self._release_owed_autofocus()
             self._alive = False
             if self._camera is not None:
                 try:
@@ -678,10 +719,13 @@ class GphotoCamera:
     def _release_stalled_magnifier(self) -> bool:
         """Switch off a magnifier that stopped the stream and retire it for this session.
 
-        Returns False when no magnifier is engaged, so the empty frame has another cause.
+        Returns False when no magnifier is engaged or an autofocus drive is in flight or settling,
+        so the empty frame has another cause.
         """
         with self._lock:
             if not self._magnifier_engaged or self._magnifier is None:
+                return False
+            if time.monotonic() < self._af_quiet_until:
                 return False
             logger.warning("gphoto2: %r stopped the preview stream; magnifier disabled", self._magnifier.ratio)
             self._write_magnifier(self._magnifier_off)
@@ -719,6 +763,90 @@ class GphotoCamera:
                 logger.info("gphoto2: %r cannot be aimed; magnifying at the body's own position", spec.ratio)
             self._write_magnifier(self._magnifier_ratios[0])
 
+    # ----- autofocus -------------------------------------------------------------
+
+    def _probe_autofocus(self) -> Optional[_Autofocus]:
+        """Find this body's autofocus drive, or None. Probed once per session, so a read that
+        fails during the probe reads as no drive until the camera reopens. Raises `GphotoError`
+        when the camera cannot open."""
+        if self._autofocus_probed:
+            return self._autofocus
+        camera = self._require()
+        self._autofocus_probed = True
+        for spec in _AUTOFOCUS:
+            try:
+                widget = camera.get_single_config(spec.name)
+            except self._gp.GPhoto2Error:
+                continue
+            if spec.toggle_only and widget.get_type() != self._gp.GP_WIDGET_TOGGLE:
+                continue
+            self._autofocus = spec
+            logger.info("gphoto2: autofocus drive via %r", spec.name)
+            return spec
+        logger.info("gphoto2: this body has no autofocus drive")
+        return None
+
+    def has_autofocus(self) -> bool:
+        with self._lock:
+            return self._probe_autofocus() is not None
+
+    def autofocus(self) -> bool:
+        """Drive the autofocus once. True when the drive completed, False when the body
+        answered but could not lock or let go. Raises `GphotoError` when the body has no
+        drive, stopped answering or the session closed during the drive."""
+        try:
+            with self._lock:
+                spec = self._probe_autofocus()
+                if spec is None:
+                    raise GphotoError("this camera offers no autofocus control over USB")
+                self._af_quiet_until = math.inf
+                # A refused press can still engage the body, so the release is owed from here on.
+                self._af_held = spec.hold_s > 0
+                pressed = self._write_autofocus(spec, 1)
+            if spec.hold_s <= 0:
+                return pressed
+            if pressed:
+                time.sleep(spec.hold_s)  # lock released: the preview keeps streaming while the lens settles
+            return self._release_autofocus(spec) and pressed
+        finally:
+            self._af_quiet_until = time.monotonic() + _AF_SETTLE_S
+
+    def _release_autofocus(self, spec: _Autofocus) -> bool:
+        for attempt in range(2):
+            if attempt:
+                time.sleep(_AF_RELEASE_RETRY_S)
+            with self._lock:
+                if self._write_autofocus(spec, 0):
+                    self._af_held = False
+                    return True
+        logger.warning("gphoto2: could not release the %r half-press; the next capture or close sends it again", spec.name)
+        return False
+
+    def _release_owed_autofocus(self) -> None:
+        """Send a half-press release that `autofocus` could not deliver. Best effort."""
+        if not self._af_held or self._autofocus is None or self._camera is None or not self._alive:
+            return
+        try:
+            if self._write_autofocus(self._autofocus, 0):
+                self._af_held = False
+        except Exception as exc:  # noqa: BLE001 — the caller goes on either way
+            logger.warning("gphoto2: could not release the %r half-press: %s", self._autofocus.name, exc)
+
+    def _write_autofocus(self, spec: _Autofocus, value: int) -> bool:
+        camera = self._camera  # never reopen: a session closed during the drive stays closed
+        if camera is None:
+            raise GphotoError("the camera session closed during autofocus")
+        try:
+            widget = camera.get_single_config(spec.name)
+            widget.set_value(value)
+            camera.set_single_config(spec.name, widget)
+            return True
+        except self._gp.GPhoto2Error as exc:
+            if self._camera_answers():
+                logger.warning("gphoto2: autofocus via %r did not lock: %s", spec.name, exc)
+                return False
+            raise GphotoError(f"autofocus failed and the camera stopped answering: {exc}") from exc
+
     # ----- capture ---------------------------------------------------------------
 
     def _drain_events(self, budget_s: Optional[float] = None) -> None:
@@ -752,6 +880,7 @@ class GphotoCamera:
         try:
             with self._lock:
                 camera = self._require()
+                self._release_owed_autofocus()  # a held half-press blocks the still
                 t0 = time.perf_counter()
                 if shutter:
                     name = self._property("shutter")
@@ -994,6 +1123,9 @@ class GphotoCamera:
     def _publish_settings(self) -> None:
         try:
             payload = self.read_settings()
+            # Availability rides along so the scan window can gate its Focus button without
+            # a camera round trip of its own.
+            payload["autofocus"] = {"available": self.has_autofocus()}
         except Exception as exc:  # noqa: BLE001
             logger.warning("gphoto2 settings: %s", exc)
             return

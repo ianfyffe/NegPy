@@ -12,7 +12,9 @@ from unittest.mock import MagicMock
 import pytest
 from PyQt6.QtWidgets import QApplication
 
+from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.scanlight import ScanlightSidebar
+from negpy.desktop.view.styles.templates import wrap_tooltip
 from negpy.infrastructure.capture.settings import ScanlightSettings, WhiteCaptureMode
 from negpy.services.capture.presets import ScanlightPreset
 
@@ -106,7 +108,7 @@ def test_update_settings_from_ui_reads_every_widget():
 
 def test_live_view_popup_has_capture_toolbar():
     w = _sidebar()
-    for attr in ("scan_btn", "retake_btn", "status"):
+    for attr in ("scan_btn", "focus_btn", "retake_btn", "status"):
         assert hasattr(w.lv_window, attr), attr
     assert not hasattr(w.lv_window, "zoom_btn")  # digital zoom removed
     assert not hasattr(w.lv_window, "mag_btn")  # magnifier button removed (click-to-magnify)
@@ -140,6 +142,91 @@ def test_magnifier_click_ignored_when_not_streaming():
     w = _sidebar()
     w._on_magnifier_click(0.5, 0.5)  # live view off → no-op
     assert not w.controller.set_focus_magnifier_pos.called
+
+
+def _streaming(w):
+    w.lv_btn.blockSignals(True)
+    w.lv_btn.setChecked(True)  # pretend live view is streaming
+    w.lv_btn.blockSignals(False)
+
+
+def test_focus_button_drives_autofocus_once_and_reports_the_outcome():
+    w = _sidebar()
+    _streaming(w)
+    w._on_focus()
+    w.controller.autofocus.assert_called_once_with()
+    assert w._focusing
+    assert not w.lv_window.focus_btn.isEnabled()
+    assert "Focusing" in w.lv_window.focus_btn.text()
+    w._on_focus()  # a second press while one is in flight is dropped
+    w.controller.autofocus.assert_called_once_with()
+
+    w._on_autofocus_finished(True, "Autofocus done.")
+    assert not w._focusing
+    assert w.lv_window.focus_btn.text().strip() == "Focus"
+    assert w.status_strip.message() == "Autofocus done."
+
+    w._on_autofocus_finished(False, "The camera could not focus.")
+    assert w.status_strip.message().startswith("⚠")
+
+
+def test_focus_button_is_ignored_when_not_streaming_or_mid_scan():
+    w = _sidebar()
+    w._on_focus()  # live view off
+    _streaming(w)
+    w._scanning = True
+    w._on_focus()  # a drive queued behind a triplet would refocus after the shots
+    assert not w.controller.autofocus.called
+
+
+def test_focus_button_enables_only_once_the_body_reports_a_drive():
+    w = _sidebar()
+    w._camera_verified = True
+    w._apply_gating()
+    assert not w.lv_window.focus_btn.isEnabled()
+    w._autofocus_available = True
+    w._apply_gating()
+    assert w.lv_window.focus_btn.isEnabled()
+    btn = w.lv_window.focus_btn
+    assert btn.toolTip() == wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, "live_view_focus"))
+
+
+def test_a_gated_focus_button_keeps_the_drive_tooltip():
+    w = _sidebar()
+    w._camera_verified = True
+    w._autofocus_available = True
+    w._scanning = True
+    w._apply_gating()
+    btn = w.lv_window.focus_btn
+    assert not btn.isEnabled()
+    assert btn.toolTip() == wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, "live_view_focus"))
+
+
+def test_stopping_live_view_forgets_the_autofocus_drive():
+    w = _sidebar()
+    w._camera_verified = True
+    w._autofocus_available = True
+    w._apply_gating()
+    assert w.lv_window.focus_btn.isEnabled()
+    w._on_live_view_toggled(False)
+    assert not w._autofocus_available
+    assert not w.lv_window.focus_btn.isEnabled()
+
+
+def test_settings_refresh_reads_autofocus_availability(tmp_path, monkeypatch):
+    import json
+
+    import negpy.desktop.view.sidebar.scanlight as sl
+
+    p = tmp_path / "settings.json"
+    monkeypatch.setattr(sl, "default_settings_path", lambda: str(p))
+    w = _sidebar()
+    w._camera_verified = True
+    for available in (True, False):
+        p.write_text(json.dumps({"autofocus": {"available": available}}))
+        w._refresh_camera_settings()
+        assert w._autofocus_available is available
+        assert w.lv_window.focus_btn.isEnabled() is available
 
 
 def test_builtin_white_preset_sets_white_mode():
@@ -1415,9 +1502,9 @@ def test_calibration_refuses_rather_than_writing_a_foreign_shutter_label(tmp_pat
     assert not w._calibrating_preset  # the run never started
 
 
-@pytest.mark.parametrize("key, signal", [("S", "scanRequested"), ("R", "retakeRequested")])
+@pytest.mark.parametrize("key, signal", [("S", "scanRequested"), ("F", "focusRequested"), ("R", "retakeRequested")])
 def test_live_view_letter_keys_win_over_main_window_shortcuts(key, signal):
-    # The main window binds S and R too, and on macOS it sees a panel's keys.
+    # The main window binds S, F and R too, and on macOS it sees a panel's keys.
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QKeySequence, QShortcut
     from PyQt6.QtTest import QTest
@@ -1430,6 +1517,7 @@ def test_live_view_letter_keys_win_over_main_window_shortcuts(key, signal):
     main_fired = []
     QShortcut(QKeySequence(key), main).activated.connect(lambda: main_fired.append(key))
     win = LiveViewWindow(main)
+    win.set_autofocus_available(True)
     float_over_app(win, platform="darwin")
     fired = []
     getattr(win, signal).connect(lambda: fired.append(key))

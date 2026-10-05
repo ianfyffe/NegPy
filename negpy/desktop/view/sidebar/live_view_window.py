@@ -1,6 +1,6 @@
 """Large pop-out window for the Scanlight live view.
 
-Hosts a `RoiImageLabel` plus an inline toolbar (Scan / Retake), a capture progress bar and a status line,
+Hosts a `RoiImageLabel` plus an inline toolbar (Scan / Focus / Retake), a capture progress bar and a status line,
 so a whole roll can be framed, focused, and scanned without switching back to the
 side panel. The live image carries a magnifier cursor: a click aims the camera
 focus magnifier at that spot, a double-click returns to full frame. The buttons
@@ -139,6 +139,7 @@ class LiveViewWindow(QDialog):
 
     closed = pyqtSignal()
     scanRequested = pyqtSignal()
+    focusRequested = pyqtSignal()
     retakeRequested = pyqtSignal()
 
     def __init__(self, parent=None, *, repo=None) -> None:
@@ -153,8 +154,10 @@ class LiveViewWindow(QDialog):
         bar = QHBoxLayout()
         self.scan_btn = labeled_action("fa5s.camera-retro", " Scan", "Capture this frame, or stop the capture")
         self.scan_btn.setFixedHeight(SCAN_BUTTON_HEIGHT)
+        self.focus_btn = labeled_action("fa5s.bullseye", " Focus", "Drive the camera's autofocus once")
         self.retake_btn = labeled_action("fa5s.redo", " Retake", "Re-capture the current frame without advancing the counter")
         bar.addWidget(self.scan_btn, 2)
+        bar.addWidget(self.focus_btn, 1)
         bar.addWidget(self.retake_btn, 1)
         layout.addLayout(bar)
 
@@ -230,20 +233,25 @@ class LiveViewWindow(QDialog):
         layout.addWidget(self.status)
 
         self.scan_btn.clicked.connect(lambda: self.scanRequested.emit())
+        self.focus_btn.clicked.connect(lambda: self.focusRequested.emit())
         self.retake_btn.clicked.connect(lambda: self.retakeRequested.emit())
 
         # Pin Scan as the dialog's permanent default button. Without this, Qt hands "default"
         # status to whichever autoDefault button was clicked most recently, so pressing Retake
         # once made Enter keep retaking until Scan was clicked again to reclaim it (issue #997).
-        pin_dialog_default(self.scan_btn, self.retake_btn)
+        pin_dialog_default(self.scan_btn, self.retake_btn, self.focus_btn)
 
         # Plain letter keys are safe: the pop-up has no text fields.
-        self._key_buttons = {"live_view_scan": self.scan_btn, "live_view_retake": self.retake_btn}
+        self._key_buttons = {"live_view_scan": self.scan_btn, "live_view_focus": self.focus_btn, "live_view_retake": self.retake_btn}
+        self._autofocus_supported = False
         remember_dialog_geometry(self, repo, "live_view")
+        self.set_autofocus_available(False)
 
     def apply_shortcut_tooltips(self) -> None:
         for action_id, btn in self._key_buttons.items():
-            btn.setToolTip(wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, action_id)))
+            if btn is not self.focus_btn:
+                btn.setToolTip(wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, action_id)))
+        self._apply_focus_tooltip()
 
     def _key_button(self, ev):
         modifiers = ev.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
@@ -262,6 +270,25 @@ class LiveViewWindow(QDialog):
             super().keyPressEvent(ev)
         elif not ev.isAutoRepeat():
             btn.click()
+
+    def _apply_focus_tooltip(self) -> None:
+        if self._autofocus_supported:
+            tip = tooltip_with_shortcut(self.focus_btn.plain_tooltip, "live_view_focus")
+        else:
+            tip = "This camera offers no autofocus control over USB"
+        self.focus_btn.setToolTip(wrap_tooltip(tip))
+
+    def set_autofocus_available(self, supported: bool, enabled: bool = True) -> None:
+        """Enable Focus when the body has an autofocus drive (`supported`) and `enabled` allows it."""
+        self._autofocus_supported = supported
+        self.focus_btn.setEnabled(supported and enabled)
+        self._apply_focus_tooltip()
+
+    def set_focusing(self, active: bool) -> None:
+        """Hold the button down while a drive is in flight."""
+        self.focus_btn.setText(" Focusing…" if active else " Focus")
+        if active:
+            self.focus_btn.setEnabled(False)
 
     def set_preview_available(self, available: bool, reason: str = "") -> None:
         """Swap the preview pane for an explanation on bodies that cannot stream.
