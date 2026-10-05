@@ -73,6 +73,10 @@ automatically. There is no address to type, no login and no pairing.
 
 **Frame and focus.** Open **Live View & Scan**. Click anywhere on the image to aim the
 camera's *hardware* focus magnifier at that spot. Click again to return to the full frame.
+**Focus** (or `F`) drives the camera's autofocus once and reports whether it locked. A
+tethered body ignores its own shutter button, so this is the way to autofocus without
+unplugging. The button is grayed while a scan runs and on a body that offers no autofocus
+over USB.
 The **Focus meter** under the image reads live sharpness against the best value since the
 last click: turn the focus ring past best focus, then back until it reads **at peak**. It
 works on every body with live view.
@@ -173,6 +177,13 @@ is film-dye crosstalk, which the density-domain **Crosstalk** matrix handles (se
   comes from the camera, and the still is taken into memory rather than onto a card. Canon
   and Nikon default to the card and will not shoot without one. Reports from other brands
   are very welcome.
+- **The autofocus drive depends on the vendor.** Nikon, Canon and Fujifilm expose
+  `autofocusdrive`, one write per cycle; Nikon reports "out of focus" as a failure, which
+  NegPy shows as a status and keeps the session. Sony exposes `autofocus`, a shutter
+  half-press that NegPy holds briefly and releases; a release the body refuses is sent
+  again before the next shot. Olympus and Panasonic offer only manual drives, so the button
+  stays grayed. The Nikon path is verified on a D7100; it needs the lens and the body on AF
+  and the live-view focus mode on AF-S. Canon, Fujifilm and Sony are untested on hardware.
 - **The focus magnifier depends on the vendor.** Sony packs the zoom ratio and the target
   point into one property, so a click both magnifies *and* aims. Canon (`eoszoom`) and
   Nikon (`liveviewimagezoomratio`) split them, and their coordinate space is unknown here,

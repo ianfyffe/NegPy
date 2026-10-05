@@ -280,6 +280,7 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "undo": ShortcutEntry("Ctrl+Z", "Undo", "Actions"),
     "redo": ShortcutEntry("Ctrl+Y", "Redo", "Actions"),
     "live_view_scan": ShortcutEntry("S", "Scan, or stop the capture", "Camera Live View", LIVE_VIEW),
+    "live_view_focus": ShortcutEntry("F", "Run the camera's autofocus once", "Camera Live View", LIVE_VIEW),
     "live_view_retake": ShortcutEntry("R", "Retake the current frame", "Camera Live View", LIVE_VIEW),
     "show_shortcuts": ShortcutEntry("?", "Show shortcuts", "Help"),
     "show_tour": ShortcutEntry("", "Take the tour: a guided walk through NegPy, one chapter at a time", "Help"),

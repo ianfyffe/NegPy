@@ -36,7 +36,7 @@ class _Widget:
         self.value, self.choices, self.readonly, self.kind = value, choices, readonly, kind
 
     def get_type(self):
-        return {"radio": FakeGP.GP_WIDGET_RADIO, "text": FakeGP.GP_WIDGET_TEXT}[self.kind]
+        return {"radio": FakeGP.GP_WIDGET_RADIO, "text": FakeGP.GP_WIDGET_TEXT, "toggle": FakeGP.GP_WIDGET_TOGGLE}[self.kind]
 
     def get_readonly(self):
         return self.readonly
@@ -115,6 +115,11 @@ class _Camera:
     def set_single_config(self, name, widget):
         if self._fake.reject_writes:
             raise _Err("[-2] bad parameters")
+        if self._fake.af_fails and name in ("autofocusdrive", "autofocus") and widget.pending == 1:
+            raise _Err("[-1] Unspecified error")  # Nikon "Out of Focus" reaches the binding as this
+        if self._fake.af_release_fails and name == "autofocus" and widget.pending == 0:
+            self._fake.af_release_attempts += 1
+            raise _Err("[-1] Unspecified error")
         self._fake.writes.append((name, widget.pending))
         self._fake.settle(name, widget.pending)
 
@@ -187,7 +192,7 @@ class _Abilities:
 
 
 class FakeGP:
-    GP_WIDGET_RADIO, GP_WIDGET_MENU, GP_WIDGET_TEXT = 5, 6, 2
+    GP_WIDGET_RADIO, GP_WIDGET_MENU, GP_WIDGET_TEXT, GP_WIDGET_TOGGLE = 5, 6, 2, 4
     GP_CAPTURE_IMAGE, GP_FILE_TYPE_NORMAL = 0, 1
     GP_EVENT_TIMEOUT, GP_EVENT_CAPTURE_COMPLETE = 0, 3
     GP_OPERATION_CAPTURE_PREVIEW, GP_OPERATION_CONFIG = 8, 16
@@ -201,6 +206,7 @@ class FakeGP:
         cameras=(("FAKE-1", "usb:1"),),
         raw_name="capt0001.ARW",
         magnifier="sony",  # "sony" | "canon" | None
+        autofocus="sony",  # "sony" | "nikon" | "canon" | None
         aperture_name="f-number",
         capture_target="sdram",
         driver_model="USB PTP Class Camera",
@@ -222,6 +228,9 @@ class FakeGP:
         self.undrained = False
         self.gone = False  # set by unplug(): the body stops answering, as on a pulled cable
         self.reject_writes = False  # a value this body does not offer
+        self.af_fails = False  # the body answers but refuses the press: it cannot lock focus
+        self.af_release_fails = False  # a Sony body takes the half-press but refuses to let go
+        self.af_release_attempts = 0
         self.readback_error = False
         self.captures = self.previews = 0
         self.writes: list[tuple[str, str]] = []
@@ -244,6 +253,13 @@ class FakeGP:
             self.props["focusmagnifier"] = _Widget(self, "focusmagnifier", "Off,320,240", ["Off", "1", "6.9", "13.7"])
         elif magnifier == "canon":  # ratio only; choices[0] == "1" *is* off
             self.props["eoszoom"] = _Widget(self, "eoszoom", "1", ["1", "5", "10"])
+        if autofocus == "sony":  # a half-press toggle the host must release
+            self.props["autofocus"] = _Widget(self, "autofocus", 0, [], kind="toggle")
+        elif autofocus in ("nikon", "canon"):  # one write runs the whole drive
+            self.props["autofocusdrive"] = _Widget(self, "autofocusdrive", 0, [], kind="toggle")
+        if autofocus == "nikon":
+            # Nikon also publishes `autofocus` as a radio: a libgphoto2 setting, not a drive.
+            self.props["autofocus"] = _Widget(self, "autofocus", "On", ["Off", "On"])
         self.Camera = lambda: _Camera(self)
         self.Camera.autodetect = lambda: _CameraList(self._cameras)
 
@@ -468,6 +484,187 @@ def test_magnifier_ratios_are_read_from_the_body(cam):
     assert cam._magnifier_off == "Off"
 
 
+# ---- autofocus --------------------------------------------------------------
+
+
+def test_autofocus_drive_is_found_on_nikon_and_canon():
+    for vendor in ("nikon", "canon"):
+        fake = FakeGP(autofocus=vendor)
+        camera = GphotoCamera(gp_module=fake)
+        camera.open()
+        assert camera.has_autofocus()
+        assert camera.autofocus() is True
+        assert fake.writes == [("autofocusdrive", 1)]  # one write runs the drive; nothing to release
+        camera.close()
+
+
+def test_sony_half_press_is_held_then_released(monkeypatch):
+    from negpy.infrastructure.capture import gphoto
+
+    fake = FakeGP(autofocus="sony")
+    holds = []
+    monkeypatch.setattr(gphoto.time, "sleep", holds.append)
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.autofocus() is True
+    assert fake.writes == [("autofocus", 1), ("autofocus", 0)]
+    assert holds == [gphoto._SONY_AF_HOLD_S]
+    camera.close()
+
+
+def test_a_refused_sony_release_is_retried_then_reported(monkeypatch, caplog):
+    from negpy.infrastructure.capture import gphoto
+
+    fake = FakeGP(autofocus="sony")
+    fake.af_release_fails = True
+    monkeypatch.setattr(gphoto.time, "sleep", lambda _s: None)
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.autofocus() is False  # the press went out, but a held half-press is not a success
+    assert fake.af_release_attempts == 2
+    assert camera.is_open()
+    assert "could not release" in caplog.text
+    camera.close()
+
+
+def test_a_refused_sony_press_is_still_released(monkeypatch):
+    from negpy.infrastructure.capture import gphoto
+
+    fake = FakeGP(autofocus="sony")
+    fake.af_fails = True
+    monkeypatch.setattr(gphoto.time, "sleep", lambda _s: None)
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.autofocus() is False
+    assert fake.writes == [("autofocus", 0)]  # the body may have engaged on the refused press
+    assert not camera._af_held
+    camera.close()
+
+
+def _sony_left_held(monkeypatch):
+    from negpy.infrastructure.capture import gphoto
+
+    fake = FakeGP(autofocus="sony")
+    fake.af_release_fails = True
+    monkeypatch.setattr(gphoto.time, "sleep", lambda _s: None)
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.autofocus() is False
+    assert camera._af_held
+    fake.af_release_fails = False
+    return fake, camera
+
+
+def test_an_owed_sony_release_goes_out_before_the_next_capture(monkeypatch, tmp_path):
+    fake, camera = _sony_left_held(monkeypatch)
+    camera.capture(str(tmp_path / "f.ARW"))
+    assert fake.writes[-1] == ("autofocus", 0)
+    assert fake.captures == 1
+    assert not camera._af_held
+    camera.close()
+
+
+def test_an_owed_sony_release_goes_out_on_close(monkeypatch):
+    fake, camera = _sony_left_held(monkeypatch)
+    camera.close()
+    assert fake.writes[-1] == ("autofocus", 0)
+
+
+def test_an_owed_sony_release_is_not_sent_to_a_dead_body(monkeypatch):
+    fake, camera = _sony_left_held(monkeypatch)
+    writes = len(fake.writes)
+    camera._alive = False  # as the preview thread marks it when the body stops answering
+    camera.close()
+    assert len(fake.writes) == writes
+
+
+def test_closing_during_the_sony_hold_does_not_reopen_the_camera(monkeypatch):
+    from negpy.infrastructure.capture import gphoto
+
+    fake = FakeGP(autofocus="sony")
+    opens = []
+    make = fake.Camera
+
+    def counting():
+        opens.append(1)
+        return make()
+
+    fake.Camera = counting
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    monkeypatch.setattr(gphoto.time, "sleep", lambda _s: camera.close())  # app shutdown mid-hold
+    with pytest.raises(GphotoError, match="closed"):
+        camera.autofocus()
+    assert len(opens) == 1
+    assert not camera.is_open()
+    assert fake.writes == [("autofocus", 1), ("autofocus", 0)]  # close sent the owed release
+
+
+def test_the_autofocus_probe_runs_again_after_a_reopen():
+    fake = FakeGP(autofocus="nikon")
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.has_autofocus()
+    camera.close()
+    del fake.props["autofocusdrive"]
+    camera.open()
+    assert not camera.has_autofocus()
+    camera.close()
+
+
+def test_nikon_s_autofocus_radio_is_not_mistaken_for_a_drive():
+    fake = FakeGP(autofocus="nikon")
+    del fake.props["autofocusdrive"]  # leave only the radio behind
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert not camera.has_autofocus()
+    camera.close()
+
+
+def test_a_body_without_an_autofocus_drive_reports_it():
+    fake = FakeGP(autofocus=None)
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert not camera.has_autofocus()
+    with pytest.raises(GphotoError, match="no autofocus"):
+        camera.autofocus()
+    assert fake.writes == []
+    camera.close()
+
+
+def test_a_refused_lock_is_reported_and_keeps_the_session(caplog):
+    fake = FakeGP(autofocus="nikon")
+    fake.af_fails = True
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.autofocus() is False
+    assert camera.is_open()
+    assert "did not lock" in caplog.text
+    camera.close()
+
+
+def test_an_autofocus_failure_on_a_gone_body_raises():
+    fake = FakeGP(autofocus="nikon")
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.has_autofocus()
+    fake.unplug()
+    with pytest.raises(GphotoError, match="stopped answering"):
+        camera.autofocus()
+    camera.close()
+
+
+def test_published_settings_carry_autofocus_availability(tmp_path):
+    for vendor, expected in (("nikon", True), (None, False)):
+        fake = FakeGP(autofocus=vendor)
+        path = tmp_path / f"{vendor}.json"
+        camera = GphotoCamera(gp_module=fake, jpeg_path=str(tmp_path / "lv.jpg"), settings_path=str(path))
+        camera.open()
+        camera._publish_settings()
+        assert json.loads(path.read_text())["autofocus"] == {"available": expected}
+        camera.close()
+
+
 # ---- other vendors ----------------------------------------------------------
 
 
@@ -682,7 +879,7 @@ def test_live_view_publishes_frames_and_settings(fake, tmp_path):
     finally:
         camera.close()
     assert jpeg.read_bytes().startswith(b"\xff\xd8")
-    assert set(json.loads(settings.read_text())) == {"iso", "shutter"}
+    assert set(json.loads(settings.read_text())) == {"iso", "shutter", "autofocus"}
     assert not camera.is_running()
 
 
@@ -824,7 +1021,7 @@ def test_refusing_live_view_still_publishes_the_camera_settings(tmp_path):
     with pytest.raises(LiveViewUnsupported):
         camera.start()
 
-    assert set(json.loads(settings.read_text())) == {"iso", "shutter"}
+    assert set(json.loads(settings.read_text())) == {"iso", "shutter", "autofocus"}
     camera.close()
 
 
@@ -999,5 +1196,36 @@ def test_a_body_known_to_stall_never_engages_its_magnifier():
     writes = len(fake.writes)
     camera.set_focus_magnifier_at(320, 240)
     assert len(fake.writes) == writes
+    assert len(reasons) == 1
+    camera.close()
+
+
+@pytest.mark.parametrize("vendor", ["sony", "canon"])
+def test_an_empty_frame_during_an_autofocus_drive_keeps_the_magnifier(monkeypatch, vendor):
+    from negpy.infrastructure.capture import gphoto
+
+    fake = FakeGP(magnifier=vendor, autofocus=vendor)
+    reasons: list[str] = []
+    camera = GphotoCamera(gp_module=fake, on_magnifier_unusable=reasons.append)
+    camera.open()
+    camera.set_focus_magnifier_at(320, 240)
+    now = [100.0]
+    monkeypatch.setattr(gphoto.time, "monotonic", lambda: now[0])
+    during: list[bool] = []
+
+    def hold(seconds):
+        during.append(camera._release_stalled_magnifier())
+        now[0] += seconds
+
+    monkeypatch.setattr(gphoto.time, "sleep", hold)
+    assert camera.autofocus() is True
+    assert during == ([False] if vendor == "sony" else [])
+
+    now[0] += gphoto._AF_SETTLE_S - 0.1
+    assert not camera._release_stalled_magnifier()
+    assert reasons == []
+
+    now[0] += 0.2
+    assert camera._release_stalled_magnifier()
     assert len(reasons) == 1
     camera.close()
