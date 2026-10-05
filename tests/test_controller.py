@@ -254,6 +254,26 @@ class TestAppController(unittest.TestCase):
         self.controller.request_render.assert_not_called()
         self.controller.set_status.assert_called_once_with("invalid edge", 3000, "warning")
 
+    def test_half_frame_profile_is_saved_per_active_roll(self):
+        store: dict = {}
+        self.controller.session.repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        self.controller.session.repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+        self.controller.state.active_roll_id = "roll-a"
+        self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
+
+        self.assertNotIn("half_frame_profile", store)
+        self.assertEqual(self.controller.half_frame_profile()["split_x"], 0.6)
+        self.controller.state.active_roll_id = "roll-b"
+        self.assertIsNone(self.controller.half_frame_profile())
+
+    def test_a_rolls_profile_dates_and_mirrors_the_roll(self):
+        self.controller.session.repo.get_global_setting.return_value = None
+        self.controller.state.active_roll_id = "roll-a"
+        with patch("negpy.desktop.controller.rolls") as mock_rolls, patch.object(self.controller, "_mirror_roll") as mirror:
+            self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
+        mock_rolls.touch_roll.assert_called_once_with(self.controller.session.repo, "roll-a")
+        mirror.assert_called_once_with("roll-a")
+
     def test_half_frame_override_round_trip(self):
         self.controller.session.repo.get_global_setting.return_value = None
         self.assertEqual(self.controller.half_frame_overrides(), {})
@@ -564,6 +584,29 @@ class TestAppController(unittest.TestCase):
         self.controller.set_rgb_scan_mode(False)
         self.assertEqual(store["rgbscan_mode_by_roll"], {"r1": False, "r2": True})
         self.assertIs(store["rgbscan_mode"], False)
+
+    def test_set_rgb_scan_mode_dates_and_mirrors_the_roll_only_when_the_mode_changes(self):
+        store = self._fake_settings_store()
+        store["rgbscan_mode_by_roll"] = {"r1": True}
+        self.controller.state.active_roll_id = "r1"
+        self.controller.session.state.uploaded_files = []
+        with patch("negpy.desktop.controller.rolls") as mock_rolls, patch.object(self.controller, "_mirror_roll") as mirror:
+            self.controller.set_rgb_scan_mode(True)
+            mock_rolls.touch_roll.assert_not_called()
+            mirror.assert_not_called()
+            self.controller.set_rgb_scan_mode(False)
+        mock_rolls.touch_roll.assert_called_once_with(self.controller.session.repo, "r1")
+        mirror.assert_called_once_with("r1")
+        self.assertEqual(store["rgbscan_mode_by_roll"], {"r1": False})
+
+    def test_a_rolls_first_discovery_neither_dates_nor_mirrors_the_roll(self):
+        store = self._fake_settings_store()
+        store["rgbscan_mode"] = True
+        with patch("negpy.desktop.controller.rolls") as mock_rolls, patch.object(self.controller, "_mirror_roll") as mirror:
+            self.controller._rgb_scan_mode_for_discovery("r1")
+        self.assertEqual(store["rgbscan_mode_by_roll"], {"r1": True})
+        mock_rolls.touch_roll.assert_not_called()
+        mirror.assert_not_called()
 
     def test_a_rolls_first_discovery_records_its_trichrome_mode(self):
         store = self._fake_settings_store()

@@ -103,6 +103,7 @@ from negpy.domain.models import (
 )
 from negpy.services.assets.composites import forget_composite, restore_maps
 from negpy.services.assets.triplets import saved_triplets
+from negpy.services.assets import half_frame as half_frame_store
 from negpy.services.assets import repoint, rolls
 from negpy.services.export.contact_sheet_layout import ContactSheetSettings
 from negpy.services.export.contact_sheet_roll import (
@@ -1935,7 +1936,7 @@ class AppController(QObject):
             self.session.frames_edited_offscreen.emit(changed_hashes)
 
     _HALF_FRAME_MODE_BY_ROLL_KEY = rolls.HALF_FRAME_MODE_KEY
-    _RGB_SCAN_MODE_BY_ROLL_KEY = "rgbscan_mode_by_roll"
+    _RGB_SCAN_MODE_BY_ROLL_KEY = rolls.RGB_SCAN_MODE_KEY
 
     def _announce_roll_modes(self, roll_id: Optional[str]) -> None:
         self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(roll_id))
@@ -1950,14 +1951,23 @@ class AppController(QObject):
         return bool(self.session.repo.get_global_setting("rgbscan_mode", False))
 
     def _save_rgb_scan_mode(self, enabled: bool, roll_id: Optional[str]) -> None:
-        self.session.repo.save_global_setting("rgbscan_mode", bool(enabled))
-        if roll_id:
-            by_roll = dict(self.session.repo.get_global_setting(self._RGB_SCAN_MODE_BY_ROLL_KEY, default=None) or {})
-            by_roll[roll_id] = bool(enabled)
-            self.session.repo.save_global_setting(self._RGB_SCAN_MODE_BY_ROLL_KEY, by_roll)
+        """Save the mode as the one last chosen and as *roll_id*'s own. A change dates that roll
+        and mirrors its file; an unchanged save does not, since every capture saves the mode."""
+        repo = self.session.repo
+        repo.save_global_setting("rgbscan_mode", bool(enabled))
+        if not roll_id:
+            return
+        by_roll = dict(repo.get_global_setting(self._RGB_SCAN_MODE_BY_ROLL_KEY, default=None) or {})
+        if roll_id in by_roll and bool(by_roll[roll_id]) == bool(enabled):
+            return
+        by_roll[roll_id] = bool(enabled)
+        repo.save_global_setting(self._RGB_SCAN_MODE_BY_ROLL_KEY, by_roll)
+        rolls.touch_roll(repo, roll_id)
+        self._mirror_roll(roll_id)
 
     def _rgb_scan_mode_for_discovery(self, roll_id: Optional[str]) -> bool:
-        """The mode a discovery groups with; a roll's first discovery records it as the roll's own."""
+        """The mode a discovery groups with; a roll's first discovery records it as the roll's own.
+        The record is a guess, so it neither dates the roll nor writes its file."""
         enabled = self.rgb_scan_mode_for_roll(roll_id)
         if roll_id:
             by_roll = dict(self.session.repo.get_global_setting(self._RGB_SCAN_MODE_BY_ROLL_KEY, default=None) or {})
@@ -2002,19 +2012,20 @@ class AppController(QObject):
 
     # ── half-frame split & crop profile ─────────────────────────────────
 
-    _HALF_FRAME_PROFILE_KEY = "half_frame_profile"
     _HALF_FRAME_OVERRIDES_KEY = "half_frame_overrides"
 
     def half_frame_profile(self) -> dict | None:
-        """Saved ``(crop_rect, split_x, gutter_thickness)`` profile, shared across
-        every half-frame split that has no override of its own. Scanner-independent —
-        the same crop/split applies whether the scans came from a SANE scanner, a
-        camera copy-stand, or a folder import."""
-        return self.session.repo.get_global_setting(self._HALF_FRAME_PROFILE_KEY, default=None)
+        """The active roll's ``(crop_rect, split_x, gutter_thickness, split_axis)`` profile, shared by
+        every half-frame split with no override of its own. Scanner-independent — the same
+        crop/split applies whether the scans came from a SANE scanner, a camera copy-stand,
+        or a folder import."""
+        return half_frame_store.half_frame_profile(self.session.repo, self.state.active_roll_id)
 
     def save_half_frame_profile(self, crop_rect, split_x: float, gutter_thickness: float, split_axis: str = "x") -> None:
-        self.session.repo.save_global_setting(
-            self._HALF_FRAME_PROFILE_KEY,
+        roll_id = self.state.active_roll_id
+        half_frame_store.save_half_frame_profile(
+            self.session.repo,
+            roll_id,
             {
                 "crop_rect": [float(v) for v in crop_rect],
                 "split_x": float(split_x),
@@ -2022,6 +2033,9 @@ class AppController(QObject):
                 "split_axis": str(split_axis),
             },
         )
+        if roll_id:
+            rolls.touch_roll(self.session.repo, roll_id)
+            self._mirror_roll(roll_id)
 
     def half_frame_overrides(self) -> dict:
         """Per-file ``(crop_rect, split_x, gutter_thickness)`` overrides, keyed by
@@ -6124,6 +6138,9 @@ class AppController(QObject):
         target_roll = (
             rolls.recognize_folder(self.session.repo, folder) if as_roll else rolls.folder_roll_id_for_path(self.session.repo, folder)
         )
+        if target_roll:
+            # A mode change dates the roll, and a dated roll writes over its file instead of adopting it.
+            self._read_roll_sidecars([target_roll])
         self._save_rgb_scan_mode(rgb and not white, target_roll)
         capture_roll = getattr(req, "roll_name", "") if req is not None else ""
         capture_frame = getattr(req, "frame_number", None) if req is not None else None
@@ -7675,10 +7692,11 @@ class AppController(QObject):
             QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))
 
     def _read_roll_sidecars(self, roll_ids: List[str]) -> None:
-        """Read each folder roll's file before discovery, which its half-frame mode steers. A
-        roll new here adopts it; a newer one waits for the next sidecar offer."""
+        """Read each folder roll's file before discovery, which its Half Frame and Trichrome
+        modes steer. A roll new here adopts it; a newer one waits for the next sidecar offer."""
         active = self.state.active_roll_id
         half_before = self.half_frame_mode_for_roll(active) if active in roll_ids else None
+        trichrome_before = self.rgb_scan_mode_for_roll(active) if active in roll_ids else None
         repo = self.session.repo
         names_before = [(rolls.roll_for_id(repo, roll_id) or {}).get("name") for roll_id in roll_ids]
         for roll_id in roll_ids:
@@ -7687,6 +7705,8 @@ class AppController(QObject):
                 self._pending_roll_offers[roll_id] = offer
         if half_before is not None and self.half_frame_mode_for_roll(active) != half_before:
             self.half_frame_mode_changed.emit(not half_before)
+        if trichrome_before is not None and self.rgb_scan_mode_for_roll(active) != trichrome_before:
+            self.rgb_scan_mode_changed.emit(not trichrome_before)
         if names_before != [(rolls.roll_for_id(repo, roll_id) or {}).get("name") for roll_id in roll_ids]:
             self.rolls_updated.emit()
 
@@ -7704,15 +7724,27 @@ class AppController(QObject):
     def apply_sidecar_offers(self, load: list, keep: list) -> bool:
         """Load the chosen offers and decline the rest. Roll files load first, so a frame
         whose sidecar does not carry its locks compares against the loaded roll. True when a
-        loaded Half Frame change started a re-discovery of the loaded assets."""
+        loaded Half Frame, Trichrome or split-profile change started a re-discovery of the
+        loaded assets."""
         roll_load = [o for o in load if isinstance(o, RollSidecarOffer)]
         frame_load = [o for o in load if not isinstance(o, RollSidecarOffer)]
         rediscover = False
         for offer in roll_load:
             before = self.half_frame_mode_for_roll(offer.roll_id)
+            trichrome_before = self.rgb_scan_mode_for_roll(offer.roll_id)
+            profile_before = half_frame_store.half_frame_profile(self.session.repo, offer.roll_id)
             adopt_roll_sidecar(self.session.repo, offer.roll_id, offer.sidecar)
-            if offer.roll_id == self.state.active_roll_id and offer.sidecar.half_frame_mode != before:
+            if offer.roll_id != self.state.active_roll_id:
+                continue
+            if offer.sidecar.half_frame_mode != before:
                 self.half_frame_mode_changed.emit(offer.sidecar.half_frame_mode)
+                rediscover = True
+            trichrome = self.rgb_scan_mode_for_roll(offer.roll_id)
+            if trichrome != trichrome_before:
+                self.rgb_scan_mode_changed.emit(trichrome)
+                rediscover = True
+            profile = half_frame_store.half_frame_profile(self.session.repo, offer.roll_id)
+            if offer.sidecar.half_frame_mode and profile != profile_before:
                 rediscover = True
         for offer in frame_load:
             promote_sidecar(self.session.repo, offer.asset["hash"], offer.asset["path"], offer.sidecar)
