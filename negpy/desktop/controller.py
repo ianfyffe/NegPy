@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import QApplication, QCheckBox, QDialog, QMessageBox
 from negpy.kernel.system.memory import available_system_memory_bytes
 from negpy.kernel.system.text import count_of, plural
 from negpy.kernel.image.logic import working_oetf_encode
+from negpy.desktop.auto_sliders import record_meters
 from negpy.desktop.converters import ImageConverter
 from negpy.desktop.render_memo import RenderMemo
 from negpy.desktop.session import (
@@ -7582,6 +7583,7 @@ class AppController(QObject):
             self.state.last_metrics["proof"] = True
 
         self._freeze_resolved_auto_crop(metrics)
+        record_meters(self.state.auto_meters, self.state.current_file_hash or "", metrics)
 
         result = metrics.get("base_positive")
         memoizable = bool(metrics.get("memo_key")) and metrics.get("source_hash") == self.state.current_file_hash
