@@ -10,6 +10,7 @@ from PyQt6.QtCore import QAbstractListModel, QModelIndex, QObject, Qt, pyqtSigna
 
 from negpy.desktop.settings_catalog import GLOBAL_TIER_SECTIONS, apply_selected_fields
 from negpy.features.retouch.models import HEAL_SIZE_MAX, HEAL_SIZE_MIN
+from negpy.services.capture.presets import PresetStore
 from negpy.desktop.sticky import (
     ALWAYS_STICKY_PROCESS,
     BRUSH_SIZE_KEY,
@@ -1169,9 +1170,20 @@ class DesktopSessionManager(QObject):
         """
         from dataclasses import asdict
 
+        snapshot = sticky_snapshot(config)
+        if PresetStore(self.repo).owns_sensor_profile(config.process.sensor_profile):
+            # A Scanlight preset's profile reaches a roll through that preset's scans. Carried
+            # from here it would land on rolls scanned another way.
+            stored = self.repo.get_global_setting(STICKY_CONFIG_KEY)
+            stored = stored if isinstance(stored, dict) else {}
+            for key in ("sensor_profile", "sensor_matrix"):
+                if key in stored:
+                    snapshot[key] = stored[key]
+                else:
+                    snapshot.pop(key, None)
         self.repo.save_global_settings(
             {
-                STICKY_CONFIG_KEY: sticky_snapshot(config),
+                STICKY_CONFIG_KEY: snapshot,
                 "last_export_config": asdict(config.export),
                 "last_linear_raw": config.process.linear_raw,
                 "last_narrowband_scan": config.process.narrowband_scan,

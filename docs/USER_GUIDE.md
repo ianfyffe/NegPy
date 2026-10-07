@@ -726,9 +726,9 @@ Applying it sets the defaults for new files and rewrites every edited frame in t
 **Single-Shot Narrowband Calibration**: for single-shot camera scans under narrowband light, where each color leaks into the others through the sensor's filters.
 
 *   **Profile**: the sensor matrix. Custom `.toml` matrices go in `<Documents>/NegPy/sensor/`.
-*   **Calibrate** (vials icon on the header): build a profile from three bare-light R/G/B exposures.
+*   **Calibrate** (vials icon on the header): build a profile from three bare-light R/G/B exposures. A Single Capture Scanlight preset can save one during its own calibration.
 
-Needs **Linear RAW**; grayed out on Transparency and skipped for triplets. **Re-run Roll Analysis** after changing it.
+Needs **Linear RAW**; grayed out on Transparency and on a Trichrome triplet. **Re-run Roll Analysis** after changing it.
 
 **Crosstalk** (hidden in B&W Negative): a channel unmix on the densities before inversion. Dyes, light and sensor all mix the channels, so a matrix describes your whole scanning setup.
 
@@ -1079,7 +1079,7 @@ Capture film directly into NegPy. The **Scanner** card picks the scanner; the ta
 <!-- panel:scan_camera -->
 ### Camera
 
-Copy-stand capture with a camera in **PC Remote** mode over USB (macOS/Linux): R/G/B triplets with a NegPy **Scanlight**, else one white-light exposure. Needs `python-gphoto2` (`pip install gphoto2`; no Windows build). Setup and troubleshooting: CAMERA_SCANNING.md.
+Copy-stand capture with a camera in **PC Remote** mode over USB (macOS/Linux): with a NegPy **Scanlight**, R/G/B triplets or one exposure with the three LEDs lit together, else one white-light exposure. Needs `python-gphoto2` (`pip install gphoto2`; no Windows build). Setup and troubleshooting: CAMERA_SCANNING.md.
 
 *   **Camera** / **Light**: connection status, found automatically; the light shows its LED temperature, amber once it runs warm. On Linux, the Scanlight's serial port needs your user in the `dialout` group (`sudo usermod -aG dialout $USER`, then log out and back in).
 *   **Live View**: click the image to aim the focus magnifier, again for the full frame. The **Focus meter** reads sharpness against the best seen: turn the focus ring past best focus, then back until it reads **at peak** (a click resets it). ISO, shutter and aperture are set from its toolbar, or locked by a calibrated RGB preset.
@@ -1093,8 +1093,10 @@ Shown while a Scanlight is connected.
 
 *   **Preset**: shows its RGB levels, ISO, shutter and aperture and forces them each frame. **+** calibrates: place the rectangle on clear film base, name it, run it; it solves a shutter and LED levels just under clipping, or says which way to adjust. **Create a manual preset…** sets one by hand, and the save button stores it.
 *   **Red**, **Green**, **Blue**, **White** (0 to 255): LED levels, editable while building a manual preset. **Light Off** turns every channel off.
+*   **Capture mode**: **Triplet** shoots one exposure per LED and merges them; **Single Capture** shoots one exposure with red, green and blue lit together and imports it as an ordinary RAW. Picked in the calibration window, or here while building a manual preset.
+*   **Sensor Profile** (calibration window, Single Capture only, default on): also saves a sensor profile under the preset's name; a roll scanned with the preset takes it and turns Linear RAW on. A preset's profile is not carried to other rolls.
 *   **ISO**, **Shutter**, **Aperture**: the preset's exposure, editable while building a manual preset.
-*   **Channel Delay** (0 to 5000 ms): pauses between R, G and B for bodies that lock up.
+*   **Channel Delay** (0 to 5000 ms): pauses between R, G and B for bodies that lock up. Triplet presets only.
 
 <!-- panel:scan_output -->
 ### Output
