@@ -899,8 +899,9 @@ class AssetDiscoveryWorker(QObject):
     def _attach_restored_triplets(self, assets: list, triplets: dict) -> list:
         """Re-attach known green/blue exposures to their red asset (no reclassification).
 
-        A session manifest holds the red path alone, but a capture hands over all three,
-        so the two exposures that became part of a frame are dropped from the roll.
+        A session manifest holds the red path alone, but a folder walk or a capture hands
+        over all three, so the two exposures that became part of a frame are dropped from
+        the roll. A file goes to the first triplet that claims it.
         """
         import os
 
@@ -921,12 +922,22 @@ class AssetDiscoveryWorker(QObject):
         hashes.update({path: digest[0] if digest else "" for path, digest in zip(unhashed, digests)})
         out = []
         parts: set = set()
+        reds: set = set()
         for a in assets:
             gb = triplets.get(a["path"])
             stored = list(gb[3]) if gb and len(gb) > 3 else ["", "", ""]
             # A stated member hash re-attaches only while the file still has it.
             changed = gb and any(want and path in hashes and hashes[path] != want for path, want in zip((a["path"], gb[0], gb[1]), stored))
-            if gb and not changed and gb[0] and gb[1] and os.path.exists(gb[0]) and os.path.exists(gb[1]):
+            if (
+                gb
+                and not changed
+                and gb[0]
+                and gb[1]
+                and a["path"] not in parts
+                and not {gb[0], gb[1]} & (parts | reds)
+                and os.path.exists(gb[0])
+                and os.path.exists(gb[1])
+            ):
                 base = os.path.splitext(a["name"])[0]
                 align = bool(gb[2]) if len(gb) > 2 else True
                 out.append(
@@ -941,6 +952,7 @@ class AssetDiscoveryWorker(QObject):
                     }
                 )
                 parts.update({gb[0], gb[1]})
+                reds.add(a["path"])
             else:
                 out.append(a)
         return _without_parts(out, parts)
@@ -1088,7 +1100,7 @@ class AssetDiscoveryWorker(QObject):
         loose = len(ordered) - len(grouped)
         if loose:
             summary = {
-                "made": len(grouped) // 3,
+                "made": len(assembled) + len(grouped) // 3,
                 "loose": loose,
                 "incomplete": incomplete,
                 "mismatched": mismatched,
