@@ -192,9 +192,9 @@ class LiveViewWindow(QDialog):
         # Live camera settings, populated from the stream's settings JSON.
         # Compact steppers instead of dropdowns: shutter and ISO span dozens of steps, so a full
         # popup would fill the screen. The arrows nudge one stop at a time.
-        # Wrapped in a widget so the panel can hide the whole row as a unit. A calibrated RGB
-        # preset locks ISO, shutter and aperture, because changing them would falsify the scan,
-        # so the steppers show only for white-light presets and normal camera-only scanning.
+        # Wrapped in a widget so the panel can hide the whole row as a unit. A calibrated preset,
+        # RGB or B&W, locks ISO, shutter and aperture, because changing them would falsify the scan,
+        # so the steppers show only for the built-in white-light preset and camera-only scanning.
         self.settings_widget = QWidget()
         settings_row = QHBoxLayout(self.settings_widget)
         settings_row.setContentsMargins(0, 0, 0, 0)

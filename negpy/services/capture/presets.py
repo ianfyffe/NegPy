@@ -1,4 +1,5 @@
-"""Film-stock capture presets — named R/G/B level + per-channel shutter recipes.
+"""Film-stock capture presets — named LED level + shutter recipes: an R/G/B triplet, or one
+white-light exposure for B&W.
 
 Persisted via the session repo (no Qt), so each film stock can be metered once
 and recalled. Mirrors how the scanner settings are stored.
@@ -36,7 +37,7 @@ class ScanlightPreset:
     r_level: int = 255
     g_level: int = 255
     b_level: int = 255
-    w_level: int = 0  # RGB presets don't use white; a white-light preset stores 255
+    w_level: int = 0  # RGB presets leave the white LED off
     shutter_r: str = ""
     shutter_g: str = ""
     shutter_b: str = ""
@@ -44,6 +45,8 @@ class ScanlightPreset:
     aperture: str = ""  # aperture label (e.g. "f/8"); "" for a manual lens (no electronic aperture)
     single_capture: bool = False  # one exposure with R, G and B lit together, not a triplet
     sensor_profile: str = ""  # sensor profile measured with a single-capture preset; "" = none
+    white: bool = False  # one white-light exposure at w_level and shutter_w; R/G/B stay off
+    shutter_w: str = ""
 
 
 class PresetStore:
