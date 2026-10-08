@@ -125,6 +125,8 @@ class ScanlightSidebar(QWidget):
         self._focus_settle_timer.setSingleShot(True)
         self._focus_settle_timer.setInterval(_MAGNIFIER_SETTLE_MS)
         self._focus_settle_timer.timeout.connect(self._reset_focus_meter)
+        self._autofocus_available = False  # does the streaming body expose an autofocus drive? (from the settings JSON)
+        self._focusing = False  # an autofocus drive is in flight on the worker
         self._settings_loaded = False  # have the live camera-setting dropdowns been populated yet?
         self._light_has_white = True  # does the connected Scanlight have a white LED? (False = v1-v3, RGB-only)
         # Advertised camera abilities (issue #621). Optimistic until a body has been opened:
@@ -380,6 +382,7 @@ class ScanlightSidebar(QWidget):
         self.controller.capture_progress.connect(self._on_progress)
         self.controller.capture_channel.connect(self._on_channel)
         self.controller.capture_camera_setting_applied.connect(self._on_camera_setting_applied)
+        self.controller.capture_autofocus_finished.connect(self._on_autofocus_finished)
         self.controller.capture_live_view_failed.connect(self._on_live_view_failed)
         self.controller.capture_live_view_unsupported.connect(self._on_live_view_unsupported)
         self.controller.capture_focus_magnifier_unavailable.connect(self._on_magnifier_unavailable)
@@ -396,6 +399,7 @@ class ScanlightSidebar(QWidget):
         self.controller.batch_started.connect(self._keep_scan_windows_on_top)
         # The pop-up toolbar mirrors the panel actions, so a roll scans without tab-switching.
         self.lv_window.scanRequested.connect(self._on_scan)
+        self.lv_window.focusRequested.connect(self._on_focus)
         self.lv_window.retakeRequested.connect(self._on_retake)
         self.lv_image.clicked.connect(self._on_magnifier_click)
         for which, stepper in (
@@ -868,6 +872,7 @@ class ScanlightSidebar(QWidget):
                 self._suppress_camera_release = False
         if on:
             self._settings_loaded = False  # repopulate the camera-setting dropdowns
+            self._reset_autofocus()  # the settings JSON reports this body's drive
             self._update_settings_from_ui()
             self._start_live_view_worker()
             self._push_light()  # white light on for focusing under Live View
@@ -879,6 +884,7 @@ class ScanlightSidebar(QWidget):
             self._lv_timer.stop()
             self._lv_target.set_loading(False)  # drop the buffering spinner
             self._reset_magnifier()
+            self._reset_autofocus()
             self.lv_window.hide()
             self._push_light()  # back to the capture light (RGB unless white mode)
             self._set_status("")  # clear the "Live view running." line once the stream stops
@@ -1032,6 +1038,7 @@ class ScanlightSidebar(QWidget):
         self._lv_timer.stop()
         self._lv_target.set_loading(False)
         self._reset_magnifier()
+        self._reset_autofocus()
 
     def _reset_magnifier(self) -> None:
         """Forget the magnifier state when the stream stops (the camera resets it too)."""
@@ -1073,6 +1080,32 @@ class ScanlightSidebar(QWidget):
             self._magnifier_on = False
             self._set_status("Full frame — click the image to magnify")
 
+    # ── autofocus ──────────────────────────────────────────────────
+
+    def _on_focus(self) -> None:
+        """Drive the camera's autofocus once. Only while the stream is running and the worker is
+        idle: a drive queued behind a triplet would refocus after the shots it was meant for."""
+        if not self.lv_btn.isChecked() or self._scanning or self._calibrating_preset or self._focusing:
+            return
+        self._focusing = True
+        self.lv_window.set_focusing(True)
+        self._set_status("Focusing…")
+        self.controller.autofocus()
+
+    @pyqtSlot(bool, str)
+    def _on_autofocus_finished(self, ok: bool, message: str) -> None:
+        self._focusing = False
+        self.lv_window.set_focusing(False)
+        self._set_status(message if ok else f"⚠ {message}")
+        self._apply_gating()
+
+    def _reset_autofocus(self) -> None:
+        """Forget an in-flight drive and the body's drive support when the stream starts or stops."""
+        self._focusing = False
+        self._autofocus_available = False
+        self.lv_window.set_focusing(False)
+        self._apply_gating()
+
     # ── live camera settings (ISO / shutter / aperture) ──────────
 
     def _on_camera_setting(self, which: str, combo) -> None:
@@ -1098,6 +1131,10 @@ class ScanlightSidebar(QWidget):
                 data = json.load(f)
         except (OSError, ValueError):
             return
+        available = bool(data.get("autofocus", {}).get("available"))
+        if available != self._autofocus_available:
+            self._autofocus_available = available
+            self._apply_gating()
         steppers = {
             "iso": [self.lv_window.iso_stepper],
             "shutter": [self.lv_window.shutter_stepper],
@@ -1568,6 +1605,10 @@ class ScanlightSidebar(QWidget):
         )
         for btn in (self.lv_window.scan_btn, self.lv_window.retake_btn):
             btn.setEnabled(can_scan)
+        self.lv_window.set_autofocus_available(
+            self._autofocus_available,
+            self._camera_verified and not self._scanning and not self._calibrating_preset and not self._focusing,
+        )
         if missing:
             self.scan_btn.setToolTip(wrap_tooltip("Can't scan yet — " + "; ".join(missing)))
             self.gate_hint.setText("⚠ To scan: " + ", ".join(missing) + ".")
