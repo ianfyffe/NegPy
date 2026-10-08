@@ -2,14 +2,37 @@ from PyQt6.QtWidgets import QComboBox, QDialog, QHBoxLayout
 
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.styles.templates import field_label, header_row, hint_label, section_subheader, wrap_tooltip
+from negpy.desktop.view.widgets.choice_button import ChoiceButton
 from negpy.desktop.view.widgets.file_dialogs import last_open_folder
 from negpy.desktop.view.widgets.sliders import CompactSlider, SliderGroup
-from negpy.features.process.models import ProcessMode, invalidate_local_bounds
+from negpy.features.process.models import ProcessConfig, ProcessMode, SensorUnmix, invalidate_local_bounds
 from negpy.features.process.sensor import unmix_block_reason
 from negpy.features.rgbscan.models import is_rgb_triplet
 from negpy.features.stitch.models import stitch_has_triplets
 from negpy.services.assets.crosstalk import CrosstalkProfiles
 from negpy.services.assets.sensor import SensorProfiles
+
+
+_UNMIX_CHOICES = (
+    (
+        SensorUnmix.LINEAR,
+        "Subtracts the measured leak from the linear capture. Exact while the calibration holds. "
+        "Where the film passes almost none of a band's light, the result reaches zero and prints "
+        "as speckled, fully saturated color.",
+    ),
+    (
+        SensorUnmix.TWO_SCALE,
+        "Linear wherever the calibration holds. Where a color is mostly leak, as in neon, it takes "
+        "the color from a slightly blurred copy. It adds the fine detail back without extra gain, "
+        "so the color never reaches zero and the grain stays at the film's own level.",
+    ),
+    (
+        SensorUnmix.DENSITY,
+        "Applies the calibration to densities, linearized at the film base read from the frame. "
+        "Never reaches zero and gives less grain in saturated colors, which come out slightly less vivid.",
+    ),
+)
+_DEFAULT_UNMIX = ProcessConfig().sensor_unmix
 
 
 class SensorSidebar(BaseSidebar):
@@ -74,6 +97,22 @@ class SensorSidebar(BaseSidebar):
         row.addWidget(self.sensor_label)
         row.addWidget(self.sensor_combo, 1)
         self.layout.addLayout(row)
+
+        unmix_row = QHBoxLayout()
+        self.unmix_label = field_label("Method")
+        self.unmix_btn = ChoiceButton(
+            tuple(("", mode.label) for mode, _tip in _UNMIX_CHOICES),
+            "How the calibration is applied.<br><br>"
+            + "".join(f"<b>{mode.label}</b>{' (default)' if mode == _DEFAULT_UNMIX else ''}: {tip}<br><br>" for mode, tip in _UNMIX_CHOICES)
+            + "Re-run Roll Analysis after changing this.",
+            data=tuple(mode for mode, _tip in _UNMIX_CHOICES),
+        )
+        for i, (_mode, tip) in enumerate(_UNMIX_CHOICES):
+            self.unmix_btn.set_choice_tooltip(i, wrap_tooltip(tip))
+        self.unmix_btn.setCurrentIndex(max(0, self.unmix_btn.findData(conf.sensor_unmix)))
+        unmix_row.addWidget(self.unmix_label)
+        unmix_row.addWidget(self.unmix_btn, 1)
+        self.layout.addLayout(unmix_row)
 
         # Muted, not warning: this is the normal state for anyone not using Linear RAW, so it
         # explains the greyed controls rather than flagging a problem. Text and tooltip are set
@@ -242,6 +281,7 @@ class SensorSidebar(BaseSidebar):
         self.sensor_combo.setCurrentText(conf.sensor_profile if available else SensorProfiles.NONE_NAME)
         self.sensor_combo.setEnabled(available)
         self.calibrate_sensor_btn.setEnabled(available)
+        self.unmix_btn.setEnabled(available and conf.sensor_matrix is not None)
         self.sensor_hint.setVisible(bool(reason))
         if reason:
             text, tip = self._SENSOR_BLOCKED[reason]
@@ -254,6 +294,7 @@ class SensorSidebar(BaseSidebar):
         self.scan_setup_btn.clicked.connect(self._open_scan_setup)
 
         self.sensor_combo.currentTextChanged.connect(self._on_sensor_profile_changed)
+        self.unmix_btn.currentChanged.connect(self._on_unmix_changed)
         self.calibrate_sensor_btn.clicked.connect(self._open_sensor_calibration)
 
         self.crosstalk_combo.currentTextChanged.connect(self._on_crosstalk_profile_changed)
@@ -294,6 +335,13 @@ class SensorSidebar(BaseSidebar):
             "sensor",
             sensor_profile=name,
             sensor_matrix=tuple(matrix) if matrix is not None else None,
+            **invalidate_local_bounds(self.state.config.process),
+        )
+
+    def _on_unmix_changed(self, _index: int) -> None:
+        self.controller.set_roll_default(
+            "sensor",
+            sensor_unmix=self.unmix_btn.currentData(),
             **invalidate_local_bounds(self.state.config.process),
         )
 
@@ -458,6 +506,7 @@ class SensorSidebar(BaseSidebar):
             if profiles != [self.sensor_combo.itemText(i) for i in range(self.sensor_combo.count())]:
                 self.sensor_combo.clear()
                 self.sensor_combo.addItems(profiles)
+            self.unmix_btn.setCurrentIndex(max(0, self.unmix_btn.findData(conf.sensor_unmix)))
             self._apply_gate(conf)
 
             # Headings included, so a changed `type` rebuilds too (the name set alone would not).
@@ -494,6 +543,7 @@ class SensorSidebar(BaseSidebar):
             self.linear_raw_btn,
             self.narrowband_scan_btn,
             self.sensor_combo,
+            self.unmix_btn,
             self.crosstalk_combo,
             self.crosstalk_strength_slider,
             self.cast_removal_slider,

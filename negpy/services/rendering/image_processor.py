@@ -256,6 +256,22 @@ def _resize_mask(mask: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
     return cv2.resize(mask.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST) > 0
 
 
+def preview_takes_unmix(params: WorkspaceConfig) -> bool:
+    """Whether a preview source gets the sensor unmix. Triplet composites take each channel
+    from its own single-band exposure, so unmixing them would inject crosstalk that was never
+    captured; that holds for a stitch with a triplet part too."""
+    return not is_rgb_triplet(params.rgbscan) and not stitch_has_triplets(params.stitch)
+
+
+def _unmix_source(f32_buffer: np.ndarray, params: WorkspaceConfig) -> np.ndarray:
+    """The unmix `_load_source_f32(unmix=False)` left out, on the whole source or on one half,
+    as the preview unmixes a half alone. Triplets are never unmixed; a stitch holding one
+    unmixes its other parts alone."""
+    if (is_rgb_triplet(params.rgbscan) and not hdr_active(params.hdr)) or stitch_has_triplets(params.stitch):
+        return f32_buffer
+    return apply_sensor_correction(f32_buffer, effective_sensor_matrix(params.process), params.process.sensor_unmix)
+
+
 def _part_params(params: WorkspaceConfig, index: int) -> WorkspaceConfig:
     """Params for stitch part ``index``, carrying that part's own R/G/B exposures.
 
@@ -699,11 +715,9 @@ class ImageProcessor:
             if not skip_flatfield and not settings.stitch.stitch_enabled and not metadata_lens_corrections(settings):
                 img = apply_flatfield(img, settings.flatfield)
             # Sensor unmix is a source pre-correction like flat-field. skip_flatfield buffers
-            # come from _load_source_f32, which already applied it. Triplet composites take
-            # each channel from its own single-band exposure, so unmixing them would inject
-            # crosstalk that was never captured.
-            if not skip_flatfield and not is_rgb_triplet(settings.rgbscan) and not stitch_has_triplets(settings.stitch):
-                img = apply_sensor_correction(img, effective_sensor_matrix(settings.process))
+            # come from _load_source_f32, which already applied it.
+            if not skip_flatfield and preview_takes_unmix(settings):
+                img = apply_sensor_correction(img, effective_sensor_matrix(settings.process), settings.process.sensor_unmix)
             # Both no-op'd: caching would pin a second reference to the same buffer.
             if img is not source:
                 self._precorrect_key = precorrect_key
@@ -962,13 +976,14 @@ class ImageProcessor:
         return rgb, metadata
 
     def _load_source_f32(
-        self, file_path: str, params: WorkspaceConfig, fast_decode: bool = False
+        self, file_path: str, params: WorkspaceConfig, fast_decode: bool = False, unmix: bool = True
     ) -> Tuple[np.ndarray, Optional[np.ndarray], str]:
         """Decode a source file to a flatfield-corrected, EXIF-oriented float32 buffer.
 
         A stitch composite decodes every part and assembles them by replaying the
         registration stored in ``params.stitch``, each part against its own rgbscan
-        config rather than the primary's.
+        config rather than the primary's. ``unmix=False`` leaves out the sensor unmix that
+        `_unmix_source` applies to the whole buffer.
 
         Returns (f32_buffer, ir_buffer, source_color_space).
         """
@@ -994,6 +1009,7 @@ class ImageProcessor:
             sensor_token(params.process),
             demosaic_token(params.process.demosaic_export),
             fast_decode,
+            unmix,
         )
         if cache_key == self._source_cache_key and self._source_cache_value is not None:
             return self._source_cache_value
@@ -1001,24 +1017,37 @@ class ImageProcessor:
         if params.stitch.stitch_enabled and params.stitch.stitch_paths:
             # libraw/tifffile release the GIL, so the parts decode concurrently.
             all_paths = (file_path, *params.stitch.stitch_paths)
+            # The sensor unmix reads the film base from the frame, so a stitch is unmixed once,
+            # assembled, or each part would read its own base.
+            whole = not stitch_has_triplets(params.stitch)
             with ThreadPoolExecutor(max_workers=min(3, len(all_paths))) as pool:
                 decoded = list(
-                    pool.map(lambda ip: self._decode_oriented_f32(ip[1], _part_params(params, ip[0]), fast_decode), enumerate(all_paths))
+                    pool.map(
+                        lambda ip: self._decode_oriented_f32(ip[1], _part_params(params, ip[0]), fast_decode, unmix=not whole),
+                        enumerate(all_paths),
+                    )
                 )
             parts = [f32 for f32, _ir, _cs in decoded]
             irs = [ir for _f32, ir, _cs in decoded]
             source_cs = decoded[0][2]
             f32_buffer, ir_full = stitch_composite(parts, irs, params.stitch)
+            if whole and unmix:
+                f32_buffer = _unmix_source(f32_buffer, params)
             result = (f32_buffer, ir_full, source_cs)
         else:
-            result = self._decode_oriented_f32(file_path, params, fast_decode)
+            result = self._decode_oriented_f32(file_path, params, fast_decode, unmix=unmix)
 
         self._source_cache_key = cache_key
         self._source_cache_value = result
         return result
 
     def _decode_oriented_f32(
-        self, file_path: str, params: WorkspaceConfig, fast_decode: bool = False, wb_override: Optional[Sequence[float]] = None
+        self,
+        file_path: str,
+        params: WorkspaceConfig,
+        fast_decode: bool = False,
+        wb_override: Optional[Sequence[float]] = None,
+        unmix: bool = True,
     ) -> Tuple[np.ndarray, Optional[np.ndarray], str]:
         """Single-file decode tail: sensor RGB -> float32 -> EXIF orientation -> flatfield.
 
@@ -1166,8 +1195,8 @@ class ImageProcessor:
             f32_buffer = prepare_lens_source(f32_buffer, metadata, params.flatfield, metadata_lens_corrections(params))
         else:
             f32_buffer = apply_flatfield(f32_buffer, params.flatfield)
-        if not is_triplet:
-            f32_buffer = apply_sensor_correction(f32_buffer, effective_sensor_matrix(params.process))
+        if unmix and not is_triplet:
+            f32_buffer = apply_sensor_correction(f32_buffer, effective_sensor_matrix(params.process), params.process.sensor_unmix)
         if ir_full is not None:
             ir_full = apply_exif_orientation(ir_full, orientation)
         return f32_buffer, ir_full, source_cs
@@ -1242,10 +1271,12 @@ class ImageProcessor:
         gutter_thickness: float,
         split_axis: str = "x",
     ) -> Tuple[np.ndarray, str, str]:
-        f32_buffer, ir_full, source_cs = self._load_source_f32(file_path, params)
+        f32_buffer, ir_full, source_cs = self._load_source_f32(file_path, params, unmix=not half)
         f32_buffer, ir_full = self._slice_half_source(
             f32_buffer, ir_full, half, split_x, crop_rect=crop_rect, gutter_thickness=gutter_thickness, split_axis=split_axis
         )
+        if half:
+            f32_buffer = _unmix_source(f32_buffer, params)
         # Same shape as run_pipeline's base_hash, so an export of a frame previewed at full
         # resolution with the same demosaic finds every bake already in the caches.
         detect_key = (
@@ -1689,10 +1720,12 @@ class ImageProcessor:
         try:
             from negpy.infrastructure.display.color_mgmt import apply_display_transform
 
-            f32_buffer, ir_full, _ = self._load_source_f32(file_path, params, fast_decode=fast_decode)
+            f32_buffer, ir_full, _ = self._load_source_f32(file_path, params, fast_decode=fast_decode, unmix=not half)
             f32_buffer, ir_full = self._slice_half_source(
                 f32_buffer, ir_full, half, split_x, crop_rect=crop_rect, gutter_thickness=gutter_thickness, split_axis=split_axis
             )
+            if half:
+                f32_buffer = _unmix_source(f32_buffer, params)
 
             # Proof scale: everything downstream only needs target_long_px. The
             # cached source buffer is shared, so resize (never mutate) it.
