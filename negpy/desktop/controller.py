@@ -3612,10 +3612,7 @@ class AppController(QObject):
             return
         self.session.update_config(self._with_crop_ratio(self.state.config, ratio), persist=True)
         self._lock_roll_card("autocrop")
-        # Same spinner treatment as reset_crop/apply_auto_crop: the base stage re-runs,
-        # since geometry is part of its cache key, and that takes a moment on a large HQ frame.
-        self.loading_started.emit()
-        self.request_render()
+        self._render_crop_change()
 
     def handle_analysis_rect_changed(self, nx1: float, ny1: float, nx2: float, ny2: float, persist: bool) -> None:
         """Live-update (persist=False) or commit (persist=True) the freehand analysis
@@ -3657,9 +3654,13 @@ class AppController(QObject):
                 process=new_proc,
             )
         )
-        # Same spinner treatment as an initial file load: the bounds recompute above takes
-        # a moment on a large HQ frame.
-        self.loading_started.emit()
+        self._render_crop_change()
+
+    def _render_crop_change(self) -> None:
+        """Render a crop edit under the load spinner: the base stage and the bounds re-run.
+        The finished render takes the spinner down, so with no frame loaded it never starts."""
+        if self.state.preview_raw is not None:
+            self.loading_started.emit()
         self.request_render()
 
     def apply_auto_crop(self) -> None:
@@ -3684,8 +3685,7 @@ class AppController(QObject):
                 process=new_proc,
             )
         )
-        self.loading_started.emit()
-        self.request_render()
+        self._render_crop_change()
 
     def _config_for_batch_asset(self, asset: dict) -> WorkspaceConfig:
         """Resolve per-asset settings, including unsaved edits on the active frame."""

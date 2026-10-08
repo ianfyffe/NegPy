@@ -2196,6 +2196,30 @@ class TestAppController(unittest.TestCase):
         self.mock_session_manager.update_config.assert_not_called()
         self.controller.request_render.assert_not_called()
 
+    def test_crop_edits_show_no_spinner_with_no_frame_loaded(self):
+        self.controller.request_render = MagicMock()
+        loading = MagicMock()
+        self.controller.loading_started.connect(loading)
+
+        self.controller.set_crop_ratio("4:3")
+        self.controller.apply_auto_crop()
+        self.controller.reset_crop()
+
+        loading.assert_not_called()
+        self.assertEqual(self.controller.request_render.call_count, 3)
+
+    def test_crop_edits_show_the_spinner_on_a_loaded_frame(self):
+        self.controller.state.preview_raw = np.empty((8, 8, 3), dtype=np.float32)
+        self.controller.request_render = MagicMock()
+        loading = MagicMock()
+        self.controller.loading_started.connect(loading)
+
+        self.controller.set_crop_ratio("4:3")
+        self.controller.apply_auto_crop()
+        self.controller.reset_crop()
+
+        self.assertEqual(loading.call_count, 3)
+
     def test_set_crop_ratio_preserves_metering_bounds(self):
         """A ratio change is a pure reframe and must not re-meter. Clearing the
         per-file bounds makes the next render re-analyze over the new (smaller) ROI,
