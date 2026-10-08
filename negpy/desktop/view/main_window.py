@@ -201,6 +201,10 @@ class MainWindow(QMainWindow):
         if space_pan_filter is not None:
             space_pan_filter.uninstall()
         try:
+            self.controller.flush_sidecars()
+        except Exception:
+            logger.exception("Failed to flush sidecars")
+        try:
             geo = self.normalGeometry() if self.isMaximized() or self.isFullScreen() else self.geometry()
             self.controller.session.repo.save_global_settings(
                 {

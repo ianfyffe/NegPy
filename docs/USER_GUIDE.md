@@ -15,7 +15,7 @@ If Windows blocks the default data folder, NegPy suggests `%LOCALAPPDATA%\NegPy\
 ### Screen layout
 
 *   **Left, the film strip**: your frames as a contact sheet, with import, sorting and triage tools.
-*   **Center, the canvas**: the live preview, where most tools act. Scroll or pinch to zoom, drag to pan. The bottom toolbar holds Fit/**1:1** zoom (one scan pixel per screen pixel; with **HQ** off, a **preview res · HQ off** pill marks a scaled-up preview), undo/redo, rotate/flip (on every selected frame) and more. The **⋯** menu holds every action, including **Preferences…** (§15), **Edit Toolbar…** (put any menu item on the toolbar) and **Persistent Settings…**. Right-click the image for **Reset View**, **Sticky Zoom**, the pickers, copy/paste settings, **Reset Settings**, **Reset to Roll Settings** and **Unload** (drop the frame from the session; its edit stays).
+*   **Center, the canvas**: the live preview, where most tools act. Scroll or pinch to zoom, drag to pan. The bottom toolbar holds Fit/**1:1** zoom (one scan pixel per screen pixel; with **HQ** off, a **preview res · HQ off** pill marks a scaled-up preview), undo/redo, rotate/flip (on every selected frame) and more. The **⋯** menu holds every action, including **Preferences…** (§15), **Edit Toolbar…** (put any menu item on the toolbar) and **Persistent Settings…**. Right-click the image for **Reset View**, **Sticky Zoom**, the pickers, copy/paste settings, **Reset Settings**, **Reset to Roll Settings**, **Load Edit from Sidecar…** and **Unload** (drop the frame from the session; its edit stays).
 *   **Right, the controls**: tabs **Roll** / **Frame** / **Metadata** / **Gear** / **Export** / **Scan**. **Frame** has a pinned **Analysis** readout and its own row of tabs below it. Roll and Frame change the render; the other tabs do not.
 
 Drag a panel by its top edge (the strip above Session, or the margin around the **Find** box) to float it; its pin button docks it again. **Shift+H** hides and shows both panels. NegPy remembers the layout and each dialog's size and position; **Reset Panel Layout** (**⋯** menu) restores the default.
@@ -146,7 +146,7 @@ Right-click a roll for:
 
 *   **Close Roll…** (**loaded** roll only): empties the Film Strip and returns to the Library. Asks first; edits stay saved.
 *   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default). In a cloud-sync folder (Dropbox, iCloud, OneDrive) the sync can treat that rename as a delete and re-upload.
-*   **Delete…**: forgets the roll only; folder, images and edits stay. **Import Folder as a Roll…** brings it back. **Clear Library** in *Manage Database* forgets all rolls.
+*   **Delete…**: forgets the roll only; folder, images, edits and its `.negpy-roll` file stay. **Import Folder as a Roll…** brings it back and offers the roll file. **Clear Library** in *Manage Database* forgets all rolls.
 *   **Roll Analysis** (**loaded** roll only): runs Roll Analysis ([§10.5](#105-roll-analysis)) and stores the roll's baseline.
 
 #### Rolls that are not folders
@@ -248,7 +248,7 @@ Thumbnails are positives. An unopened frame shows a quick inversion of a reduced
 Right-click a thumbnail, or use shortcuts, to mark frames (multi-selection works; marks persist):
 
 *   **Keep**: a check badge.
-*   **Reject**: a cross badge and dimming; batch exports and sidecar writes skip it. The file is never changed.
+*   **Reject**: a cross badge and dimming; batch exports and Export Sidecars skip it, but Keep Current still mirrors the mark, so the reject travels. The file is never changed.
 
 #### Reading the badges
 
@@ -652,7 +652,7 @@ A **work print** is a named version of this frame, like the test prints kept on 
 *   **Click** one to make it live. That is an edit, so **Ctrl+Z** restores the previous state.
 *   **Right-click** for **Export This Version…**, **Rename…** or **Delete**. Delete asks first.
 
-Work prints are never pruned, unlike the undo history. They belong to the frame and live in the database, not in `.negpy` sidecars.
+Work prints are never pruned, unlike the undo history. They belong to the frame, live in the database and travel in `.negpy` sidecars.
 
 ### Edit history
 
@@ -683,7 +683,7 @@ How the files become frames. Neither toggle has a scope pair.
 
 *   **Trichrome Mode** (three-exposure narrowband capture): assembles each frame from a red, green and blue exposure, grouped by capture time (else filename order), so shoot each frame's three back to back. Shots that are not one of each color of the same frame stay separate, for pairing by hand. An assembled frame has the three-dot badge ([Triage](#triage-culling-the-roll)).
 *   **Edit Triplet…** (pen icon): the **Edit RGB Triplet…** dialog for the current frame. **Align channels (sub-pixel)** registers green and blue to red, removing color fringes.
-*   **Merge Frame to TIFF Negative…** / **Merge Selected to TIFF Negative…** (right-click): replaces each triplet or stitch with one 16-bit linear TIFF negative beside its first source (`<red name>_RGB.tif`, `<first part name>_STITCH.tif`). It renders the same and keeps the edit, marks and scene. A stitch also bakes in flat field and sensor correction and cannot be unstitched. **Move each merged frame's source files to the Trash** (on by default) trashes the sources once the file is verified. A frame already merged is left alone (delete its negative to merge again); brackets, slides and LinearRaw DNG sources are skipped.
+*   **Merge Frame to TIFF Negative…** / **Merge Selected to TIFF Negative…** (right-click): replaces each triplet or stitch with one 16-bit linear TIFF negative beside its first source (`<red name>_RGB.tif`, `<first part name>_STITCH.tif`). It renders the same and keeps the edit, marks and scene; with **Keep Current** on, it gets its own `.negpy` sidecar. A stitch also bakes in flat field and sensor correction and cannot be unstitched. **Move each merged frame's source files to the Trash** (on by default) trashes the sources and their sidecars once the file is verified. A frame already merged is left alone (delete its negative to merge again); brackets, slides and LinearRaw DNG sources are skipped.
 
 The line under the buttons names the two exposures the frame is assembled from. Each roll remembers its own Trichrome Mode; a new roll, or a batch that is not one roll, takes the mode last chosen.
 
@@ -691,7 +691,7 @@ The line under the buttons names the two exposures the frame is assembled from. 
 
 **Half Frame Mode** splits each scan into two frames, for half-frame cameras; each half is edited and metered on its own. Turning it on detects the gutter, its direction and the film crop on every loaded scan. Each roll remembers its own state; it is disabled for a batch that is not one roll.
 
-*   **Adjust…**: drag the green box to crop and the orange line to set the split; pick **Split direction** (*Vertical* cuts left/right, *Horizontal* top/bottom) and **Cut thickness** (the separator band to discard). **Auto-detect** re-finds all three. **Apply**'s ▾ applies to the current, selected or all frames (all sets the roll default).
+*   **Adjust…**: drag the green box to crop and the orange line to set the split; pick **Split direction** (*Vertical* cuts left/right, *Horizontal* top/bottom) and **Cut thickness** (the separator band to discard). **Auto-detect** re-finds all three. **Apply**'s ▾ applies to the current, selected or all frames (all sets the roll default; each roll keeps its own).
 *   **Detect All**: re-runs the batch detection.
 *   **Unsplit** (enabled on a split frame): reverts it, as does its right-click item.
 
@@ -842,7 +842,7 @@ The scanning optics: one lens correction and one light correction for every fram
 
 Corrects uneven illumination (vignetting, falloff) from a copy-stand or scanner light, using a shot of the bare light source.
 
-*   **Profile**, with **+** and **trash** on the FLAT FIELD CORRECTION header: **+** bakes a reference image into a named profile in NegPy's `flatfield` folder, after which the image can be deleted. **Trash** asks first; every frame using the profile loses its correction.
+*   **Profile**, with **+** and **trash** on the FLAT FIELD CORRECTION header: **+** bakes a reference image into a named profile in NegPy's `flatfield` folder, after which the image can be deleted. **Trash** asks first; every frame using the profile loses its correction. A frame edited on another computer names a profile that may not be here; copy its `.npz` into the `flatfield` folder to restore the correction.
 *   **Apply Flat Field** (bulb toggle beside the dropdown): apply the selected profile to this roll, enabled once a profile exists.
 
 A newly chosen profile becomes the rig's default for the next roll.
@@ -993,7 +993,11 @@ The printer's record for this frame: the numbered dodge/burn masks and a card wi
 <!-- panel:export_sidecars -->
 #### Sidecars
 
-**Save on Export** writes a `.negpy` sidecar next to each source on export. **Export Sidecars** writes them for all visible frames now and reports failures in read-only folders. Edits always stay in the database too. A frame with no edit in the database takes its sidecar when its folder opens. **Load Edit from Sidecar…** (right-click a frame or the image) replaces the frame's edit with a chosen `.negpy`, as one undo step.
+**Keep Current** mirrors each frame's edit, mark and work prints to a `.negpy` sidecar beside its source, and each folder roll's settings to a `.negpy-roll` file in its folder. **Export Sidecars** writes them now for every visible frame and reports failures in read-only folders. Edits always stay in the database too. Undo history, stitches, HDR merges, a roll's own copy of a frame, flat-field profiles and presets do not travel.
+
+Sidecars carry edits between computers. A frame with no edit here loads its sidecar when its folder opens. A newer mark or work print (saved, renamed or deleted) loads without asking. Edits saved after the ones here are listed in one dialog: **Load Selected** replaces them, **Keep Mine** keeps yours and stops asking for those versions. **Load Edit from Sidecar…** (right-click a frame or the image) replaces the frame's edit with a chosen `.negpy` whatever its age, as one undo step; the frame's own sidecar also brings a newer mark or work print. The newer copy wins by its saved time, so keep the computers' clocks close.
+
+The roll file holds the card defaults, scenes, Roll Analysis baselines, Half Frame and Trichrome Mode, the half-frame crop and split, and the cards each frame locks. A roll new to a computer takes it without asking; a newer one is listed first in the dialog as **Roll settings**. A virtual roll has no roll file.
 
 <!-- panel:contact_sheet -->
 #### Contact Sheet
@@ -1206,7 +1210,7 @@ The button reads **"Open Releases Page"** when NegPy cannot update itself: a sou
 ## Additional Info
 
 *   **GPU acceleration**: turn it off in **Preferences → Performance**, or force a backend in `override.toml`, if you suspect a driver issue.
-*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. Optional `.negpy` sidecars mirror them.
+*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. Optional `.negpy` sidecars (Export → Sidecars) mirror them and carry them between computers.
 *   **Saving edits**: written on export, on frame switch, or on save. Closing mid-edit before any of these loses unsaved changes.
 *   **Keyboard shortcuts**: [KEYBOARD.md](KEYBOARD.md)
 *   **Filename templating**: [TEMPLATING.md](TEMPLATING.md)

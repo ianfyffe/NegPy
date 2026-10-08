@@ -13,8 +13,8 @@ from negpy.features.process.sensor import effective_sensor_matrix
 from negpy.features.rgbscan.models import RgbScanConfig
 from negpy.infrastructure.storage.repository import StorageRepository
 from negpy.services.assets import rolls
-from negpy.services.assets.sidecar import load_sidecar, sidecar_path_for, write_sidecar
-from negpy.services.assets.frame_merge import carry_edit, carry_sidecar, merged_edit
+from negpy.services.assets.sidecar import Sidecar, sidecar_path_for, write_sidecar
+from negpy.services.assets.frame_merge import carry_edit, merged_edit
 from negpy.services.export import frame_merge
 from negpy.services.export.frame_merge import (
     MergeCancelled,
@@ -164,7 +164,7 @@ def test_carry_edit_copies_everything_and_keeps_the_original(tmp_path):
     repo.save_file_settings("red", cfg, file_path=red)
     repo.save_history_step("red", 0, cfg)
     repo.save_work_print("red", "Warm", cfg)
-    repo.save_file_mark("red", "keeper", file_path=red)
+    repo.save_file_mark("red", "keeper", file_path=red, marked_at=100.0)
     roll_id = rolls.create_virtual_roll(repo, "Roll", [red, green, blue, "/other.ARW"])
     rolls.fork_edit(repo, roll_id, "red", red, cfg)
     rolls.set_frame_override(repo, roll_id, "red", "film", True)
@@ -177,6 +177,10 @@ def test_carry_edit_copies_everything_and_keeps_the_original(tmp_path):
     assert repo.load_work_print("new", "Warm").rgbscan == RgbScanConfig()
     assert repo.load_file_marks()["new"] == "keeper"
     assert repo.load_file_marks_by_path()[new_path] == "keeper"
+    # Sidecars compare these stamps, so a copied row needs one: the mark keeps its time.
+    assert repo.load_mark_record("new") == ("keeper", 100.0)
+    assert repo.load_work_print_stamps("new")["Warm"] > 0
+    assert repo.load_file_record(rolls.roll_edit_hash("new", roll_id))[1] > 0
     assert repo.load_file_settings(rolls.roll_edit_hash("new", roll_id)).rgbscan == RgbScanConfig()
     entry = rolls.roll_for_id(repo, roll_id)
     assert entry["member_paths"] == [new_path, "/other.ARW"]
@@ -212,18 +216,6 @@ def test_a_roll_sensor_matrix_is_locked_out_of_the_merged_frame(tmp_path):
     resolved = rolls.resolve_roll_config(repo, roll_id, "new", repo.load_file_settings("new"))
     assert resolved.process.sensor_matrix is None
     assert resolved.process.narrowband_scan is True
-
-
-def test_a_sidecar_moves_only_when_the_red_exposure_has_one(tmp_path):
-    red, green, blue = _triplet(tmp_path)
-    new_path = str(tmp_path / "IMG_1_RGB.tif")
-    cfg = _triplet_config(green, blue)
-    assert carry_sidecar(red, new_path, cfg, "rgb") is False
-    assert not os.path.exists(sidecar_path_for(new_path))
-
-    write_sidecar(red, cfg)
-    assert carry_sidecar(red, new_path, cfg, "rgb") is True
-    assert load_sidecar(new_path).rgbscan == RgbScanConfig()
 
 
 def _finish(tmp_path, monkeypatch, results, trash=True):
@@ -284,7 +276,7 @@ def test_finish_swaps_the_frame_and_trashes_its_exposures(tmp_path, monkeypatch)
     red, green, blue = _triplet(tmp_path)
     out = str(tmp_path / "IMG_1_RGB.tif")
     open(out, "wb").close()
-    write_sidecar(red, _triplet_config(green, blue))
+    write_sidecar(red, Sidecar(config=_triplet_config(green, blue)))
     asset = _asset(red, green, blue)
     results = [FrameMergeResult(asset, out, kind="rgb", new_hash="new")]
     ctrl, trashed, finish = _finish(tmp_path, monkeypatch, results)
@@ -298,6 +290,9 @@ def test_finish_swaps_the_frame_and_trashes_its_exposures(tmp_path, monkeypatch)
     assert swapped[1]["path"] == out and swapped[1]["hash"] == "new"
     assert ctrl.session.repo.load_file_settings("new") is not None
     assert trashed == [red, green, blue, sidecar_path_for(red)]
+    # The merged file's sidecar is the mirror's to write, after the queue left by the sources is flushed.
+    ctrl.flush_sidecars.assert_called_once()
+    assert [a["path"] for a in ctrl._mirror_sidecars_for.call_args.args[0]] == [out]
 
 
 def test_finish_keeps_the_exposures_of_a_frame_that_failed(tmp_path, monkeypatch):
@@ -499,8 +494,8 @@ def test_finish_dissolves_the_composite_and_trashes_every_part(tmp_path, monkeyp
         open(p, "wb").close()
     out = str(tmp_path / "IMG_1_STITCH.tif")
     open(out, "wb").close()
-    write_sidecar(primary, WorkspaceConfig())
-    write_sidecar(part, WorkspaceConfig())
+    write_sidecar(primary, Sidecar(config=WorkspaceConfig()))
+    write_sidecar(part, Sidecar(config=WorkspaceConfig()))
     asset = _stitch_asset(primary, part, triplets=(("", ""), (green, blue)))
     asset["process_mode"] = "Slide"
     results = [FrameMergeResult(asset, out, kind="stitch", new_hash="new")]

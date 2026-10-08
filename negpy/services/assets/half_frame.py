@@ -18,6 +18,8 @@ logger = get_logger(__name__)
 _SEP = "#"
 
 SPLIT_SCANS_KEY = "half_frame_scans"
+PROFILE_KEY = "half_frame_profile"
+PROFILE_BY_ROLL_KEY = "half_frame_profile_by_roll"
 
 # The inter-frame gap in a joined diptych, in output space. Black is what the gap between
 # two exposures looks like once rendered; swap for the finish border colour if wanted.
@@ -61,6 +63,55 @@ def forget_split_scan(repo: Any, file_hash: Optional[str]) -> None:
     known = split_scans(repo)
     if file_hash in known:
         repo.save_global_setting(SPLIT_SCANS_KEY, sorted(known - {file_hash}))
+
+
+def half_frame_profile(repo: Any, roll_id: Optional[str]) -> Optional[dict]:
+    """The ``{crop_rect, split_x, gutter_thickness, split_axis}`` profile for *roll_id*: the roll's own,
+    else the one profile an ad hoc session saves, which every roll without its own shares."""
+    if roll_id:
+        by_roll = repo.get_global_setting(PROFILE_BY_ROLL_KEY, default=None) or {}
+        if by_roll.get(roll_id):
+            return by_roll[roll_id]
+    return repo.get_global_setting(PROFILE_KEY, default=None)
+
+
+def save_half_frame_profile(repo: Any, roll_id: Optional[str], profile: dict) -> None:
+    """Save *profile* for *roll_id* only; with no roll, as the shared fallback."""
+    if roll_id:
+        by_roll = dict(repo.get_global_setting(PROFILE_BY_ROLL_KEY, default=None) or {})
+        by_roll[roll_id] = profile
+        repo.save_global_setting(PROFILE_BY_ROLL_KEY, by_roll)
+    else:
+        repo.save_global_setting(PROFILE_KEY, profile)
+
+
+def roll_half_frame_profile(repo: Any, roll_id: str) -> Optional[dict]:
+    """The roll's own profile, without the shared fallback; None when it has none."""
+    by_roll = repo.get_global_setting(PROFILE_BY_ROLL_KEY, default=None)
+    profile = by_roll.get(roll_id) if isinstance(by_roll, dict) else None
+    return profile if isinstance(profile, dict) and profile else None
+
+
+def set_roll_half_frame_profile(repo: Any, roll_id: str, profile: Optional[dict]) -> None:
+    """Replace the roll's own profile; None drops it, so the roll reads the shared one."""
+    by_roll = repo.get_global_setting(PROFILE_BY_ROLL_KEY, default=None)
+    by_roll = {k: v for k, v in (by_roll if isinstance(by_roll, dict) else {}).items() if k != roll_id}
+    if profile:
+        by_roll[roll_id] = profile
+    repo.save_global_setting(PROFILE_BY_ROLL_KEY, by_roll)
+
+
+def valid_half_frame_profile(value: Any) -> Optional[dict]:
+    """*value* as a ``{crop_rect, split_x, gutter_thickness, split_axis}`` profile, or None when it
+    is not one. A missing ``split_axis`` reads as "x"."""
+    if not isinstance(value, dict):
+        return None
+    rect, split, gutter = value.get("crop_rect"), value.get("split_x"), value.get("gutter_thickness")
+    axis = value.get("split_axis") or "x"
+    numbers = [*rect, split, gutter] if isinstance(rect, list) and len(rect) == 4 else None
+    if numbers is None or not all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in numbers) or axis not in ("x", "y"):
+        return None
+    return {"crop_rect": [float(n) for n in rect], "split_x": float(split), "gutter_thickness": float(gutter), "split_axis": axis}
 
 
 def half_hash(file_hash: str, half: int) -> str:

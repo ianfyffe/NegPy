@@ -1,6 +1,5 @@
 """Carries an assembled frame's edit and roll records onto the TIFF merged from it."""
 
-import os
 from dataclasses import replace
 from typing import Any, List
 
@@ -9,7 +8,6 @@ from negpy.features.flatfield.models import FlatFieldConfig
 from negpy.features.rgbscan.models import RgbScanConfig
 from negpy.features.stitch.models import StitchConfig
 from negpy.services.assets import rolls
-from negpy.services.assets.sidecar import sidecar_path_for, write_sidecar
 
 #: Cards the merged file bakes, per kind; locked on the new frame so an Apply cannot re-apply them.
 _BAKED_CARDS = {"rgb": ("sensor",), "stitch": ("sensor", "flatfield")}
@@ -68,10 +66,3 @@ def _roll_would_reapply(defaults: dict, card: str) -> bool:
     if card == "flatfield":
         return bool(defaults.get("apply"))
     return False
-
-
-def carry_sidecar(old_path: str, new_path: str, config: WorkspaceConfig, kind: str) -> bool:
-    if not os.path.exists(sidecar_path_for(old_path)):
-        return False
-    write_sidecar(new_path, merged_edit(config, kind))
-    return True
