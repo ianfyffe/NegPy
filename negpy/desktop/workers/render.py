@@ -751,7 +751,9 @@ class AssetDiscoveryWorker(QObject):
 
         from negpy.services.assets.half_frame import detect_split_and_crop_for_file
 
-        detected = self._map_files(task.paths, detect_split_and_crop_for_file, lambda p: f"Split {os.path.basename(p)}", _DECODE_WORKERS)
+        detected = self._map_files(
+            task.paths, detect_split_and_crop_for_file, lambda p: f"Finding split in {os.path.basename(p)}", _DECODE_WORKERS
+        )
         self.splits_detected.emit(dict(zip(task.paths, detected)))
 
     @pyqtSlot(AssetDiscoveryTask)
@@ -762,7 +764,7 @@ class AssetDiscoveryWorker(QObject):
         import os
 
         from negpy.infrastructure.loaders.constants import is_hidden_path, is_ir_sidecar_path
-        from negpy.kernel.image.logic import file_hashes
+        from negpy.infrastructure.storage.hash_cache import FileHashCache
         from negpy.services.assets.migrations.hash import blank_ambiguous_legacy_hashes
 
         discovered_paths = []
@@ -785,7 +787,9 @@ class AssetDiscoveryWorker(QObject):
         discovered_paths = [p for p in discovered_paths if not is_ir_sidecar_path(p)]
 
         valid_assets = []
-        digests = self._map_files(discovered_paths, file_hashes, os.path.basename, _HASH_WORKERS)
+        digests = FileHashCache(APP_CONFIG.hash_cache_db_path).file_hashes(
+            discovered_paths, lambda fn: self._map_files(discovered_paths, fn, lambda p: f"Hashing {os.path.basename(p)}", _HASH_WORKERS)
+        )
 
         for path, digest in zip(discovered_paths, digests):
             if digest is None:
@@ -849,7 +853,9 @@ class AssetDiscoveryWorker(QObject):
         auto_split = profile is None
         if auto_split:
             paths = [a["path"] for a in assets if _splittable(a) and base_hash(a["hash"]) not in overrides]
-            detected = self._map_files(paths, detect_split_axis_for_file, lambda p: f"Split {os.path.basename(p)}", _DECODE_WORKERS)
+            detected = self._map_files(
+                paths, detect_split_axis_for_file, lambda p: f"Finding split in {os.path.basename(p)}", _DECODE_WORKERS
+            )
             splits = dict(zip(paths, detected))
         else:
             splits = {}
@@ -898,18 +904,26 @@ class AssetDiscoveryWorker(QObject):
         """
         import os
 
-        from negpy.kernel.image.logic import calculate_file_hash
+        from negpy.infrastructure.storage.hash_cache import FileHashCache
 
         hashes = {a["path"]: a["hash"] for a in assets}
+        unhashed = [
+            path
+            for a in assets
+            if (gb := triplets.get(a["path"])) and len(gb) > 3
+            for path, want in zip(gb[:2], list(gb[3])[1:])
+            if want and path and path not in hashes and os.path.exists(path)
+        ]
+        unhashed = list(dict.fromkeys(unhashed))
+        digests = FileHashCache(APP_CONFIG.hash_cache_db_path).file_hashes(
+            unhashed, lambda fn: self._map_files(unhashed, fn, lambda p: f"Hashing {os.path.basename(p)}", _HASH_WORKERS)
+        )
+        hashes.update({path: digest[0] if digest else "" for path, digest in zip(unhashed, digests)})
         out = []
         parts: set = set()
         for a in assets:
             gb = triplets.get(a["path"])
             stored = list(gb[3]) if gb and len(gb) > 3 else ["", "", ""]
-            if gb:
-                for path, want in zip(gb[:2], stored[1:]):
-                    if want and path and path not in hashes and os.path.exists(path):
-                        hashes[path] = calculate_file_hash(path)
             # A stated member hash re-attaches only while the file still has it.
             changed = gb and any(want and path in hashes and hashes[path] != want for path, want in zip((a["path"], gb[0], gb[1]), stored))
             if gb and not changed and gb[0] and gb[1] and os.path.exists(gb[0]) and os.path.exists(gb[1]):
@@ -1034,12 +1048,12 @@ class AssetDiscoveryWorker(QObject):
         by_path = {a["path"]: a for a in assets}
         ordered = sorted(by_path, key=lambda p: os.path.basename(p).lower())
 
-        stamps = self._map_files(ordered, capture_timestamp, lambda p: f"Time {os.path.basename(p)}", _HASH_WORKERS)
+        stamps = self._map_files(ordered, capture_timestamp, lambda p: f"Reading capture time of {os.path.basename(p)}", _HASH_WORKERS)
         times = {p: t for p, t in zip(ordered, stamps) if t}
         by_time = len(times) == len(ordered)
         ordered = capture_ordered(ordered, times)
 
-        probes = self._map_files(ordered, probe_frame, lambda p: f"RGB {os.path.basename(p)}", _DECODE_WORKERS)
+        probes = self._map_files(ordered, probe_frame, lambda p: f"Checking RGB channel of {os.path.basename(p)}", _DECODE_WORKERS)
         items = [(p, classify_channel(pr.means)) for p, pr in zip(ordered, probes) if pr is not None]
         signatures = {p: pr.signature for p, pr in zip(ordered, probes) if pr is not None}
 
