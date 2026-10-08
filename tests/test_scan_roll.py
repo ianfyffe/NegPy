@@ -245,7 +245,7 @@ def test_a_scan_into_another_roll_reads_that_rolls_split_profile():
 
 def test_scan_as_roll_reads_the_folders_roll_file_before_the_mode_dates_the_roll(tmp_path):
     from negpy.services.assets import rolls
-    from negpy.services.assets.sidecar import RollSidecar, roll_sidecar_from_repo, write_roll_sidecar
+    from negpy.services.assets.sidecar import RollSidecar, _read_json, plan_roll_file_write, roll_sidecar_path, write_roll_sidecar
 
     folder = str(tmp_path / "R1")
     os.mkdir(folder)
@@ -262,5 +262,5 @@ def test_scan_as_roll_reads_the_folders_roll_file_before_the_mode_dates_the_roll
     assert rolls.roll_trichrome_mode(c.session.repo, roll_id) is True
     assert rolls.roll_updated_at(c.session.repo, roll_id) > 1000.0
     c._mirror_roll.assert_called_once_with(roll_id)
-    _, written = roll_sidecar_from_repo(c.session.repo, roll_id)
-    assert written.state == {"defaults": {"hue_trim": 2.0}} and written.trichrome_mode is True
+    written = plan_roll_file_write(c.session.repo, roll_id, _read_json(roll_sidecar_path(folder)))
+    assert written["defaults"] == {"hue_trim": 2.0} and written["trichrome_mode"] is True
