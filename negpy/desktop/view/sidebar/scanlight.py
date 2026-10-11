@@ -98,6 +98,10 @@ _MANUAL_PRESET = "\x00create-manual"
 
 _SETTING_NAMES = {"shutter": "shutter", "iso": "ISO", "aperture": "aperture"}
 
+_SAVE_TIP = "Name and save the manual preset you're building, or the camera's exposure under a built-in white-light preset"
+# Slides are metered one by one, so a fixed white-light exposure is saved for negatives only.
+_SAVABLE_WHITE_MODES = (WhiteCaptureMode.AUTO, WhiteCaptureMode.BW)
+
 
 # LED settle before each exposure. Narrowband PWM LEDs reach full brightness in under
 # 10 ms and set_color is a fire-and-forget serial write, so 50 ms keeps an
@@ -219,6 +223,7 @@ class ScanlightSidebar(QWidget):
         self._cam_setting_debounce.setInterval(250)
         self._cam_setting_debounce.timeout.connect(self._flush_camera_settings)
         self._cam_pending: dict[str, int] = {}
+        self._stepper_writes = 0  # flushed stepper writes the worker has not confirmed yet
         # A preset's exposure writes on the worker (setting -> label), and what did not land.
         self._preset_writes: dict[str, str] = {}
         self._preset_write_problems: list[str] = []
@@ -338,9 +343,7 @@ class ScanlightSidebar(QWidget):
             )
         )
         self.preset_new_btn = icon_button("fa5s.plus", "Create a preset by calibrating on the film base (auto-meters the exposure)")
-        self.preset_save_btn = icon_button(
-            "fa5s.save", "Name and save the manual preset you're building (only while in manual-preset mode)"
-        )
+        self.preset_save_btn = icon_button("fa5s.save", _SAVE_TIP)
         self.preset_del_btn = icon_button("fa5s.trash", "Delete the selected preset")
         rgb.addLayout(header_row(section_subheader("PRESET"), self.preset_new_btn, self.preset_save_btn, self.preset_del_btn))
         rgb.addWidget(self.preset_combo)
@@ -363,7 +366,7 @@ class ScanlightSidebar(QWidget):
         rgb.addWidget(self.off_btn)
 
         # ISO / shutter / aperture: the preset's exposure, wrapped so it hides as a unit for a
-        # white-light preset, whose exposure is set in the live view. Each is a stepper, read-only
+        # built-in white-light preset, whose exposure is set in the live view. Each is a stepper, read-only
         # while a preset is active because the scan forces these onto the body, and writable only
         # in "manual preset" mode, where it steps through this body's own choices. Calibration
         # normally solves the shutter.
@@ -375,7 +378,9 @@ class ScanlightSidebar(QWidget):
         _exp.addWidget(section_subheader("EXPOSURE"))
         self.capture_btn = ChoiceButton(CAPTURE_MODES, CAPTURE_MODE_TOOLTIP)
         self.capture_btn.setEnabled(False)  # the preset's mode, editable only while building a manual preset
-        _exp.addLayout(field_row("Capture mode", self.capture_btn))
+        capture_row = field_row("Capture mode", self.capture_btn)
+        self._capture_label = capture_row.itemAt(0).widget()
+        _exp.addLayout(capture_row)
         self.iso_stepper = SettingStepper()
         self.shutter_stepper = SettingStepper()
         self.aperture_stepper = SettingStepper()
@@ -575,7 +580,7 @@ class ScanlightSidebar(QWidget):
 
     def _apply_preset_exposure(self, iso: str, aperture: str) -> None:
         """Point the active exposure (settings + the read-only ISO/f steppers) at a preset's baked
-        values, so a scan forces them. Blank for white-light / no preset — the camera stays free."""
+        values, so a scan forces them. Blank for a built-in white-light preset / no preset — the camera stays free."""
         self._settings = replace(self._settings, iso=iso, aperture=aperture)
         self._show_lone(self.iso_stepper, iso)
         self._show_lone(self.aperture_stepper, aperture)
@@ -590,15 +595,17 @@ class ScanlightSidebar(QWidget):
             (self.w_slider, preset.w_level),  # RGB presets store 0 → the white LED stays off
         ):
             self._set_slider(slider, value)
-        self._show_lone(self.shutter_stepper, preset.shutter_r)  # one shared shutter (r/g/b are equal)
+        white = bool(preset.white_process_mode)
+        self._show_lone(self.shutter_stepper, preset.shutter_w if white else preset.shutter_r)  # one shared shutter (r/g/b are equal)
         self._set_capture_mode(preset.single_capture)
         self._settings = replace(
             self._settings,
-            white_mode=False,
+            white_mode=white,
+            white_process_mode=WhiteCaptureMode(preset.white_process_mode) if white else self._settings.white_process_mode,
             shutter_r=preset.shutter_r,
             shutter_g=preset.shutter_r,
             shutter_b=preset.shutter_r,
-            shutter_w=preset.shutter_r,
+            shutter_w=preset.shutter_w if white else preset.shutter_r,
         )
         self._apply_preset_exposure(preset.iso, preset.aperture)  # a scan forces these on the body
         self._apply_preset_camera_settings(preset)  # and reflect them in the live view now
@@ -650,7 +657,7 @@ class ScanlightSidebar(QWidget):
             return
         if name in _BUILTIN_WHITE_PRESETS:
             # Built-in white-light mode, one white exposure for B&W or slide: white on, RGB off.
-            self._settings = replace(self._settings, white_mode=True, white_process_mode=_BUILTIN_WHITE_PRESETS[name])
+            self._settings = replace(self._settings, white_mode=True, white_process_mode=_BUILTIN_WHITE_PRESETS[name], shutter_w="")
             for slider, value in ((self.r_slider, 0), (self.g_slider, 0), (self.b_slider, 0), (self.w_slider, 255)):
                 self._set_slider(slider, value)
             self._show_lone(self.shutter_stepper, "")
@@ -673,6 +680,8 @@ class ScanlightSidebar(QWidget):
         name = self.preset_combo.currentData()
         if name in _BUILTIN_WHITE_PRESETS:
             text = "Single white-light exposure — for B&W or slide film."
+        elif self._preset_selected() and getattr(self._presets.get(name), "white_process_mode", ""):
+            text = "Single white-light exposure at the saved ISO, shutter and aperture."
         elif self._preset_selected() and getattr(self._presets.get(name), "single_capture", False):
             text = "Single exposure with red, green and blue lit together."
         else:
@@ -681,21 +690,73 @@ class ScanlightSidebar(QWidget):
         self.preset_hint.setVisible(bool(self.preset_hint.text()))
 
     def _on_preset_save(self) -> None:
-        if not self._manual_mode:
-            return  # Save only stores a hand-built preset — the button is greyed out otherwise
-        name, ok = QInputDialog.getText(self, "Save Manual Preset", "Film stock name:")
+        mode = _BUILTIN_WHITE_PRESETS.get(self.preset_combo.currentData())
+        if not self._manual_mode and mode is None:
+            return  # the button is greyed out otherwise
+        if mode is not None and mode not in _SAVABLE_WHITE_MODES:
+            self._set_status("Save: meter each slide; a slide preset saves no exposure")
+            return
+        white = self._white_preset_from_body(mode) if mode is not None else None
+        if mode is not None and white is None:
+            return
+        title = "Save Manual Preset" if white is None else "Save White-Light Preset"
+        name, ok = QInputDialog.getText(self, title, "Film stock name:")
         name = name.strip()
         if not ok or not name or name in _BUILTIN_WHITE_PRESETS:
             return
-        self._update_settings_from_ui()  # capture the final slider + stepper values
         self._manual_mode = False  # leaving manual mode → the saved preset becomes the read-only selection
-        self._save_current_as_preset(name)  # persist + reload + select + re-gate
+        if white is not None:
+            self._presets.save(name, white)
+            self._reload_presets(select=name)
+        else:
+            self._update_settings_from_ui()  # capture the final slider + stepper values
+            self._save_current_as_preset(name)  # persist + reload + select + re-gate
         saved = self._presets.get(name)
         if saved is not None:
             self._apply_preset(saved)  # show it read-only (lone steppers, disabled sliders)
         self._push_light()
         self._apply_gating()
         self._set_status(f"Saved preset “{name}”")
+
+    def _white_preset_from_body(self, mode: WhiteCaptureMode) -> ScanlightPreset | None:
+        """The body's exposure as a white-light preset, or None with the reason on the status line.
+        A scan forces the shutter, so one the app cannot set is refused."""
+        if not self.lv_btn.isChecked():
+            self._set_status("Save: start the live view first, so the camera's exposure can be read")
+            return None
+        if self._scanning or self._calibrating_preset:
+            self._set_status("Save: wait for the capture to finish")
+            return None
+        # A stepper write rewrites the settings JSON only once the body confirms it.
+        stepper_writes = self._cam_pending or self._cam_setting_debounce.isActive() or self._stepper_writes
+        if self._metering or self._pending_exposure_writes or stepper_writes:
+            self._set_status("Save: wait for the exposure to reach the camera")
+            return None
+        data = self._settings_json()
+        candidates = self._available_shutters(data.get("shutter") or {})
+        shutter = self._current_setting_label("shutter", data=data)
+        if not candidates:
+            self._set_status("Save: this body publishes no writable shutter")
+            return None
+        if shutter not in candidates:  # Bulb, a bad label, or past the ladder's span
+            self._set_status(f"Save: set the shutter between {candidates[0]} and {candidates[-1]} first")
+            return None
+        # No aperture setting is a manual lens: the preset stores none. One that is read-only
+        # now would leave the scan at whatever the body holds.
+        aperture = data.get("aperture")
+        if isinstance(aperture, dict) and not aperture.get("writable", False):
+            self._set_status("Save: the camera reports the aperture as read-only; wait a moment, then save again")
+            return None
+        return ScanlightPreset(
+            r_level=0,
+            g_level=0,
+            b_level=0,
+            w_level=255,
+            iso=self._current_setting_label("iso", data=data),
+            aperture=self._current_setting_label("aperture", data=data),
+            white_process_mode=mode.value,
+            shutter_w=shutter,
+        )
 
     def _save_current_as_preset(self, name: str, sensor_profile: str = "") -> None:
         self._update_settings_from_ui()
@@ -757,10 +818,10 @@ class ScanlightSidebar(QWidget):
             return {}
         return data if isinstance(data, dict) else {}
 
-    def _current_setting_label(self, key: str, require_writable: bool = False) -> str:
-        """The current label for a live camera setting (from the stream JSON), '' if unavailable.
+    def _current_setting_label(self, key: str, require_writable: bool = False, data: dict | None = None) -> str:
+        """The current label for a live camera setting (from the stream JSON, or `data`), '' if unavailable.
         `require_writable` skips a read-only property — aperture on a manual lens isn't baked."""
-        info = self._settings_json().get(key)
+        info = (self._settings_json() if data is None else data).get(key)
         if not isinstance(info, dict) or (require_writable and not info.get("writable", False)):
             return ""
         cur = info.get("cur")
@@ -770,8 +831,8 @@ class ScanlightSidebar(QWidget):
         return ""
 
     def _apply_active_preset_camera_settings(self) -> None:
-        """Push the active RGB preset's baked exposure (shutter/ISO/aperture) to the body (no-op for
-        white/built-in presets or no selection). Used when the scan live view comes up after a preset
+        """Push the active preset's baked exposure (shutter/ISO/aperture) to the body (no-op for
+        built-in white-light presets or no selection). Used when the scan live view comes up after a preset
         was picked."""
         name = self.preset_combo.currentData()
         if not name or name in _BUILTIN_WHITE_PRESETS:
@@ -781,7 +842,7 @@ class ScanlightSidebar(QWidget):
             self._apply_preset_camera_settings(preset)
 
     def _apply_preset_camera_settings(self, preset) -> None:
-        """Set the body's shutter + ISO + aperture to the values baked into the RGB preset, so the
+        """Set the body's shutter + ISO + aperture to the values baked into the preset, so the
         scan matches the calibration and the framing brightness is deterministic: the dimmed framing
         light (see framing_levels) is sized against the preset's shutter, so a body left on some
         other speed would frame too dark or too bright. Shutter first — it dominates that brightness.
@@ -790,7 +851,8 @@ class ScanlightSidebar(QWidget):
         data = self._settings_json()
         issued = 0
         self._preset_writes, self._preset_write_problems = {}, []
-        for key, label in (("shutter", preset.shutter_r), ("iso", preset.iso), ("aperture", preset.aperture)):
+        shutter = preset.shutter_w if preset.white_process_mode else preset.shutter_r
+        for key, label in (("shutter", shutter), ("iso", preset.iso), ("aperture", preset.aperture)):
             if not label:
                 continue
             info = data.get(key)
@@ -825,6 +887,7 @@ class ScanlightSidebar(QWidget):
     @pyqtSlot(str)
     def _on_camera_setting_applied(self, which: str) -> None:
         if self._pending_exposure_writes == 0:
+            self._stepper_writes = max(0, self._stepper_writes - 1)
             return  # a stepper write from manual/white mode, not one of the gated preset writes
         self._preset_writes.pop(which, None)
         self._pending_exposure_writes -= 1
@@ -965,6 +1028,7 @@ class ScanlightSidebar(QWidget):
             self.lv_window.hide()
             self._push_light()  # back to the capture light (RGB unless white mode)
             self._set_status("")  # clear the "Live view running" line once the stream stops
+        self._apply_gating()  # Save under a built-in white-light preset reads the running stream
 
     def _start_live_view_worker(self) -> None:
         """Spawn the live-view stream subprocess (shared by toggle-on and resume)."""
@@ -1057,8 +1121,8 @@ class ScanlightSidebar(QWidget):
         lands in `_on_meter_finished`. Only while the stream runs."""
         if not self.lv_btn.isChecked() or self._scanning or self._calibrating_preset or self._metering:
             return
-        if self._rgb_mode and not self._settings.white_mode:
-            return  # the button is hidden under a calibrated RGB preset; its key is not
+        if self._exposure_forced():
+            return  # the button is hidden under a preset that forces the exposure; its key is not
         # One read of the stream's JSON: the ladder, the probe's shutter and the labels the
         # reading is written back through all come from the same publish.
         info = self._settings_json().get("shutter") or {}
@@ -1340,6 +1404,7 @@ class ScanlightSidebar(QWidget):
         pending, self._cam_pending = self._cam_pending, {}
         for which, raw in pending.items():
             self.controller.set_camera_setting(which, raw)
+        self._stepper_writes += len(pending)
 
     def _refresh_camera_settings(self) -> None:
         """Poll the stream's settings JSON → refresh the ISO/Shutter/aperture steppers in both the
@@ -1594,10 +1659,10 @@ class ScanlightSidebar(QWidget):
             white_process_mode=s.white_process_mode,
             is_retake=retake,
             rgb_mode=rgb,
-            # Only the RGB triplet forces the preset's ISO/aperture. White-light and normal
-            # scanning leave the body free, since the operator sets those in the live view.
-            iso=s.iso if rgb and not s.white_mode else "",
-            aperture=s.aperture if rgb and not s.white_mode else "",
+            # A built-in white-light preset and normal scanning leave the body free, since the
+            # operator sets ISO and aperture in the live view.
+            iso=s.iso if self._exposure_forced() else "",
+            aperture=s.aperture if self._exposure_forced() else "",
             as_roll=self.output.as_roll(),
             single_capture=single,
             sensor_profile=preset.sensor_profile if preset is not None else "",
@@ -1844,31 +1909,46 @@ class ScanlightSidebar(QWidget):
 
     def _refresh_preset_ui(self) -> None:
         """Sync the preset-area widgets to the current mode. The scan live-view exposure steppers hide
-        for a calibrated RGB scan (locked to the preset; they stay for white-light and camera-only
-        modes). The sidebar exposure fields hide for a white-light preset. And the sliders + exposure
-        steppers + Save are editable only while building a manual preset — a selected preset is a
-        fixed recipe."""
-        locked = self._rgb_mode and not self._settings.white_mode
+        while a scan forces the exposure (locked to the preset; they stay for built-in white-light and
+        camera-only modes). The sidebar exposure fields hide for a built-in white-light preset, and
+        Capture mode for a saved one. And the sliders + exposure steppers + Save are editable only while
+        building a manual preset — a selected preset is a fixed recipe — or, for Save, under a built-in
+        white-light preset, whose exposure it stores."""
+        locked = self._exposure_forced()
+        white = self._settings.white_mode
         self.lv_window.settings_widget.setVisible(not locked)
         self.lv_window.meter_btn.setVisible(not locked)
         if not hasattr(self, "inter_exposure_delay_slider"):
             return  # first call lands during __init__, before the RGB section is built
-        self._exposure_widget.setVisible(not self._settings.white_mode)
+        self._exposure_widget.setVisible(locked or not white)
+        for widget in (self._capture_label, self.capture_btn):
+            widget.setVisible(not white)
         editable = self._manual_mode
         self.capture_btn.setEnabled(editable)
-        self.inter_exposure_delay_slider.setEnabled(not self._settings.single_capture)
+        self.inter_exposure_delay_slider.setEnabled(not self._settings.single_capture and not (white and locked))
         for slider in (self.r_slider, self.g_slider, self.b_slider):
             slider.setEnabled(editable)
         self.w_slider.setEnabled(False)  # the Scanlight can't light white with RGB → a manual RGB preset keeps W off
-        tip = (
-            "Set it for this preset — steps through the camera's own values."
-            if editable
-            else "Locked to the preset — pick “Create a manual preset” to set it by hand."
-        )
+        if editable:
+            tip = "Set it for this preset — steps through the camera's own values."
+        elif white:
+            tip = "Locked to the preset. Pick a built-in white-light preset, meter, then save again under this name."
+        else:
+            tip = "Locked to the preset — pick “Create a manual preset” to set it by hand."
         for stepper in (self.iso_stepper, self.shutter_stepper, self.aperture_stepper):
             stepper.setEnabled(editable)
             stepper.setToolTip(tip)
-        self.preset_save_btn.setEnabled(editable)  # the floppy only stores a hand-built preset
+        # Save under a built-in white-light preset reads the body's exposure from the running stream.
+        builtin = _BUILTIN_WHITE_PRESETS.get(self.preset_combo.currentData())
+        blocked = ""
+        if builtin is not None and builtin not in _SAVABLE_WHITE_MODES:
+            blocked = "Meter each slide: the slide preset saves no exposure"
+        elif builtin is not None and not self.lv_btn.isChecked():
+            blocked = "Start Live View first, so the camera's exposure can be read"
+        elif builtin is not None and (self._scanning or self._calibrating_preset or self._metering):
+            blocked = "Wait for the capture or the meter to finish"
+        self.preset_save_btn.setEnabled(editable or (builtin is not None and not blocked))
+        self.preset_save_btn.setToolTip(blocked or _SAVE_TIP)
         name = self.preset_combo.currentData()  # trash only deletes a stored user preset
         self.preset_del_btn.setEnabled(bool(name) and name != _MANUAL_PRESET and name not in _BUILTIN_WHITE_PRESETS)
         # A manual preset steps through the *camera's* own ISO/shutter/aperture choices, so grey
@@ -1888,14 +1968,15 @@ class ScanlightSidebar(QWidget):
         has_white = self._light_has_white
         self.w_slider.setVisible(has_white)
         model = self.preset_combo.model()
-        for white_name in _BUILTIN_WHITE_PRESETS:
+        white_names = [*_BUILTIN_WHITE_PRESETS, *self._presets.white_names()]
+        for white_name in white_names:
             white_idx = self.preset_combo.findData(white_name)
             if white_idx >= 0 and isinstance(model, QStandardItemModel):
                 item = model.item(white_idx)
                 if item is not None:
                     item.setEnabled(has_white)
         # A white-light preset selected on an RGB-only body cannot run, so drop it.
-        if not has_white and self.preset_combo.currentData() in _BUILTIN_WHITE_PRESETS:
+        if not has_white and self.preset_combo.currentData() in white_names:
             self.preset_combo.setCurrentIndex(0)
             self._on_preset_selected(0)
 
@@ -1915,6 +1996,11 @@ class ScanlightSidebar(QWidget):
         self._apply_gating()
 
     # ── state helpers ─────────────────────────────────────────────────
+
+    def _exposure_forced(self) -> bool:
+        """A scan forces ISO, shutter and aperture: an RGB preset, or a saved white-light preset."""
+        s = self._settings
+        return self._rgb_mode and (not s.white_mode or bool(s.shutter_w))
 
     def set_scanning(self, active: bool) -> None:
         self._scanning = active
@@ -1944,6 +2030,8 @@ class ScanlightSidebar(QWidget):
             aperture = self._stepper_label(self.aperture_stepper)
         else:
             shutter, iso, aperture = self._settings.shutter_r, self._settings.iso, self._settings.aperture
+        name = self.preset_combo.currentData()
+        saved_white = self._settings.white_mode and self._preset_selected() and name not in _BUILTIN_WHITE_PRESETS
         updated = replace(
             self._settings,
             r_level=int(self.r_slider.value()),
@@ -1955,11 +2043,12 @@ class ScanlightSidebar(QWidget):
             shutter_r=shutter,
             shutter_g=shutter,
             shutter_b=shutter,
-            # A white-light frame is not calibrated, so there is no baked exposure to force: its
+            # A built-in white-light frame is not calibrated, so there is no baked exposure to force: its
             # live-view steppers are the exposure control (see _refresh_preset_ui). Copying the RGB
             # shutter here overwrote the operator's choice with a narrowband value, too long under
             # white light and refused outright by a dial-locked body (issue #746).
-            shutter_w="" if self._settings.white_mode else shutter,
+            # A saved white-light preset keeps the shutter it stores.
+            shutter_w=self._settings.shutter_w if saved_white else ("" if self._settings.white_mode else shutter),
             iso=iso,
             aperture=aperture,
         )

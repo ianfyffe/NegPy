@@ -85,3 +85,17 @@ def test_store_knows_which_sensor_profiles_its_presets_own():
     assert store.owns_sensor_profile("Portra")
     assert not store.owns_sensor_profile("Hand Made")
     assert not store.owns_sensor_profile("")
+
+
+def test_white_light_preset_round_trips_and_defaults_to_rgb():
+    repo = FakeRepo()
+    repo.save_global_setting("scanlight_presets", {"Old": {"r_level": 200, "shutter_r": "1/5"}})
+    store = PresetStore(repo)
+    old = store.get("Old")
+    assert old is not None and old.white_process_mode == "" and old.shutter_w == ""  # a preset saved before is RGB
+    p = ScanlightPreset(
+        r_level=0, g_level=0, b_level=0, w_level=255, iso="100", aperture="f/8", white_process_mode="B&W Negative", shutter_w="1/60"
+    )
+    store.save("HP5", p)
+    assert store.get("HP5") == p
+    assert store.white_names() == ["HP5"]

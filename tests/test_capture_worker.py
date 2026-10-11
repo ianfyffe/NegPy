@@ -181,6 +181,40 @@ def test_single_capture_emits_one_file_and_no_triplet(tmp_path, monkeypatch):
     assert finished == [[str(tmp_path / "Roll01_Frame002.ARW")]]
 
 
+def test_a_saved_white_light_preset_forces_its_exposure(tmp_path, monkeypatch):
+    forced = []
+
+    class Camera:
+        def capture(self, out_path: str, shutter=None, iso=None, aperture=None) -> str:
+            forced.append((shutter, iso, aperture))
+            path = os.path.splitext(out_path)[0] + ".ARW"
+            with open(path, "wb") as raw:
+                raw.truncate(8 * 1024 * 1024)
+            return path
+
+    worker = CaptureWorker()
+    monkeypatch.setattr(worker, "_acquire_camera", lambda: Camera())
+    monkeypatch.setattr(worker, "_ensure_light", lambda _port: FakeLight())
+
+    for shutter_w, iso, aperture in (("1/60", "100", "f/8"), ("", "", "")):
+        worker.run_capture(
+            CaptureRequest(
+                roll_name="Roll01",
+                frame_number=1,
+                output_folder=str(tmp_path),
+                levels=(0, 0, 0),
+                settle_s=0,
+                white_mode=True,
+                w_level=255,
+                shutter_w=shutter_w,
+                iso=iso,
+                aperture=aperture,
+            )
+        )
+
+    assert forced == [("1/60", "100", "f/8"), (None, None, None)]  # a built-in white preset forces nothing
+
+
 @pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
 def test_calibration_uses_disposable_scratch_without_touching_roll(tmp_path, monkeypatch, outcome):
     import negpy.desktop.workers.capture_worker as capture_worker_module

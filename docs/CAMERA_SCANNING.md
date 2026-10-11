@@ -62,7 +62,7 @@ focus ring turns, and **Focus Magnif. Time** zooms back out after 2 s or 5 s (se
 meter reads **at peak**. It works on every body with live view.
 
 In white-light and camera-only scanning, set ISO, shutter and aperture live from the
-toolbar. A calibrated RGB preset hides and locks them (see **Presets**). A control the body
+toolbar. A calibrated RGB preset or a saved white-light preset hides and locks them (see **Presets**). A control the body
 cannot offer is grayed out, usually aperture on a lens with no electronic diaphragm (most
 enlarging and macro glass). A thin border marks the edge of the captured frame.
 
@@ -92,7 +92,8 @@ Under the Scanlight, Meter needs the shutter between 1/250 s and 2 s, the span C
 solves on. Camera-only
 scanning meters on the body's whole ladder and lets the probe decide the film type. Meter
 waits while a scan, a calibration or another probe runs. One reading serves a roll of
-negatives; meter each slide.
+negatives; meter each slide. Under the AUTO or **B&W Negative** built-in, save the metered
+exposure of a negative stock as a preset (see **Presets**).
 
 After a probe the zebras switch to the RAW: they hatch where the RAW will clip at the
 metered shutter, predicted from the linear probe (a pixel the probe clipped stays hatched
@@ -102,7 +103,7 @@ magnifier returns to the preview's zebras. The blue shadow hatching always comes
 preview. The map is used only when the first preview at the metered exposure has the same
 aspect as the probe and matches it by rank correlation of thumbnails. A body whose live
 view crops or reframes the RAW fails this check, and the status line says `RAW zebras off:`
-with the reason. A calibrated RGB preset hides the button with the exposure steppers.
+with the reason. A calibrated RGB preset or a saved white-light preset hides the button with the exposure steppers.
 
 **Calibrate (RGB mode).** Set the ISO and the aperture you scan with. Press **+** beside the
 preset dropdown, place the small rectangle on the clear film base (the rebate strip between
@@ -133,7 +134,10 @@ the dropdown to unlock the sliders and the exposure steppers. Set them and **Cap
 mode** (triplet or single capture), then press the save (floppy) button. Only the
 white-light presets use the White channel, because the Scanlight cannot light it together
 with RGB. The three white-light presets differ only in film type: AUTO classifies each
-capture, **B&W Negative** and **Slide** fix it, for the import and for Meter.
+capture, **B&W Negative** and **Slide** fix it, for the import and for Meter. Under AUTO or
+**B&W Negative**, with Live View running, the save button stores the body's ISO, shutter
+and aperture as a preset with that film type. The scan sets them like an RGB preset's. A
+shutter NegPy cannot set is refused. **Slide** saves no exposure, since each slide is metered.
 
 **Scan.** Pick an output folder and a preset, then press **Scan** for each frame. Files go
 to an auto-numbered per-roll subfolder and are imported and merged automatically. A

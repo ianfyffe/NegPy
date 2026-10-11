@@ -40,7 +40,7 @@ class ScanlightSettings:
     white_mode: bool = False
     w_level: int = 0  # RGB scanning uses no white; a white-light preset raises it to 255
     shutter_w: str = ""
-    iso: str = ""  # RGB preset's calibrated ISO/aperture, forced on the body at scan time
+    iso: str = ""  # the selected preset's ISO/aperture, forced on the body at scan time
     aperture: str = ""  # "" for a manual-aperture lens (set by hand on the ring)
     single_capture: bool = False  # the RGB preset lights R, G and B together for one exposure
     inter_exposure_delay_ms: int = 0

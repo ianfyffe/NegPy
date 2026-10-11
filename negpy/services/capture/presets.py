@@ -44,6 +44,8 @@ class ScanlightPreset:
     aperture: str = ""  # aperture label (e.g. "f/8"); "" for a manual lens (no electronic aperture)
     single_capture: bool = False  # one exposure with R, G and B lit together, not a triplet
     sensor_profile: str = ""  # sensor profile measured with a single-capture preset; "" = none
+    white_process_mode: str = ""  # a WhiteCaptureMode value for a saved white-light preset; "" = an RGB preset
+    shutter_w: str = ""  # a white-light preset's shutter, forced at scan with its ISO and aperture
 
 
 class PresetStore:
@@ -74,6 +76,10 @@ class PresetStore:
     def owns_sensor_profile(self, profile: str) -> bool:
         """Whether a preset was calibrated with this sensor profile."""
         return bool(profile) and any(isinstance(raw, dict) and raw.get("sensor_profile") == profile for raw in self._all().values())
+
+    def white_names(self) -> list[str]:
+        """The saved white-light presets."""
+        return sorted(n for n, raw in self._all().items() if isinstance(raw, dict) and raw.get("white_process_mode"))
 
     def save(self, name: str, preset: ScanlightPreset) -> None:
         data = self._all()

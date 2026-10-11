@@ -2276,3 +2276,382 @@ def test_a_preset_picked_with_live_view_off_reports_nothing(tmp_path, monkeypatc
     w._on_camera_setting_applied("shutter")
 
     assert w.lv_window.status.text() == ""
+
+
+def _hp5():
+    return ScanlightPreset(
+        r_level=0,
+        g_level=0,
+        b_level=0,
+        w_level=255,
+        iso="100",
+        aperture="f/8",
+        white_process_mode=WhiteCaptureMode.BW.value,
+        shutter_w="1/60",
+    )
+
+
+def test_a_metered_white_light_exposure_saves_as_a_preset_that_scans_at_it(tmp_path, monkeypatch):
+    import negpy.desktop.view.sidebar.scanlight as sl
+
+    w, body = _body_sidebar(tmp_path, monkeypatch)
+    _pick(w, "White Light, B&W Negative")
+    assert w.preset_save_btn.isEnabled() and not w.lv_window.meter_btn.isHidden()
+    w._on_meter()
+    w._on_meter_finished(_reading())  # the stubbed probe asks for 1/60
+    w._on_preset_save()
+    assert w.lv_window.status.text() == "Save: wait for the exposure to reach the camera"
+    body(1)
+    w._on_camera_setting_applied("shutter")
+    monkeypatch.setattr(sl.QInputDialog, "getText", lambda *a, **k: ("HP5", True))
+
+    w._on_preset_save()
+
+    assert w._presets.get("HP5") == _hp5()
+    assert w.preset_combo.currentData() == "HP5" and "saved" in w.preset_hint.text()
+    assert w.lv_window.meter_btn.isHidden() and w.lv_window.settings_widget.isHidden()
+    assert not w._exposure_widget.isHidden()
+    w.lv_window.meterRequested.emit()  # the M key
+    assert w.controller.start_exposure_probe.call_count == 1
+    w._update_settings_from_ui()
+    w._start_capture(retake=False)
+    req = w.controller.start_capture.call_args[0][0]
+    assert req.white_mode and req.white_process_mode is WhiteCaptureMode.BW
+    assert (req.w_level, req.shutter_w, req.iso, req.aperture) == (255, "1/60", "100", "f/8")
+
+
+def test_applying_a_saved_white_light_preset_forces_its_exposure_and_a_built_in_frees_it(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    w._presets.save("HP5", _hp5())
+    w._reload_presets()
+
+    _pick(w, "HP5")
+
+    assert [s.value() for s in (w.r_slider, w.g_slider, w.b_slider, w.w_slider)] == [0, 0, 0, 255]
+    calls = {c.args for c in w.controller.set_camera_setting.call_args_list}
+    assert {("shutter", 1), ("iso", 2), ("aperture", 8)} <= calls
+
+    _pick(w, "White Light, B&W Negative")
+    w._update_settings_from_ui()
+    assert w._settings.shutter_w == "" and not w.lv_window.meter_btn.isHidden()
+    w.lv_window.meterRequested.emit()
+    assert w.controller.start_exposure_probe.call_count == 1
+    w._start_capture(retake=False)
+    req = w.controller.start_capture.call_args[0][0]
+    assert (req.shutter_w, req.iso, req.aperture) == ("", "", "")
+
+
+def test_a_shutter_the_app_cannot_set_refuses_the_white_light_save(tmp_path, monkeypatch):
+    import negpy.desktop.view.sidebar.scanlight as sl
+
+    w, _ = _body_sidebar(tmp_path, monkeypatch, writable=False)
+    _pick(w, "White Light, B&W Negative")
+    asked = []
+    monkeypatch.setattr(sl.QInputDialog, "getText", lambda *a, **k: asked.append(a) or ("HP5", True))
+
+    w._on_preset_save()
+
+    assert not asked and w._presets.names() == []
+    assert w.lv_window.status.text() == "Save: this body publishes no writable shutter"
+
+
+def test_rgb_only_scanlight_greys_out_and_drops_a_saved_white_light_preset(tmp_path, monkeypatch):
+    from PyQt6.QtGui import QStandardItemModel
+
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    w._presets.save("HP5", _hp5())
+    w._reload_presets()
+    _pick(w, "HP5")
+
+    w._light_has_white = False
+    w._refresh_light_channels()
+
+    model = w.preset_combo.model()
+    assert isinstance(model, QStandardItemModel)
+    assert not model.item(w.preset_combo.findData("HP5")).isEnabled()
+    assert w.preset_combo.currentData() is None
+
+
+def _publish(tmp_path, **settings):
+    """Rewrite entries of the stream's settings JSON that `_body_sidebar` wrote; None drops one."""
+    import json
+
+    p = tmp_path / "settings.json"
+    data = json.loads(p.read_text())
+    for key, info in settings.items():
+        if info is None:
+            data.pop(key, None)
+        else:
+            data[key] = info
+    p.write_text(json.dumps(data))
+
+
+def _save_as(w, monkeypatch, name):
+    """Press Save and answer the name dialog; returns whether the dialog was shown."""
+    import negpy.desktop.view.sidebar.scanlight as sl
+
+    asked = []
+    monkeypatch.setattr(sl.QInputDialog, "getText", lambda *a, **k: asked.append(a) or (name, True))
+    w._on_preset_save()
+    return bool(asked)
+
+
+def _scan_request(w):
+    w.set_scanning(False)
+    w._start_capture(retake=False)
+    return w.controller.start_capture.call_args[0][0]
+
+
+def test_save_waits_for_a_live_view_stepper_write_to_reach_the_camera(tmp_path, monkeypatch):
+    w, body = _body_sidebar(tmp_path, monkeypatch)  # the body is at 1/5
+    _pick(w, "White Light, B&W Negative")
+    w._refresh_camera_settings()
+    stepper = w.lv_window.shutter_stepper
+    stepper.setCurrentIndex(stepper.findData(1))  # the user steps to 1/60
+    w._on_camera_setting("shutter", stepper)
+
+    assert not _save_as(w, monkeypatch, "HP5")  # the write waits in the debounce
+    assert w.lv_window.status.text() == "Save: wait for the exposure to reach the camera"
+    w._cam_setting_debounce.stop()
+    w._flush_camera_settings()
+    assert not _save_as(w, monkeypatch, "HP5")  # the write is on the worker
+
+    body(1)
+    w._on_camera_setting_applied("shutter")
+    assert _save_as(w, monkeypatch, "HP5")
+    assert w._presets.get("HP5").shutter_w == "1/60"
+
+
+def test_save_reads_an_iso_the_body_reports_read_only(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch, shutter_cur=1)
+    _publish(tmp_path, iso={"cur": 2, "writable": False, "options": [{"raw": 2, "label": "100"}]})
+    _pick(w, "White Light, B&W Negative")
+
+    assert _save_as(w, monkeypatch, "HP5")
+
+    assert w._presets.get("HP5") == _hp5()
+    assert _scan_request(w).iso == "100"
+
+
+def test_save_without_an_aperture_setting_stores_none(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch, shutter_cur=1)
+    _publish(tmp_path, aperture=None)  # a manual lens
+    _pick(w, "White Light, B&W Negative")
+
+    assert _save_as(w, monkeypatch, "HP5")
+
+    assert w._presets.get("HP5") == replace(_hp5(), aperture="")
+
+
+def test_save_refuses_an_aperture_the_body_reports_read_only(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch, shutter_cur=1)
+    _publish(tmp_path, aperture={"cur": 8, "writable": False, "options": [{"raw": 8, "label": "f/8"}]})
+    _pick(w, "White Light, B&W Negative")
+
+    assert not _save_as(w, monkeypatch, "HP5")
+
+    assert w._presets.names() == []
+    assert "aperture as read-only" in w.lv_window.status.text()
+
+
+@pytest.mark.parametrize("label", ["Bulb", "1/1000"])
+def test_save_refuses_a_shutter_outside_the_scanlight_span(tmp_path, monkeypatch, label):
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    options = [{"raw": 0, "label": "1/5"}, {"raw": 1, "label": "1/60"}, {"raw": 2, "label": label}]
+    _publish(tmp_path, shutter={"cur": 2, "writable": True, "options": options})
+    _pick(w, "White Light, B&W Negative")
+
+    assert not _save_as(w, monkeypatch, "HP5")
+
+    assert w._presets.names() == []
+    assert w.lv_window.status.text() == "Save: set the shutter between 1/60 and 1/5 first"
+
+
+def test_save_is_grayed_out_without_live_view_and_while_a_scan_runs(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch, shutter_cur=1)
+    _pick(w, "White Light, B&W Negative")
+    assert w.preset_save_btn.isEnabled()
+
+    w.lv_btn.blockSignals(True)
+    w.lv_btn.setChecked(False)
+    w.lv_btn.blockSignals(False)
+    w._on_live_view_toggled(False)
+    assert not w.preset_save_btn.isEnabled()
+    assert "Live View" in w.preset_save_btn.toolTip()
+    assert not _save_as(w, monkeypatch, "HP5")
+
+    w.lv_btn.blockSignals(True)
+    w.lv_btn.setChecked(True)
+    w.lv_btn.blockSignals(False)
+    w.set_scanning(True)
+    assert not w.preset_save_btn.isEnabled()
+    assert not _save_as(w, monkeypatch, "HP5")  # the keyboard path
+    assert w.lv_window.status.text() == "Save: wait for the capture to finish"
+    assert w._presets.names() == [] and w._pending_exposure_writes == 0
+
+
+def test_the_slide_preset_saves_no_exposure(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch, shutter_cur=1)
+    _pick(w, "White Light, Slide")
+
+    assert not w.preset_save_btn.isEnabled()
+    assert "slide" in w.preset_save_btn.toolTip()
+    assert not _save_as(w, monkeypatch, "Velvia")
+    assert w._presets.names() == []
+
+
+def test_a_saved_auto_preset_keeps_its_film_type(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch, shutter_cur=1)
+    _pick(w, "White Light (B&W or Slide Film)")
+    assert _save_as(w, monkeypatch, "Mixed")
+    assert w._presets.get("Mixed").white_process_mode == WhiteCaptureMode.AUTO.value
+
+    _pick(w, "White Light, B&W Negative")
+    _pick(w, "Mixed")
+
+    assert w._settings.white_process_mode is WhiteCaptureMode.AUTO
+    req = _scan_request(w)
+    assert req.white_process_mode is WhiteCaptureMode.AUTO and req.shutter_w == "1/60"
+
+
+def test_a_saved_white_light_preset_shows_only_its_exposure(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    w._presets.save("HP5", _hp5())
+    w._reload_presets()
+
+    _pick(w, "HP5")
+
+    assert not w._exposure_widget.isHidden() and not w.shutter_stepper.isHidden()
+    assert w.capture_btn.isHidden() and w._capture_label.isHidden()
+    assert not w.inter_exposure_delay_slider.isEnabled()
+    assert "built-in white-light preset" in w.shutter_stepper.toolTip()
+    assert not w.preset_save_btn.isEnabled()
+
+    w._presets.save("Portra", _portra())
+    w._reload_presets()
+    _pick(w, "Portra")
+    assert not w.capture_btn.isHidden() and "manual preset" in w.shutter_stepper.toolTip()
+
+
+def _portra():
+    return ScanlightPreset(
+        r_level=200,
+        g_level=150,
+        b_level=100,
+        shutter_r="1/5",
+        shutter_g="1/5",
+        shutter_b="1/5",
+        iso="200",
+        aperture="f/8",
+        single_capture=True,
+        sensor_profile="Portra",
+    )
+
+
+def test_a_white_light_shutter_is_kept_only_under_a_saved_white_light_preset(tmp_path, monkeypatch):
+    import negpy.desktop.view.sidebar.scanlight as sl
+
+    w, _ = _body_sidebar(tmp_path, monkeypatch)  # the body is at 1/5
+    w._presets.save("HP5", _hp5())
+    w._presets.save("Portra", _portra())
+    w._reload_presets()
+    # An RGB preset or a manual one copies its shutter into shutter_w, as before.
+    for other, shutter_w in ((None, ""), (sl._MANUAL_PRESET, "1/5"), ("Portra", "1/5"), ("White Light, B&W Negative", "")):
+        _pick(w, "HP5")
+        w._update_settings_from_ui()
+        assert w._settings.shutter_w == "1/60"
+
+        _pick(w, other)
+        w._update_settings_from_ui()
+
+        assert w._settings.shutter_w == shutter_w, other
+        assert w._exposure_forced() is (other in (sl._MANUAL_PRESET, "Portra")), other
+
+
+def test_a_restart_with_no_preset_shown_forces_no_white_light_exposure(tmp_path, monkeypatch):
+    stored = _Repo()
+    stored.save_global_setting(
+        "scanlight_settings",
+        {"white_mode": True, "white_process_mode": "B&W Negative", "shutter_w": "1/60", "iso": "100", "aperture": "f/8"},
+    )
+    ctrl = MagicMock()
+    ctrl.session.repo = stored
+    w = ScanlightSidebar(ctrl)
+    w._camera_verified = True
+    assert w.preset_combo.currentData() is None
+
+    w._update_settings_from_ui()  # the connection poll
+
+    assert w._settings.shutter_w == "" and not w._exposure_forced()
+    assert not w.lv_window.meter_btn.isHidden()
+    assert "select or create a preset" in w._missing_requirements()
+
+
+def test_manual_preset_from_a_saved_white_light_preset_starts_from_the_body(tmp_path, monkeypatch):
+    import negpy.desktop.view.sidebar.scanlight as sl
+
+    w, _ = _body_sidebar(tmp_path, monkeypatch)  # the body is at 1/5
+    w._presets.save("HP5", _hp5())
+    w._reload_presets()
+    _pick(w, "HP5")
+
+    _pick(w, sl._MANUAL_PRESET)
+
+    s = w._settings
+    assert s.white_mode is False and s.shutter_w == "1/5" and w.w_slider.value() == 0
+    assert w._stepper_label(w.shutter_stepper) == "1/5" and s.shutter_r == "1/5"
+    assert w.shutter_stepper.isEnabled() and not w.capture_btn.isHidden()
+    assert w.preset_save_btn.isEnabled()
+
+
+def test_calibration_finishing_under_a_saved_white_light_preset_saves_an_rgb_preset(tmp_path, monkeypatch):
+    import types
+
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    w._presets.save("HP5", _hp5())
+    w._reload_presets()
+    _pick(w, "HP5")
+    w._calibrating_preset = "Portra"
+
+    w._on_calibration_finished(
+        types.SimpleNamespace(levels=(200, 180, 90), shutters=("1/5", "1/5", "1/5"), single_capture=False, sensor_matrix=None)
+    )
+
+    saved = w._presets.get("Portra")
+    assert saved is not None and saved.white_process_mode == "" and saved.w_level == 0 and saved.shutter_r == "1/5"
+    assert w.preset_combo.currentData() == "Portra"
+    assert w._settings.white_mode is False and w._settings.shutter_w == "1/5"
+    req = _scan_request(w)
+    assert not req.white_mode and req.shutters == ("1/5", "1/5", "1/5")
+
+
+def test_switching_between_a_saved_white_light_preset_and_a_single_capture_preset(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    w._presets.save("HP5", _hp5())
+    w._presets.save("Portra", _portra())
+    w._reload_presets()
+
+    _pick(w, "Portra")
+    _pick(w, "HP5")
+    req = _scan_request(w)
+    assert req.white_mode and req.white_process_mode is WhiteCaptureMode.BW
+    assert not req.single_capture and req.sensor_profile == ""
+    assert (req.w_level, req.shutter_w, req.iso, req.aperture) == (255, "1/60", "100", "f/8")
+
+    _pick(w, "Portra")
+    req = _scan_request(w)
+    assert not req.white_mode and req.single_capture and req.sensor_profile == "Portra"
+    assert (req.levels, req.shutters, req.iso, req.w_level) == ((200, 150, 100), ("1/5", "1/5", "1/5"), "200", 0)
+    assert w._settings.white_process_mode is WhiteCaptureMode.BW
+
+
+def test_a_saved_white_light_preset_reports_a_write_with_no_camera_session(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    w._presets.save("HP5", replace(_hp5(), iso="400", aperture=""))  # the body offers no ISO 400
+    w._reload_presets()
+
+    _pick(w, "HP5")
+    w._on_camera_setting_failed("shutter", "no camera session")
+    w._on_camera_setting_applied("shutter")
+
+    assert w.lv_window.status.text() == "Preset: ISO 400 not set (this body does not offer it); shutter 1/60 not set (no camera session)"

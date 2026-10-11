@@ -1094,7 +1094,7 @@ Capture film directly into NegPy. The **Scanner** card picks the scanner; the ta
 Copy-stand capture with a camera in **PC Remote** mode over USB (macOS/Linux): with a NegPy **Scanlight**, R/G/B triplets or one exposure with the three LEDs lit together, else one white-light exposure. Needs `python-gphoto2` (`pip install gphoto2`; no Windows build). Setup and troubleshooting: CAMERA_SCANNING.md.
 
 *   **Camera** / **Light**: connection status, found automatically; the light turns amber once it runs warm. On Linux, the Scanlight's serial port needs your user in the `dialout` group (`sudo usermod -aG dialout $USER`, then log out and back in).
-*   **Live View**: click the image to aim the focus magnifier. Turn the focus ring past best focus, then back until the **Focus meter** reads **at peak**. ISO, shutter and aperture are set from its toolbar, or locked by a calibrated RGB preset.
+*   **Live View**: click the image to aim the focus magnifier. Turn the focus ring past best focus, then back until the **Focus meter** reads **at peak**. ISO, shutter and aperture are set from its toolbar, or locked by a calibrated RGB preset or a saved white-light preset.
 *   **Histogram** and **Zebras**: the frame's RGB histogram, and hatching on pixels at the top (red) and bottom (blue) of the preview range. The preview clips before the RAW does, so a zebra is an early warning.
 *   **Meter** (white-light and camera-only scanning): one RAW probe sets the shutter so the region that must not clip (a negative's clear base, a slide's brightest highlights) lands just under clipping. The white-light preset's film type decides which. A clipped reading steps down two stops; meter again.
 *   **Scan** and **Retake**: **Scan** shoots the next frame, auto-numbered, and imports it; **Retake** (the redo arrow beside **Live View**) shoots the last frame again. In the Live View window, `S` scans and `R` retakes.
@@ -1107,6 +1107,7 @@ Copy-stand capture with a camera in **PC Remote** mode over USB (macOS/Linux): w
 Shown while a Scanlight is connected.
 
 *   **Preset**: forces its RGB levels, ISO, shutter and aperture each frame. **+** calibrates: place the rectangle on clear film base, name it, run it; it solves a shutter and LED levels just under clipping. **Create a manual preset…** sets one by hand.
+*   **Save** (floppy): saves the manual preset you build. Under the AUTO or B&W Negative white-light preset, with Live View running, it saves the body's ISO, shutter and aperture as a preset with that film type, forced each frame; meter first. A shutter NegPy cannot set is refused.
 *   **Red**, **Green**, **Blue**, **White** (0 to 255): LED levels, editable while you build a manual preset. **Light Off** turns every channel off.
 *   **Capture mode**: **Triplet** shoots one exposure per LED and merges them; **Single Capture** shoots one exposure with all three lit and imports it as an ordinary RAW.
 *   **Create Sensor Profile** (Single Capture only, default on): also saves a sensor profile under the preset's name; a roll scanned with the preset takes it and turns Linear RAW on. Other rolls do not get it.
