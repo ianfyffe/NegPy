@@ -2173,3 +2173,106 @@ def test_keep_light_on_shortcut_acts_only_while_the_toggle_shows(hidden):
     manager._build_actions()["scanlight_keep_light_on"]()
 
     assert btn.toggle.called is not hidden
+
+
+class _Repo:
+    def __init__(self):
+        self._d = {}
+
+    def get_global_setting(self, key, default=None):
+        return self._d.get(key, default)
+
+    def save_global_setting(self, key, value):
+        self._d[key] = value
+
+
+def _body_sidebar(tmp_path, monkeypatch, *, writable=True, shutter_cur=0):
+    """A streaming sidebar with a real preset store and a body at ISO 100, f/8 and 1/5 or 1/60."""
+    import json
+
+    import negpy.desktop.view.sidebar.scanlight as sl
+    from negpy.services.capture.presets import PresetStore
+
+    p = tmp_path / "settings.json"
+
+    def body(cur):
+        p.write_text(
+            json.dumps(
+                {
+                    "iso": {"cur": 2, "writable": True, "options": [{"raw": 2, "label": "100"}, {"raw": 3, "label": "200"}]},
+                    "shutter": {"cur": cur, "writable": writable, "options": [{"raw": 0, "label": "1/5"}, {"raw": 1, "label": "1/60"}]},
+                    "aperture": {"cur": 8, "writable": True, "options": [{"raw": 8, "label": "f/8"}]},
+                }
+            )
+        )
+
+    body(shutter_cur)
+    monkeypatch.setattr(sl, "default_settings_path", lambda: str(p))
+    w = _sidebar()
+    w._presets = PresetStore(_Repo())
+    w._camera_verified = True
+    w.lv_btn.blockSignals(True)
+    w.lv_btn.setChecked(True)
+    w.lv_btn.blockSignals(False)
+    w.output.folder_edit.setText(str(tmp_path))
+    w.output.roll_edit.setText("Roll001")
+    return w, body
+
+
+def _pick(w, name):
+    idx = w.preset_combo.findData(name)
+    assert idx >= 0, name
+    w.preset_combo.setCurrentIndex(idx)
+    w._on_preset_selected(idx)
+
+
+def test_an_rgb_preset_reports_a_camera_setting_it_could_not_write(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    w._presets.save("Portra", _rgb_preset(iso="100", aperture="f/11"))  # the body offers no f/11
+    w._reload_presets()
+
+    _pick(w, "Portra")
+    w._set_status("Light: R200 G100 B90")  # the light echo, while the writes are on the worker
+
+    assert w._pending_exposure_writes == 2
+    w._on_camera_setting_failed("shutter", "the camera did not confirm it")
+    w._on_camera_setting_applied("shutter")
+    w._on_camera_setting_applied("iso")
+    assert w.lv_window.status.text() == (
+        "Preset: aperture f/11 not set (this body does not offer it); shutter 1/5 not set (the camera did not confirm it)"
+    )
+    w._on_light_set(200, 100, 90, 0)  # a pinned report outlasts the light echo
+    assert w.lv_window.status.text().startswith("Preset:")
+
+
+def test_an_rgb_preset_the_body_offers_nothing_of_is_reported(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    w._presets.save("Ektar", _rgb_preset(iso="400"))  # the body offers no ISO 400
+    w._presets.save("Gold", replace(_rgb_preset(), shutter_r="1/30"))  # nothing the body offers
+    w._reload_presets()
+
+    _pick(w, "Ektar")
+    w._on_camera_setting_failed("shutter", "no camera session")
+    w._on_camera_setting_applied("shutter")
+    assert w.lv_window.status.text() == "Preset: ISO 400 not set (this body does not offer it); shutter 1/5 not set (no camera session)"
+
+    _pick(w, "Gold")
+    w._set_status("Live view running")
+    QApplication.processEvents()
+    assert w.lv_window.status.text() == "Preset: shutter 1/30 not set (this body does not offer it)"
+
+
+def test_a_preset_picked_with_live_view_off_reports_nothing(tmp_path, monkeypatch):
+    w, _ = _body_sidebar(tmp_path, monkeypatch)
+    w.lv_btn.blockSignals(True)
+    w.lv_btn.setChecked(False)
+    w.lv_btn.blockSignals(False)
+    w._presets.save("Portra", _rgb_preset(iso="400"))
+    w._reload_presets()
+
+    _pick(w, "Portra")
+    w._set_status("")
+    w._on_camera_setting_failed("shutter", "no camera session")
+    w._on_camera_setting_applied("shutter")
+
+    assert w.lv_window.status.text() == ""

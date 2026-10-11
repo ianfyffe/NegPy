@@ -127,7 +127,8 @@ over-exposed, close the aperture or lower the ISO; under-exposed, open up or rai
 No preset is saved. Adjust and calibrate again in the window, which stays open.
 
 **Presets.** A selected preset shows read-only, with its RGB levels, ISO, shutter and
-aperture. The scan sets that exposure on the body before every frame. To build a preset by hand, pick **Create a manual preset…** from
+aperture. The scan sets that exposure on the body before every frame. With Live View
+running, a setting the body does not offer or does not take shows on the status line. To build a preset by hand, pick **Create a manual preset…** from
 the dropdown to unlock the sliders and the exposure steppers. Set them and **Capture
 mode** (triplet or single capture), then press the save (floppy) button. Only the
 white-light presets use the White channel, because the Scanlight cannot light it together
