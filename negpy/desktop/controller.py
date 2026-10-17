@@ -2248,9 +2248,7 @@ class AppController(QObject):
             if new_path is None:
                 return False
             if old_path:
-                rehome_path_prefix(self.session.repo, old_path, new_path)
-            if old_path and roll_id == self.state.active_roll_id:
-                self.session.rehome_folder_paths(old_path, new_path)
+                self.rehome_folder(old_path, new_path)
         rolls.rename_roll(self.session.repo, roll_id, new_name)
         return True
 
@@ -2260,9 +2258,10 @@ class AppController(QObject):
         old_path, reason = relink_folder_roll(self.session.repo, roll_id, new_path)
         if old_path is None:
             return reason
-        if roll_id == self.state.active_roll_id and self.state.uploaded_files:
+        if old_path:
             self.session.rehome_folder_paths(old_path, new_path)
-        else:
+            self.invalidate_library_walk()
+        if roll_id != self.state.active_roll_id or not self.state.uploaded_files:
             self.open_roll(roll_id)
         return ""
 
@@ -2270,8 +2269,14 @@ class AppController(QObject):
         """Repoint a virtual roll's frames from each gone folder to the folder the user located, then open the roll."""
         # Deepest first: a move of a parent folder also carries every folder under it.
         for old_folder, new_folder in sorted(moves, key=lambda move: len(move[0]), reverse=True):
-            rehome_path_prefix(self.session.repo, old_folder, new_folder)
+            self.rehome_folder(old_folder, new_folder)
         self.open_roll(roll_id)
+
+    def rehome_folder(self, old_path: str, new_path: str) -> None:
+        """Point every stored and loaded path under *old_path* at *new_path*."""
+        rehome_path_prefix(self.session.repo, old_path, new_path)
+        self.session.rehome_folder_paths(old_path, new_path)
+        self.invalidate_library_walk()
 
     def invalidate_library_walk(self) -> None:
         """Drop the cached traversal so the next search re-reads the folders."""

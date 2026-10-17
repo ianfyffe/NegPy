@@ -6,7 +6,7 @@ needs no entry: its three files make it a triplet.
 """
 
 import os
-from typing import Any, Dict, Iterable
+from typing import Any, Callable, Dict, Iterable
 
 BLEND = "blend"
 SINGLE = "single"
@@ -47,3 +47,13 @@ def capture_modes(repo: Any, paths: Iterable[str]) -> Dict[str, str]:
             if mode in MODES:
                 found[path] = mode
     return found
+
+
+def rehome_paths(repo: Any, move: Callable[[str], str]) -> None:
+    """Pass every folder that holds a record through *move*. A record already at the new folder stays."""
+    for key in repo.global_setting_keys(_KEY_PREFIX):
+        folder = key[len(_KEY_PREFIX) :]
+        moved = move(folder)
+        if moved != folder:
+            repo.save_global_setting(_key(moved), {**_folder_modes(repo, folder), **_folder_modes(repo, moved)})
+            repo.delete_global_setting(key)

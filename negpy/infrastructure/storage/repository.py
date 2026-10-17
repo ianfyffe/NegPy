@@ -480,6 +480,23 @@ class StorageRepository(IRepository):
                     (new_prefix, len(old_prefix) + 1, old_prefix, len(under), under),
                 )
 
+    @staticmethod
+    def _like_containing(text: str) -> str:
+        escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
+
+    def rehome_saved_configs(self, old_prefix: str, move: Callable[[dict], Optional[dict]]) -> None:
+        """Replace each saved edit, work print and history step's flat config with ``move(config)``
+        where that is not None. Only rows whose JSON names *old_prefix* are read."""
+        contains = json.dumps(old_prefix)[1:-1]
+        with self._connect(self.edits_db_path) as conn:
+            for table in ("file_settings", "work_prints", "edit_history"):
+                rows = conn.execute(
+                    f"SELECT rowid, settings_json FROM {table} WHERE settings_json LIKE ? ESCAPE '\\'", (self._like_containing(contains),)
+                ).fetchall()
+                moved = [(json.dumps(new, default=str), rowid) for rowid, text in rows if (new := move(json.loads(text))) is not None]
+                conn.executemany(f"UPDATE {table} SET settings_json = ? WHERE rowid = ?", moved)
+
     def get_max_history_index(self, file_hash: str) -> int:
         with self._connect(self.edits_db_path) as conn:
             cursor = conn.execute("SELECT MAX(step_index) FROM edit_history WHERE file_hash = ?", (file_hash,))
@@ -523,6 +540,17 @@ class StorageRepository(IRepository):
             conn.executemany("INSERT OR REPLACE INTO global_settings (key, value_json) VALUES (?, ?)", rows)
         if self._global_json is not None:
             self._global_json.update(rows)
+
+    def global_setting_keys(self, prefix: str) -> list[str]:
+        """Every global setting key that starts with *prefix*."""
+        self._global_raw(prefix)
+        return [key for key in self._global_json or {} if key.startswith(prefix)]
+
+    def delete_global_setting(self, key: str) -> None:
+        with self._connect(self.settings_db_path) as conn:
+            conn.execute("DELETE FROM global_settings WHERE key = ?", (key,))
+        if self._global_json is not None:
+            self._global_json.pop(key, None)
 
     def _global_raw(self, key: str) -> Optional[str]:
         if self._global_json is None:
