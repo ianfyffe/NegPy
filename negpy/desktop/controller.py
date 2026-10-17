@@ -2260,26 +2260,23 @@ class AppController(QObject):
 
     # ── half-frame split & crop profile ─────────────────────────────────
 
-    _HALF_FRAME_PROFILE_KEY = "half_frame_profile"
     _HALF_FRAME_OVERRIDES_KEY = "half_frame_overrides"
 
     def half_frame_profile(self) -> dict | None:
-        """Saved ``(crop_rect, split_x, gutter_thickness)`` profile, shared across
-        every half-frame split that has no override of its own. Scanner-independent —
-        the same crop/split applies whether the scans came from a SANE scanner, a
-        camera copy-stand, or a folder import."""
-        return self.session.repo.get_global_setting(self._HALF_FRAME_PROFILE_KEY, default=None)
+        """The active roll's saved ``(crop_rect, split_x, gutter_thickness, split_axis)`` profile for every
+        half-frame split with no override of its own, or None. Scanner-independent: the same crop/split
+        applies to a SANE scan, a camera copy-stand or a folder import."""
+        return rolls.roll_half_frame_profile(self.session.repo, self.state.active_roll_id)
 
-    def save_half_frame_profile(self, crop_rect, split_x: float, gutter_thickness: float, split_axis: str = "x") -> None:
-        self.session.repo.save_global_setting(
-            self._HALF_FRAME_PROFILE_KEY,
-            {
-                "crop_rect": [float(v) for v in crop_rect],
-                "split_x": float(split_x),
-                "gutter_thickness": float(gutter_thickness),
-                "split_axis": str(split_axis),
-            },
-        )
+    def save_half_frame_profile(self, crop_rect, split_x: float, gutter_thickness: float, split_axis: str = "x") -> bool:
+        """Save the profile on the active roll. False when no known roll is active."""
+        profile = {
+            "crop_rect": [float(v) for v in crop_rect],
+            "split_x": float(split_x),
+            "gutter_thickness": float(gutter_thickness),
+            "split_axis": str(split_axis),
+        }
+        return bool(self.state.active_roll_id) and rolls.set_roll_half_frame_profile(self.session.repo, self.state.active_roll_id, profile)
 
     def half_frame_overrides(self) -> dict:
         """Per-file ``(crop_rect, split_x, gutter_thickness)`` overrides, keyed by
@@ -2471,7 +2468,12 @@ class AppController(QObject):
                     targets.add(h)
             for h in targets:
                 self._remap_half_frame_edits(h, new_geom)
-            self.save_half_frame_profile(result["crop_rect"], result["split_x"], result["gutter_thickness"], result["split_axis"])
+            # With no roll to hold it, each frame keeps the split as its own.
+            if not self.save_half_frame_profile(result["crop_rect"], result["split_x"], result["gutter_thickness"], result["split_axis"]):
+                for h in targets:
+                    self.save_half_frame_override(
+                        h, result["crop_rect"], result["split_x"], result["gutter_thickness"], result["split_axis"]
+                    )
         else:
             scoped_targets = selected_hashes if scope == "selected" and selected_hashes else [file_hash]
             for h in scoped_targets:

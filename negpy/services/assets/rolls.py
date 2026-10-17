@@ -743,15 +743,15 @@ def restore_roll_fields(repo: Any, roll_id: str, snapshot: Dict[str, Any]) -> No
 
 
 def copy_roll_settings(repo: Any, from_id: str, to_id: str, file_hashes: Collection[str]) -> None:
-    """Give roll *to_id* the roll-level settings of *from_id* (its defaults, frame seed and
-    card pushes) and the card locks of *file_hashes* (unforked), in one write. A lock is
+    """Give roll *to_id* the roll-level settings of *from_id* (its defaults, frame seed, card
+    pushes and Half Frame split) and the card locks of *file_hashes* (unforked), in one write. A lock is
     what keeps a frame's own value against the copied defaults. Scenes, forks and the
     baseline stay behind. No-op for an unknown id."""
     store = _read(repo)
     source, target = store.get(from_id), store.get(to_id)
     if source is None or target is None:
         return
-    for key in ("defaults", "frame_seed", "section_pushes"):
+    for key in ("defaults", "frame_seed", "section_pushes", "half_frame_profile"):
         if source.get(key):
             target[key] = copy.deepcopy(source[key])
     locks = {h: list(cards) for h, cards in source.get("frame_overrides", {}).items() if h in file_hashes and cards}
@@ -979,6 +979,25 @@ def set_roll_film_base(repo: Any, roll_id: str, base_log: Optional[tuple]) -> bo
     if entry is None:
         return False
     entry["film_base"] = None if base_log is None else [float(v) for v in base_log]
+    _write(repo, store)
+    return True
+
+
+def roll_half_frame_profile(repo: Any, roll_id: Optional[str]) -> Optional[dict]:
+    """The roll's Half Frame split profile (``crop_rect``, ``split_x``, ``gutter_thickness``,
+    ``split_axis``) that Apply to All set, or None."""
+    entry = roll_for_id(repo, roll_id) if roll_id else None
+    saved = entry.get("half_frame_profile") if entry else None
+    return dict(saved) if isinstance(saved, dict) and saved else None
+
+
+def set_roll_half_frame_profile(repo: Any, roll_id: str, profile: dict) -> bool:
+    """Records the roll's Half Frame split profile. False for an unknown roll id."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return False
+    entry["half_frame_profile"] = dict(profile)
     _write(repo, store)
     return True
 
