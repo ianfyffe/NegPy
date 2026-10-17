@@ -1018,8 +1018,9 @@ class AssetDiscoveryWorker(QObject):
     def _attach_restored_triplets(self, assets: list, triplets: dict) -> list:
         """Re-attach known green/blue exposures to their red asset (no reclassification).
 
-        A session manifest holds the red path alone, but a capture hands over all three,
-        so the two exposures that became part of a frame are dropped from the roll.
+        A session manifest holds the red path alone, but a folder walk or a capture hands
+        over all three, so the two exposures that became part of a frame are dropped from
+        the roll. A file goes to the first triplet that claims it, the first by red path.
         """
         import os
 
@@ -1038,30 +1039,46 @@ class AssetDiscoveryWorker(QObject):
             unhashed, lambda fn: self._map_files(unhashed, fn, os.path.basename, _HASH_WORKERS)
         )
         hashes.update({path: digest[0] if digest else "" for path, digest in zip(unhashed, digests)})
+        candidates: dict = {}
+        for a in assets:
+            gb = triplets.get(a["path"])
+            if not gb or not gb[0] or not gb[1]:
+                continue
+            stored = list(gb[3]) if len(gb) > 3 else ["", "", ""]
+            # A stated member hash re-attaches only while the file still has it.
+            changed = any(want and path in hashes and hashes[path] != want for path, want in zip((a["path"], gb[0], gb[1]), stored))
+            if not changed and os.path.exists(gb[0]) and os.path.exists(gb[1]):
+                candidates[a["path"]] = (gb, stored)
+        # Path order, not listing order: computers that share a folder list it differently.
+        won: dict = {}
+        claimed: set = set()
+        for red in sorted(candidates):
+            gb, stored = candidates[red]
+            if red in claimed or {gb[0], gb[1]} & claimed:
+                continue
+            won[red] = (gb, stored)
+            claimed.update({red, gb[0], gb[1]})
         out = []
         parts: set = set()
         for a in assets:
-            gb = triplets.get(a["path"])
-            stored = list(gb[3]) if gb and len(gb) > 3 else ["", "", ""]
-            # A stated member hash re-attaches only while the file still has it.
-            changed = gb and any(want and path in hashes and hashes[path] != want for path, want in zip((a["path"], gb[0], gb[1]), stored))
-            if gb and not changed and gb[0] and gb[1] and os.path.exists(gb[0]) and os.path.exists(gb[1]):
-                base = os.path.splitext(a["name"])[0]
-                align = bool(gb[2]) if len(gb) > 2 else True
-                out.append(
-                    {
-                        **a,
-                        "name": f"{base} (RGB)",
-                        "green_path": gb[0],
-                        "blue_path": gb[1],
-                        "align": align,
-                        "green_hash": hashes.get(gb[0], stored[1]),
-                        "blue_hash": hashes.get(gb[1], stored[2]),
-                    }
-                )
-                parts.update({gb[0], gb[1]})
-            else:
+            if a["path"] not in won:
                 out.append(a)
+                continue
+            gb, stored = won[a["path"]]
+            base = os.path.splitext(a["name"])[0]
+            align = bool(gb[2]) if len(gb) > 2 else True
+            out.append(
+                {
+                    **a,
+                    "name": f"{base} (RGB)",
+                    "green_path": gb[0],
+                    "blue_path": gb[1],
+                    "align": align,
+                    "green_hash": hashes.get(gb[0], stored[1]),
+                    "blue_hash": hashes.get(gb[1], stored[2]),
+                }
+            )
+            parts.update({gb[0], gb[1]})
         return _without_parts(out, parts)
 
     def _attach_restored_stitches(self, assets: list, stitches: dict) -> list:
@@ -1207,7 +1224,7 @@ class AssetDiscoveryWorker(QObject):
         loose = len(ordered) - len(grouped)
         if loose:
             summary = {
-                "made": len(grouped) // 3,
+                "made": len(assembled) + len(grouped) // 3,
                 "loose": loose,
                 "incomplete": incomplete,
                 "mismatched": mismatched,

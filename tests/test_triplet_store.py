@@ -1,3 +1,4 @@
+import itertools
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -198,3 +199,61 @@ def test_a_changed_member_outside_the_discovery_is_still_caught(tmp_path):
     assert worker._attach_restored_triplets([red], record)[0]["name"] == "f1_r (RGB)"
     (tmp_path / "f1_g.raw").write_bytes(b"recaptured" * 64)
     assert worker._attach_restored_triplets([red], record)[0]["name"] == "f1_r.raw"
+
+
+def _attach_claims(tmp_path, names: tuple, claims: dict) -> list:
+    """(name, green name) of each asset after re-attaching `claims` (red name -> green, blue names)."""
+    for n in names:
+        (tmp_path / n).write_bytes(b"x")
+    p = {n: str(tmp_path / n) for n in names}
+    assets = [{"name": p[n], "path": p[n], "hash": p[n]} for n in names]
+    triplets = {p[red]: [p[green], p[blue]] for red, (green, blue) in claims.items()}
+    out = AssetDiscoveryWorker()._attach_restored_triplets(assets, triplets)
+    return [(os.path.basename(a["path"]), a.get("green_path") and os.path.basename(a["green_path"])) for a in out]
+
+
+def test_a_file_claimed_twice_goes_to_the_first_triplet(tmp_path):
+    out = _attach_claims(tmp_path, ("a", "g1", "b1", "b2"), {"a": ("g1", "b1"), "g1": ("b2", "a")})
+    assert out == [("a", "g1"), ("b2", None)]
+
+
+def test_a_later_triplet_cannot_take_an_earlier_ones_red(tmp_path):
+    out = _attach_claims(tmp_path, ("r1", "r2", "g1", "b1", "b2"), {"r1": ("g1", "b1"), "r2": ("r1", "b2")})
+    assert out == [("r1", "g1"), ("r2", None), ("b2", None)]
+
+
+def test_a_shared_member_goes_to_the_first_red_by_path(tmp_path):
+    out = _attach_claims(tmp_path, ("r1", "r2", "g1", "b1", "b2"), {"r1": ("g1", "b1"), "r2": ("g1", "b2")})
+    assert out == [("r1", "g1"), ("r2", None), ("b2", None)]
+
+
+def test_the_winner_does_not_depend_on_listing_order(tmp_path):
+    """Computers that share a folder over a NAS list it in different orders."""
+    claims = {"r1": ("g1", "b1"), "r2": ("g1", "b2")}
+    for names in itertools.permutations(("r1", "r2", "g1", "b1", "b2")):
+        assert sorted(_attach_claims(tmp_path, names, claims), key=str) == [("b2", None), ("r1", "g1"), ("r2", None)]
+
+
+def test_restored_triplets_count_as_assembled_in_the_report(tmp_path, monkeypatch):
+    """A roll whose triplets all came from the store is not one where nothing assembled."""
+    from tests.test_rgbscan import BLUE, GREEN, RED, _fake_probes
+
+    names = ["f1_r.raw", "f1_g.raw", "f1_b.raw", "stray_r.raw"]
+    for n in names:
+        (tmp_path / n).write_bytes(n.encode() * 64)
+    _fake_probes(monkeypatch, {n: {"r": RED, "g": GREEN, "b": BLUE}[n[-5]] for n in names})
+    p = {n: str(tmp_path / n) for n in names}
+
+    worker = AssetDiscoveryWorker()
+    reports: list = []
+    worker.rgb_grouped.connect(reports.append)
+    worker.finished.connect(lambda assets: None)
+    worker.process(
+        AssetDiscoveryTask(
+            paths=[str(tmp_path)],
+            supported_extensions=(".raw",),
+            rgb_scan=True,
+            restore_triplets={p["f1_r.raw"]: [p["f1_g.raw"], p["f1_b.raw"], True]},
+        )
+    )
+    assert [(r["made"], r["loose"]) for r in reports] == [(1, 1)]
