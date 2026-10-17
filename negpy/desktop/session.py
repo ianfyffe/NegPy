@@ -48,7 +48,7 @@ from negpy.services.assets import rolls
 from negpy.services.assets import semantic_model
 from negpy.services.assets.rolls import unforked_hash
 from negpy.services.assets.search import facts_for, match, parse_query
-from negpy.services.assets.sidecar import load_or_promote, read_sidecar
+from negpy.services.assets.sidecar import load_or_promote
 from negpy.services.assets.thumbnails import asset_thumbnail_key
 
 
@@ -1334,20 +1334,21 @@ class DesktopSessionManager(QObject):
         config = rolls.resolve_roll_config(self.repo, roll_id, file_hash, config)
         return rolls.resolve_roll_baseline(self.repo, roll_id, file_hash, config)
 
-    def load_edit_from_sidecar(self, path: str) -> bool:
-        """Replace the active frame's edit with the sidecar at *path*, as an undoable
-        history step. Like a work print, its own values beat the roll's, so diverged cards
-        lock. False when the file is not a readable sidecar."""
+    def load_edit_from_sidecar(self, config: WorkspaceConfig, saved_at: Optional[float] = None) -> bool:
+        """Replace the active frame's edit with a sidecar's, as an undoable history step. Like a
+        work print, its own values beat the roll's, so diverged cards lock. *saved_at* dates the
+        saved edit by its file. False with no active frame."""
         idx = self.state.selected_file_idx
         if not 0 <= idx < len(self.state.uploaded_files):
             return False
-        saved = read_sidecar(path)
-        if saved is None:
-            return False
         asset = self.state.uploaded_files[idx]
-        config = self._apply_sticky_settings(saved, only_global=True)
+        config = self._apply_sticky_settings(config, only_global=True)
         self.update_config(resolve_asset_hdr(resolve_asset_stitch(resolve_asset_rgbscan(config, asset), asset), asset), persist=True)
         self._relock_diverged_cards()
+        if saved_at is not None and self.state.current_file_hash:
+            self.repo.save_file_settings(
+                self.state.current_file_hash, self.state.config, file_path=self.state.current_file_path or "", updated_at=saved_at
+            )
         return True
 
     def _hydrate_asset_config(self, asset: dict) -> tuple[WorkspaceConfig, bool]:
@@ -2238,8 +2239,16 @@ class DesktopSessionManager(QObject):
                     logger.error(f"Failed to add {path}: {e}")
 
         # Marks: the DB is the source of truth and toggles write through, so the unconditional
-        # overlay cannot lose one. Keyed on the base hash, not a roll-forked variant: a
-        # keep/reject is a judgement on the physical scan, shared by every roll it's in.
+        # overlay cannot lose one.
+        self._overlay_marks()
+
+        self.asset_model.refresh()
+        self.files_changed.emit()
+        self._persist_session()
+
+    def _overlay_marks(self) -> None:
+        # Keyed on the base hash, not a roll-forked variant: a keep/reject is a judgement
+        # on the physical scan, shared by every roll it's in.
         marks = self.repo.load_file_marks()
         for f in self.state.uploaded_files:
             m = marks.get(unforked_hash(f["hash"]))
@@ -2247,9 +2256,18 @@ class DesktopSessionManager(QObject):
             f["excluded"] = m == "excluded"
         self._stamp_scenes()
 
+    def refresh_marks(self) -> None:
+        """Re-read every frame's triage mark from the repository."""
+        self._overlay_marks()
         self.asset_model.refresh()
         self.files_changed.emit()
-        self._persist_session()
+
+    def reload_current_file(self) -> None:
+        """Re-hydrate the active frame from the repository; an unsaved in-memory edit is dropped."""
+        idx = self.state.selected_file_idx
+        if 0 <= idx < len(self.state.uploaded_files):
+            self._config_dirty = False
+            self.select_file(idx, selection_override=list(self.state.selected_indices or [idx]))
 
     def apply_composite(self, indices: List[int], composite: dict) -> None:
         """Replace the source assets with the composite built from them (inserted at the

@@ -1003,7 +1003,9 @@ The printer's record for this frame, as described under Dodge & Burn. **Preview*
 <!-- panel:export_sidecars -->
 #### Sidecars
 
-**Keep Current** (off by default, app-wide) writes each frame's saved edit and mark to a `.negpy` sidecar next to its source as you work. **Save on Export** writes a `.negpy` sidecar next to each source on export. Both keep a newer edit or mark that another computer saved in the file. **Export Sidecars** writes this computer's edits for all visible frames at once. Edits always stay in the database too. A frame with no edit in the database takes its sidecar when its folder opens. **Load Edit from Sidecar…** (right-click a frame) replaces the frame's edit with a chosen `.negpy`, as one undo step.
+**Keep Current** (off by default, app-wide) writes each frame's saved edit and mark to a `.negpy` sidecar next to its source as you work. **Save on Export** writes a `.negpy` sidecar next to each source on export. Both keep a newer edit or mark that another computer saved in the file. **Export Sidecars** writes this computer's edits for all visible frames at once. Edits always stay in the database too. **Load Edit from Sidecar…** (right-click a frame) replaces the frame's edit with a chosen `.negpy`, as one undo step; the frame's own sidecar also brings its newer mark.
+
+When a folder opens, a frame with no edit in the database takes its sidecar's edit, and a newer mark loads without asking. An edit that another computer saved later, and that differs from yours, is listed in the **Newer Sidecars** dialog: **Load Selected** replaces yours, and **Keep Mine** keeps yours and stops asking for those versions. The newer copy wins by its saved time, so keep the computers' clocks close.
 
 <!-- panel:export_bake -->
 #### Auto Density/Grade
