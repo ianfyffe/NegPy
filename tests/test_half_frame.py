@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -748,6 +749,7 @@ class TestDiptychAsset:
         profile = {"crop_rect": [0.1, 0.0, 0.9, 1.0], "split_x": 0.4, "gutter_thickness": 0.05}
         ctrl.session.repo.get_global_setting.side_effect = lambda key, default=None: list(split) if key == SPLIT_SCANS_KEY else profile
         ctrl._active_diptych_memo = ("", None)
+        ctrl.state = SimpleNamespace(active_roll_id=None)
         return ctrl
 
     def test_mark_diptychs_flags_only_scans_with_half_edits(self):
@@ -845,6 +847,7 @@ class TestDiptychAsset:
         }
         ctrl.session.repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
         ctrl._active_diptych_memo = ("", None)
+        ctrl.state = SimpleNamespace(active_roll_id=None)
 
         info, pair = AppController._diptych_task(ctrl, {"path": "/p/a.tif", "hash": "ha", "diptych": True})
         assert pair == (cfg, cfg)
@@ -1027,3 +1030,56 @@ def test_a_resplit_decodes_no_scan_without_saved_half_edits(tmp_path):
     AppController._remap_half_frame_edits(ctrl, "H", HalfGeometry(split_x=0.6))
 
     ctrl._half_frame_geometry_for.assert_not_called()
+
+
+class TestProfilePerRoll:
+    @staticmethod
+    def _controller(tmp_path):
+        from negpy.desktop.controller import AppController
+        from negpy.infrastructure.storage.repository import StorageRepository
+
+        repo = StorageRepository(str(tmp_path / "e.db"), str(tmp_path / "s.db"))
+        repo.initialize()
+        ctrl = AppController.__new__(AppController)
+        ctrl.session = SimpleNamespace(repo=repo)
+        ctrl.state = SimpleNamespace(active_roll_id=None)
+        return ctrl, repo
+
+    def test_a_roll_without_a_profile_reads_the_shared_one(self, tmp_path):
+        from negpy.desktop.controller import AppController
+        from negpy.services.assets.rolls import recognize_folder
+
+        ctrl, repo = self._controller(tmp_path)
+        roll_a, roll_b = recognize_folder(repo, str(tmp_path / "a")), recognize_folder(repo, str(tmp_path / "b"))
+        AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.55, 0.0)
+        ctrl.state.active_roll_id = roll_a
+        AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.4, 0.0)
+
+        assert repo.get_global_setting("half_frame_profile")["split_x"] == 0.55
+        assert AppController.half_frame_profile(ctrl)["split_x"] == 0.4
+        ctrl.state.active_roll_id = roll_b
+        assert AppController.half_frame_profile(ctrl)["split_x"] == 0.55
+        ctrl.state.active_roll_id = None
+        assert AppController.half_frame_profile(ctrl)["split_x"] == 0.55
+
+    def test_a_roll_profile_splits_along_its_own_axis(self, tmp_path):
+        from negpy.desktop.controller import AppController
+        from negpy.desktop.workers import render as render_mod
+        from negpy.services.assets.rolls import recognize_folder
+
+        ctrl, repo = self._controller(tmp_path)
+        roll_a, roll_b = recognize_folder(repo, str(tmp_path / "a")), recognize_folder(repo, str(tmp_path / "b"))
+        AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.5, 0.0, "x")
+        ctrl.state.active_roll_id = roll_a
+        AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.5, 0.0, "y")
+        worker = render_mod.AssetDiscoveryWorker()
+        scan = np.zeros((40, 20, 3), np.float32)
+
+        def first_half(roll_id):
+            ctrl.state.active_roll_id = roll_id
+            assets = [{"name": "a.tif", "path": "/p/a.tif", "hash": "ha"}]
+            return worker._expand_half_frames(assets, profile=AppController.half_frame_profile(ctrl))[0]
+
+        on_roll, shared = first_half(roll_a), first_half(roll_b)
+        assert on_roll["split_axis"] == "y" and slice_for_asset(scan, on_roll).shape == (20, 20, 3)
+        assert shared["split_axis"] == "x" and slice_for_asset(scan, shared).shape == (40, 10, 3)

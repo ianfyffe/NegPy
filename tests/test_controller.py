@@ -430,6 +430,33 @@ class TestAppController(unittest.TestCase):
         self.controller.request_render.assert_not_called()
         self.controller.set_status.assert_called_once_with("invalid edge", 3000, "warning")
 
+    def test_half_frame_profile_is_saved_per_active_roll(self):
+        from negpy.services.assets.rolls import recognize_folder
+
+        store: dict = {}
+        repo = self.controller.session.repo
+        repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+        roll_a, roll_b = recognize_folder(repo, "/scans/a"), recognize_folder(repo, "/scans/b")
+        self.controller.state.active_roll_id = roll_a
+        self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
+
+        self.assertNotIn("half_frame_profile", store)
+        self.assertEqual(self.controller.half_frame_profile()["split_x"], 0.6)
+        self.controller.state.active_roll_id = roll_b
+        self.assertIsNone(self.controller.half_frame_profile())
+
+    def test_half_frame_profile_with_a_deleted_active_roll_is_the_shared_profile(self):
+        store: dict = {}
+        repo = self.controller.session.repo
+        repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+        self.controller.state.active_roll_id = "deleted-roll"
+        self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
+
+        self.assertEqual(store["half_frame_profile"]["split_x"], 0.6)
+        self.assertEqual(self.controller.half_frame_profile()["split_x"], 0.6)
+
     def test_half_frame_override_round_trip(self):
         self.controller.session.repo.get_global_setting.return_value = None
         self.assertEqual(self.controller.half_frame_overrides(), {})
@@ -1200,7 +1227,9 @@ class TestAppController(unittest.TestCase):
         mock_load.assert_not_called()
         mock_write.assert_not_called()
 
-    def test_discovery_promotes_sidecars_before_adding_files(self):
+    def test_discovery_fills_from_sidecars_before_adding_files(self):
+        from negpy.services.assets.sidecar import SidecarPlan
+
         state = self.mock_session_manager.state
         state.uploaded_files = []
         order = []
@@ -1208,12 +1237,16 @@ class TestAppController(unittest.TestCase):
         self.mock_session_manager.asset_model = MagicMock()
         self.controller.generate_missing_thumbnails = MagicMock()
         discovered = [{"name": "a", "path": "/a.dng", "hash": "h1"}]
+        plan = SidecarPlan()
 
-        with patch("negpy.desktop.controller.promote_sidecars", side_effect=lambda *_a: order.append("promote")) as mock_promote:
-            self.controller._on_discovery_finished(discovered)
+        with (
+            patch("negpy.desktop.controller.apply_sidecar_plan", side_effect=lambda *_a: order.append("fill") or ([], [])) as mock_apply,
+            patch("negpy.desktop.controller.offers_from_plan", return_value=[]),
+        ):
+            self.controller._on_discovery_finished(discovered, plan)
 
-        mock_promote.assert_called_once_with(self.mock_session_manager.repo, discovered)
-        self.assertEqual(order[:2], ["promote", "add"])
+        mock_apply.assert_called_once_with(self.mock_session_manager.repo, plan)
+        self.assertEqual(order[:2], ["fill", "add"])
 
     def _wire_repo_store(self) -> dict:
         """Backs the mocked repo's global settings with a real dict, so a roll write
@@ -3157,6 +3190,7 @@ class TestBatchExportFiltering(unittest.TestCase):
         self.mock_session_manager.state = AppState()
         self.mock_session_manager.repo = MagicMock()
         self.mock_session_manager.repo.load_file_settings.return_value = None
+        self.mock_session_manager.repo.load_file_settings_by_path.return_value = None
         self.mock_session_manager.config_for_asset.side_effect = lambda f: self.mock_session_manager.repo.load_file_settings(f["hash"])
 
         self.mock_session_manager.state.uploaded_files = [
@@ -6969,6 +7003,7 @@ class TestLibrarySearch(unittest.TestCase):
         self.controller.session.rehome_folder_paths.assert_not_called()
 
     def test_request_rename_roll_also_renames_the_folder_when_not_active(self):
+        """Loaded frames follow the folder whichever roll is open."""
         self._dict_repo()
         from negpy.services.assets.rolls import recognize_folder, roll_for_id
 
@@ -6978,14 +7013,16 @@ class TestLibrarySearch(unittest.TestCase):
             roll_id = recognize_folder(self.controller.session.repo, old_path)
             self.controller.state.active_roll_id = None
 
-            result = self.controller.request_rename_roll(roll_id, "roll_b", True)
+            with patch.object(self.controller, "invalidate_library_walk") as invalidate:
+                result = self.controller.request_rename_roll(roll_id, "roll_b", True)
 
             self.assertTrue(result)
             new_path = os.path.join(d, "roll_b")
             self.assertTrue(os.path.isdir(new_path))
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["folder_path"], new_path)
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["name"], "roll_b")
-            self.controller.session.rehome_folder_paths.assert_not_called()
+            self.controller.session.rehome_folder_paths.assert_called_once_with(old_path, new_path)
+            invalidate.assert_called_once_with()
 
     def test_request_rename_roll_rehomes_the_active_rolls_paths(self):
         self._dict_repo()

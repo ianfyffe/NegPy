@@ -13,6 +13,7 @@ a handful of film, rig and scanning facts that describe the roll rather than one
 frame's own look.
 """
 
+import json
 import os
 import re
 import time
@@ -35,7 +36,11 @@ IMPORT_SOURCES_KEY = "roll_import_sources"
 DISMISSED_FOLDERS_KEY = "dismissed_folder_rolls"
 ROLL_PATH_SEP = "/"
 DISCOVERY_FILTERS_KEY = "roll_discovery_filters"
+HALF_FRAME_MODE_KEY = "half_frame_mode_by_roll"
+TRICHROME_MODE_KEY = "rgbscan_mode_by_roll"
 DEFAULT_DISCOVERY_FILTERS = ("export",)
+# Leaf names a folder roll's folder had, newest last, so another computer can follow a rename.
+FORMER_NAMES_KEPT = 8
 _FORK_SEP = "#roll:"
 
 
@@ -53,8 +58,100 @@ def _view(repo: Any) -> Dict[str, dict]:
     return saved if isinstance(saved, dict) else {}
 
 
-def _write(repo: Any, store: Dict[str, dict]) -> None:
+# Roll entry fields that stay on this computer: its identity, paths and forks. Every other
+# field travels in the folder's roll file, so a field added later travels with no change here.
+LOCAL_FIELDS = frozenset(
+    {"kind", "name", "folder_path", "extra_paths", "member_paths", "forked_hashes", "created_at", "updated_at", "excluded_paths"}
+)
+
+
+def portable_state(entry: dict) -> Dict[str, Any]:
+    """What a roll file carries of *entry*: each field outside LOCAL_FIELDS that holds a value,
+    and the files removed from a folder roll as ``excluded_names``, by name in its folder."""
+    state = {k: v for k, v in entry.items() if k not in LOCAL_FIELDS and v not in (None, {}, [], ())}
+    names = sorted(os.path.basename(p) for p in entry.get("excluded_paths", ()))
+    if names:
+        state["excluded_names"] = names
+    return state
+
+
+def _same_state(a: dict, b: dict) -> bool:
+    if a == b:
+        return True
+    return json.dumps(portable_state(a), sort_keys=True, default=str) == json.dumps(portable_state(b), sort_keys=True, default=str)
+
+
+def _write(repo: Any, store: Dict[str, dict], *, stamp: bool = True, touched: Collection[str] = ()) -> None:
+    """Save *store*. With *stamp*, each roll whose portable state changed is dated ``updated_at``,
+    which a roll file's ``saved_at`` is compared against; *touched* dates rolls whose state
+    outside the entry changed. A migration or a roll file taken in passes ``stamp=False``."""
+    dated = [r for r in touched if r in store]
+    if stamp:
+        before = _view(repo)
+        dated += [r for r, entry in store.items() if r not in dated and not _same_state(before.get(r) or {}, entry)]
+    now = time.time() if dated else 0.0
+    for roll_id in dated:
+        store[roll_id]["updated_at"] = now
     repo.save_global_setting(ROLLS_KEY, store)
+    notify = getattr(repo, "notify_roll_dated", None)
+    if notify is not None:
+        for roll_id in dated:
+            notify(roll_id)
+
+
+def roll_updated_at(repo: Any, roll_id: str) -> Optional[float]:
+    """When this computer last changed what the roll's file carries; None before any change."""
+    entry = roll_for_id(repo, roll_id)
+    stamp = entry.get("updated_at") if entry else None
+    return float(stamp) if isinstance(stamp, (int, float)) else None
+
+
+def touch_roll(repo: Any, roll_id: str) -> None:
+    """Date a change to roll state kept outside its entry: its Half Frame and Trichrome Mode."""
+    store = _read(repo)
+    if roll_id in store:
+        _write(repo, store, touched=[roll_id])
+
+
+def roll_modes(repo: Any, roll_id: str) -> Dict[str, Optional[bool]]:
+    """The roll's own Half Frame and Trichrome Mode, each None when it has none."""
+    modes: Dict[str, Optional[bool]] = {}
+    for name, key in (("half_frame_mode", HALF_FRAME_MODE_KEY), ("trichrome_mode", TRICHROME_MODE_KEY)):
+        by_roll = repo.get_global_setting(key, default=None)
+        modes[name] = bool(by_roll[roll_id]) if isinstance(by_roll, dict) and roll_id in by_roll else None
+    return modes
+
+
+def replace_portable_state(repo: Any, roll_id: str, state: Dict[str, Any], modes: Dict[str, Optional[bool]], saved_at: float) -> None:
+    """Make a roll file's *state* and *modes* this roll's, dated *saved_at*. Local fields stay;
+    a mode the file does not give stays as it is."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return
+    state = dict(state)
+    names = state.pop("excluded_names", ())
+    for key in [k for k in entry if k not in LOCAL_FIELDS]:
+        del entry[key]
+    entry.update({k: v for k, v in state.items() if k not in LOCAL_FIELDS})
+    if names and entry.get("folder_path"):
+        entry["excluded_paths"] = [os.path.join(entry["folder_path"], name) for name in names]
+    else:
+        entry.pop("excluded_paths", None)
+    entry["updated_at"] = saved_at
+    _write(repo, store, stamp=False)
+    for name, key in (("half_frame_mode", HALF_FRAME_MODE_KEY), ("trichrome_mode", TRICHROME_MODE_KEY)):
+        if modes.get(name) is not None:
+            by_roll = repo.get_global_setting(key, default=None)
+            repo.save_global_setting(key, {**(by_roll if isinstance(by_roll, dict) else {}), roll_id: bool(modes[name])})
+
+
+def rewrite_entries(repo: Any, edit: Callable[[dict], None]) -> None:
+    """Pass every roll entry through *edit*, in one write that dates nothing."""
+    store = _read(repo)
+    for entry in store.values():
+        edit(entry)
+    _write(repo, store, stamp=False)
 
 
 def saved_rolls(repo: Any) -> Dict[str, dict]:
@@ -78,6 +175,16 @@ def folder_roll_id_for_path(repo: Any, path: str) -> Optional[str]:
         if entry.get("kind") == "folder" and _folder_key(entry.get("folder_path") or "") == key:
             return roll_id
     return None
+
+
+def folder_rolls_holding(repo: Any, folders: Collection[str]) -> List[str]:
+    """The folder rolls recognizing *folders*, once each."""
+    keys = {_folder_key(f) for f in folders if f}
+    return [
+        roll_id
+        for roll_id, entry in _view(repo).items()
+        if entry.get("kind") == "folder" and entry.get("folder_path") and _folder_key(entry["folder_path"]) in keys
+    ]
 
 
 def roll_folder_name(text: str) -> Optional[str]:
@@ -515,12 +622,31 @@ def rename_folder_roll_disk(repo: Any, roll_id: str, new_name: str) -> Optional[
     except OSError:
         return None
     entry["folder_path"] = new_path
+    old_leaf = os.path.basename(os.path.normpath(old_path))
+    kept = [n for n in entry.get("former_names", []) if n not in (old_leaf, new_name)]
+    entry["former_names"] = [*kept, old_leaf][-FORMER_NAMES_KEPT:]
     _write(repo, store)
     return new_path
 
 
+def follow_folder_name(repo: Any, roll_id: str, former_names: Sequence[str]) -> None:
+    """After a rename made on another computer: take the folder's new leaf as the roll's name where it
+    named the roll by the old leaf. A roll with state here takes the roll file's *former_names*, undated,
+    so the rename alone is no newer roll file; one without takes the whole file on discovery."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return
+    if entry.get("updated_at") is not None or portable_state(entry):
+        entry["former_names"] = list(former_names)[-FORMER_NAMES_KEPT:]
+    prefix, sep, leaf = (entry.get("name") or "").rpartition(ROLL_PATH_SEP)
+    if leaf and leaf in former_names:
+        entry["name"] = prefix + sep + os.path.basename(os.path.normpath(entry.get("folder_path") or ""))
+    _write(repo, store, stamp=False)
+
+
 def rehome_paths(repo: Any, move: Callable[[str], str]) -> None:
-    """Pass every folder and member path of every roll through *move*."""
+    """Pass every folder and member path of every roll, and every import source, through *move*."""
     store = _read(repo)
     for entry in store.values():
         if entry.get("folder_path"):
@@ -529,6 +655,10 @@ def rehome_paths(repo: Any, move: Callable[[str], str]) -> None:
             if key in entry:
                 entry[key] = [move(p) for p in entry[key]]
     _write(repo, store)
+    sources = import_sources(repo)
+    moved = [move(p) for p in sources]
+    if moved != sources:
+        repo.save_global_setting(IMPORT_SOURCES_KEY, moved)
 
 
 def delete_roll(repo: Any, roll_id: str) -> None:
@@ -726,7 +856,7 @@ def clear_frame_overrides(repo: Any, roll_id: str, file_hash: str) -> None:
     _write(repo, store)
 
 
-def set_frame_override(repo: Any, roll_id: str, file_hash: str, card_key: str, locked: bool) -> None:
+def set_frame_override(repo: Any, roll_id: str, file_hash: str, card_key: str, locked: bool, *, stamp: bool = True) -> None:
     """Lock (locked=True) or unlock (False) one card for one frame within one roll.
     Locking freezes that card at the frame's current (usually roll-default) value;
     unlocking reverts it to whatever the roll currently says. No-op for an unknown
@@ -746,7 +876,7 @@ def set_frame_override(repo: Any, roll_id: str, file_hash: str, card_key: str, l
     else:
         overrides.pop(file_hash, None)
     entry["frame_overrides"] = overrides
-    _write(repo, store)
+    _write(repo, store, stamp=stamp)
 
 
 def holds_own_crop(card_key: str, config: "WorkspaceConfig") -> bool:
@@ -804,25 +934,22 @@ def set_section_push(repo: Any, roll_id: str, section_key: str, values: Dict[str
     _write(repo, store)
 
 
-def move_section_push_fields(repo: Any, section_key: str, to_key: str, fields: Collection[str]) -> None:
-    """Moves *fields* out of every roll's *section_key* push into its *to_key* push, for a
+def move_section_push_fields(entry: dict, section_key: str, to_key: str, fields: Collection[str]) -> None:
+    """Moves *fields* out of the roll entry's *section_key* push into its *to_key* push, for a
     card that splits in two. A push left empty is dropped."""
-    store = _read(repo)
     wanted = set(fields)
-    for entry in store.values():
-        pushes = dict(entry.get("section_pushes", {}))
-        source = pushes.get(section_key, {})
-        moved = {f: v for f, v in source.items() if f in wanted}
-        if not moved:
-            continue
-        kept = {f: v for f, v in source.items() if f not in wanted}
-        if kept:
-            pushes[section_key] = kept
-        else:
-            pushes.pop(section_key)
-        pushes[to_key] = {**pushes.get(to_key, {}), **moved}
-        entry["section_pushes"] = pushes
-    _write(repo, store)
+    pushes = dict(entry.get("section_pushes", {}))
+    source = pushes.get(section_key, {})
+    moved = {f: v for f, v in source.items() if f in wanted}
+    if not moved:
+        return
+    kept = {f: v for f, v in source.items() if f not in wanted}
+    if kept:
+        pushes[section_key] = kept
+    else:
+        pushes.pop(section_key)
+    pushes[to_key] = {**pushes.get(to_key, {}), **moved}
+    entry["section_pushes"] = pushes
 
 
 def roll_normalization(repo: Any, roll_id: str) -> Optional[Dict[str, Optional[tuple]]]:
@@ -859,6 +986,8 @@ def set_roll_normalization(
     outliers: tuple = (),
     axis: Optional[tuple] = None,
     bounds_version: int = BOUNDS_VERSION,
+    *,
+    stamp: bool = True,
 ) -> None:
     """Records a Roll Analysis result as the roll's own baseline, overwriting
     whatever was there. No-op for an unknown roll id."""
@@ -874,7 +1003,7 @@ def set_roll_normalization(
         "axis": axis,
         "bounds_version": bounds_version,
     }
-    _write(repo, store)
+    _write(repo, store, stamp=stamp)
 
 
 def baseline_stale(saved: Optional[dict]) -> bool:
@@ -913,6 +1042,25 @@ def set_roll_film_base(repo: Any, roll_id: str, base_log: Optional[tuple]) -> bo
     if entry is None:
         return False
     entry["film_base"] = None if base_log is None else [float(v) for v in base_log]
+    _write(repo, store)
+    return True
+
+
+def roll_half_frame_profile(repo: Any, roll_id: Optional[str]) -> Optional[dict]:
+    """The roll's Half Frame split profile (``crop_rect``, ``split_x``, ``gutter_thickness``,
+    ``split_axis``) that Apply to All set, or None."""
+    entry = roll_for_id(repo, roll_id) if roll_id else None
+    saved = entry.get("half_frame_profile") if entry else None
+    return dict(saved) if isinstance(saved, dict) and saved else None
+
+
+def set_roll_half_frame_profile(repo: Any, roll_id: str, profile: dict) -> bool:
+    """Records the roll's Half Frame split profile. False for an unknown roll id."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return False
+    entry["half_frame_profile"] = dict(profile)
     _write(repo, store)
     return True
 

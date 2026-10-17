@@ -148,7 +148,7 @@ Importing never changes the folder. Reorganize on disk, then import again (or **
 Right-click a roll for:
 
 *   **Close Roll…** (loaded roll only): empties the Film Strip. Edits stay saved.
-*   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default). A cloud-sync folder (Dropbox, iCloud, OneDrive) can treat that rename as a delete and upload again.
+*   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default); another computer on the same share follows that rename when the folder has a `.negpy-roll` file. A cloud-sync folder (Dropbox, iCloud, OneDrive) can treat that rename as a delete and upload again.
 *   **Delete…**: forgets the roll only; folder, images and edits stay. **Clear Library** in *Manage Database* forgets all rolls.
 *   **Roll Analysis** (loaded roll only): runs Roll Analysis ([§10.5](#105-roll-analysis)).
 
@@ -250,7 +250,7 @@ Thumbnails are positives. Until you open a frame, it shows a quick inversion of 
 Right-click a thumbnail, or use shortcuts, to mark frames (multi-selection works):
 
 *   **Keep**: a check badge.
-*   **Reject**: a cross badge and dimming. Batch exports and sidecar writes skip it. The file never changes.
+*   **Reject**: a cross badge and dimming. Batch exports and Export Sidecars skip it; Keep Current still writes the mark. The file never changes.
 
 #### Reading the badges
 
@@ -1003,7 +1003,11 @@ The printer's record for this frame, as described under Dodge & Burn. **Preview*
 <!-- panel:export_sidecars -->
 #### Sidecars
 
-**Save on Export** writes a `.negpy` sidecar next to each source on export. **Export Sidecars** writes them for all visible frames at once. Edits always stay in the database too. A frame with no edit in the database takes its sidecar when its folder opens. **Load Edit from Sidecar…** (right-click a frame) replaces the frame's edit with a chosen `.negpy`, as one undo step.
+**Keep Current** (off by default, app-wide) writes each frame's saved edit and mark to a `.negpy` sidecar next to its source as you work. **Save on Export** writes a `.negpy` sidecar next to each source on export. Both keep a newer edit or mark that another computer saved in the file. **Export Sidecars** writes this computer's edits for all visible frames at once. Edits always stay in the database too. **Load Edit from Sidecar…** (right-click a frame) replaces the frame's edit with a chosen `.negpy`, as one undo step; the frame's own sidecar also brings its newer mark.
+
+When a folder opens, a frame with no edit in the database takes its sidecar's edit, and a newer mark loads without asking. An edit that another computer saved later, and that differs from yours, is listed in the **Newer Sidecars** dialog: **Load Selected** replaces yours, and **Keep Mine** keeps yours and stops asking for those versions. The newer copy wins by its saved time, so keep the computers' clocks close.
+
+A folder roll's settings travel in a `.negpy-roll` file in its folder, which Keep Current, Save on Export and Export Sidecars write: card defaults and locks, Film Base, Roll Analysis and scene baselines, scenes, Half Frame and Trichrome Mode, the half-frame split and the files removed from the roll. A roll with no settings on this computer takes the file when its folder opens; newer roll settings are a **Roll settings** row in the **Newer Sidecars** dialog. The roll's name, its forks and its added files stay on this computer.
 
 <!-- panel:export_bake -->
 #### Auto Density/Grade
@@ -1228,7 +1232,7 @@ The button reads **"Open Releases Page"** when NegPy cannot update itself: a sou
 
 ## Additional Info
 
-*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. Optional `.negpy` sidecars mirror them.
+*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. Optional `.negpy` sidecars mirror them and carry them between computers.
 *   **Saving edits**: written on export, on frame switch, or on save; closing mid-edit before any of these loses unsaved changes.
 *   **Keyboard shortcuts**: [KEYBOARD.md](KEYBOARD.md)
 *   **Filename templating**: [TEMPLATING.md](TEMPLATING.md)
