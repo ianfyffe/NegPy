@@ -1181,13 +1181,12 @@ class DesktopSessionManager(QObject):
             if remainder:
                 config = replace(config, export=replace(config.export, **remainder))
 
-        # The flat-field profile is rig-global, so the active one always overrides the
-        # per-file id. New files default to enabled when a profile is active, and saved
-        # files keep their toggle.
+        # The rig-global flat-field profile overrides the per-file id. With no rig active, a saved id stays,
+        # so an edit from another machine gets its correction back once that profile is copied here.
         active_ff = self.repo.get_global_setting("flatfield_active_profile")
         ff_prof = FlatFieldProfiles.get(active_ff) if active_ff else None
-        ff_id = ff_prof.id if ff_prof else ""
-        config = replace(config, flatfield=replace(config.flatfield, profile_id=ff_id))
+        if ff_prof is not None:
+            config = replace(config, flatfield=replace(config.flatfield, profile_id=ff_prof.id))
         # Distortion left the profile for the per-image geometry; adopt a legacy rig value
         # once, on frames that carry none of their own.
         if config.geometry.distortion_k1 == 0.0 and ff_prof is not None and ff_prof.k1 != 0.0:
@@ -1224,7 +1223,7 @@ class DesktopSessionManager(QObject):
         if only_global:
             return config
 
-        config = replace(config, flatfield=replace(config.flatfield, apply=bool(ff_id)))
+        config = replace(config, flatfield=replace(config.flatfield, apply=ff_prof is not None))
 
         return self._with_scan_setup(config)
 
