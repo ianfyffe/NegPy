@@ -96,6 +96,8 @@ _BUILTIN_WHITE_PRESETS = {
 # collide. Picking it unlocks the sliders and steppers to build a preset by hand.
 _MANUAL_PRESET = "\x00create-manual"
 
+_SETTING_NAMES = {"shutter": "shutter", "iso": "ISO", "aperture": "aperture"}
+
 
 # LED settle before each exposure. Narrowband PWM LEDs reach full brightness in under
 # 10 ms and set_color is a fire-and-forget serial write, so 50 ms keeps an
@@ -219,6 +221,9 @@ class ScanlightSidebar(QWidget):
         self._cam_setting_debounce.setInterval(250)
         self._cam_setting_debounce.timeout.connect(self._flush_camera_settings)
         self._cam_pending: dict[str, int] = {}
+        # A preset's exposure writes on the worker (setting -> label), and what did not land.
+        self._preset_writes: dict[str, str] = {}
+        self._preset_write_problems: list[str] = []
 
         # Live view: the camera's preview thread rewrites a JPEG and this timer polls it. It
         # runs a little faster than the frame interval and skips re-decoding an unchanged
@@ -446,6 +451,7 @@ class ScanlightSidebar(QWidget):
         self.controller.capture_light_set.connect(self._on_light_set)
         self.controller.capture_progress.connect(self._on_progress)
         self.controller.capture_channel.connect(self._on_channel)
+        self.controller.capture_camera_setting_failed.connect(self._on_camera_setting_failed)
         self.controller.capture_camera_setting_applied.connect(self._on_camera_setting_applied)
         self.controller.capture_autofocus_finished.connect(self._on_autofocus_finished)
         self.controller.capture_autofocus_failed.connect(self._on_autofocus_failed)
@@ -689,12 +695,12 @@ class ScanlightSidebar(QWidget):
         self._update_settings_from_ui()  # capture the final slider + stepper values
         self._manual_mode = False  # leaving manual mode → the saved preset becomes the read-only selection
         self._save_current_as_preset(name)  # persist + reload + select + re-gate
+        self._set_status(f"Saved preset “{name}”")
         saved = self._presets.get(name)
         if saved is not None:
             self._apply_preset(saved)  # show it read-only (lone steppers, disabled sliders)
         self._push_light()
         self._apply_gating()
-        self._set_status(f"Saved preset “{name}”")
 
     def _save_current_as_preset(self, name: str, sensor_profile: str = "") -> None:
         self._update_settings_from_ui()
@@ -784,32 +790,53 @@ class ScanlightSidebar(QWidget):
         scan matches the calibration and the framing brightness is deterministic: the dimmed framing
         light (see framing_levels) is sized against the preset's shutter, so a body left on some
         other speed would frame too dark or too bright. Shutter first — it dominates that brightness.
-        Labels are resolved against the live options (a no-op if the value is absent, the body lacks
-        the option, or no camera session is open to receive the write)."""
+        Labels are resolved against the live options. While live view runs and the body has reported
+        its settings, a value it lacks or a write that does not land goes to the status line;
+        live-view start writes them again."""
         data = self._settings_json()
         issued = 0
+        self._preset_writes, self._preset_write_problems = {}, []
         for key, label in (("shutter", preset.shutter_r), ("iso", preset.iso), ("aperture", preset.aperture)):
             if not label:
                 continue
             info = data.get(key)
-            if not isinstance(info, dict):
+            options = info.get("options", []) if isinstance(info, dict) else []
+            raw = next((o["raw"] for o in options if str(o.get("label", "")) == label), None)
+            if raw is None:
+                if data:
+                    self._preset_write_problems.append(f"{_SETTING_NAMES[key]} {label} not set (this body does not offer it)")
                 continue
-            for o in info.get("options", []):
-                if str(o.get("label", "")) == label:
-                    self.controller.set_camera_setting(key, int(o["raw"]))
-                    issued += 1
-                    break
+            self.controller.set_camera_setting(key, int(raw))
+            self._preset_writes[key] = label
+            issued += 1
+        if not self.lv_btn.isChecked():
+            self._preset_writes, self._preset_write_problems = {}, []
         if issued:
             self._pending_exposure_writes += issued
             self._apply_gating()  # Scan greys out until the worker confirms every write
+        else:
+            self._report_preset_writes()
+
+    def _report_preset_writes(self) -> None:
+        problems, self._preset_write_problems = self._preset_write_problems, []
+        if problems:
+            self._set_status("Preset: " + "; ".join(problems), pinned=True)
+
+    @pyqtSlot(str, str)
+    def _on_camera_setting_failed(self, which: str, reason: str) -> None:
+        label = self._preset_writes.get(which)
+        if label is not None:
+            self._preset_write_problems.append(f"{_SETTING_NAMES[which]} {label} not set ({reason})")
 
     @pyqtSlot(str)
-    def _on_camera_setting_applied(self, _which: str) -> None:
+    def _on_camera_setting_applied(self, which: str) -> None:
         if self._pending_exposure_writes == 0:
             return  # a stepper write from manual/white mode, not one of the gated preset writes
+        self._preset_writes.pop(which, None)
         self._pending_exposure_writes -= 1
         if self._pending_exposure_writes == 0:
             self._apply_gating()
+            self._report_preset_writes()
 
     def _available_shutters(self, info: dict | None = None, scanlight: bool = True) -> tuple[str, ...]:
         """The body's writable shutter labels (from the live-view settings JSON, or `info`, its
@@ -973,6 +1000,7 @@ class ScanlightSidebar(QWidget):
             self._lv_last_mtime = os.stat(jpeg_path).st_mtime
         except OSError:
             self._lv_last_mtime = 0.0
+        self._set_status("Live view running")  # before the preset writes, so their report replaces it
         if self._lv_target is self.lv_image:  # scan cockpit (not the calibration pop-up)
             self.lv_window.show()
             self.lv_window.raise_()
@@ -982,7 +1010,6 @@ class ScanlightSidebar(QWidget):
         self._magnifier_available = True
         self._reset_focus_meter()
         self._lv_timer.start()
-        self._set_status("Live view running")
 
     def _on_live_view_window_closed(self) -> None:
         if self.lv_btn.isChecked():
@@ -1220,8 +1247,8 @@ class ScanlightSidebar(QWidget):
         # and the preset is applied only per shot, inside the capture.
         self._settings_loaded = False
         self._refresh_camera_settings()
+        self._set_status(reason, pinned=True)  # the pane shows it too, so a preset report may replace it
         self._apply_active_preset_camera_settings()
-        self._set_status(reason, pinned=True)
         self._apply_gating()
 
     @pyqtSlot(str)

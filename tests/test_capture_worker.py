@@ -114,6 +114,37 @@ def test_autofocus_outcome_is_reported_without_touching_the_session():
         assert not camera.closed
 
 
+def test_a_camera_setting_write_that_does_not_land_is_reported(monkeypatch):
+    class Camera:
+        def set_shutter(self, _raw: int) -> bool:
+            return False
+
+        def set_iso(self, _raw: int) -> bool:
+            return True
+
+        def set_aperture(self, _raw: int) -> bool:
+            return True
+
+    worker = CaptureWorker()
+    events = []
+    worker.camera_setting_failed.connect(lambda which, reason: events.append(("failed", which, reason)))
+    worker.camera_setting_applied.connect(lambda which: events.append(("applied", which)))
+
+    worker.set_camera_setting("iso", 1)  # no session yet
+    monkeypatch.setattr(worker, "_camera", Camera())
+    monkeypatch.setattr(worker, "_holds_camera", lambda: True)
+    worker.set_camera_setting("shutter", 1)
+    worker.set_camera_setting("iso", 1)
+
+    assert events == [
+        ("failed", "iso", "no camera session"),
+        ("applied", "iso"),
+        ("failed", "shutter", "the camera did not confirm it"),
+        ("applied", "shutter"),
+        ("applied", "iso"),
+    ]
+
+
 def test_normal_capture_cancel_before_promotion_preserves_retake(tmp_path, monkeypatch):
     existing = tmp_path / "Roll01_Frame007.ARW"
     existing.write_bytes(b"existing-good-raw")
