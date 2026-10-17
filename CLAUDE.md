@@ -35,6 +35,8 @@ NegPy is a film-negative processing desktop app (PyQt6 + WebGPU). Images flow th
 
 Edits persist in SQLite (`edits.db`, keyed by content hash), optionally mirrored to `.negpy` JSON sidecars next to sources. The DB wins; a loaded sidecar is promoted into the DB (`negpy/services/assets/sidecar.py`, `session.py`).
 
+The content hash comes from `file_hashes()` (`negpy/kernel/image/logic.py`). Asset discovery reads it through `FileHashCache` (`negpy/infrastructure/storage/hash_cache.py`), a per-machine `hash_cache.db` keyed on absolute path and served only while size, mtime_ns and ctime_ns match. It stores file fingerprints only. Half-frame and composite hashes derive from them. A change to either digest bumps `FINGERPRINT_VERSION`.
+
 On Windows, `desktop.py` checks data-folder access before it imports app configuration. A blocked default folder opens a native dialog that suggests Local AppData or another folder; no data is copied. The choice is saved under Local AppData and outranks Documents; `NEGPY_USER_DIR` outranks it.
 
 **Migrations** (`negpy/domain/migrations.py`) hold every legacy fixup for persisted configs, not inline code in `from_flat_dict`: `KEY_RENAMES` (renamed fields), `DROPPED_KEYS` (removed fields, dropped without the unknown-key warning), `RETIRED_EXPORT_FORMATS`, and `migrate_flat_config()` for value rewrites. Renaming or removing a config field, or retiring an enum value, means one entry here. Two exceptions stay in their dataclasses because they must run on *every* construction, not only on load: `ExposureConfig.__post_init__` (legacy grade → ISO R, `cast_removal` bool → strength) and the tuple-rehydrating `__post_init__`s. The module imports nothing from `models.py`, which imports it, so use string literals.
