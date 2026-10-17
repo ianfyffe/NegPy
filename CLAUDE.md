@@ -35,7 +35,7 @@ NegPy is a film-negative processing desktop app (PyQt6 + WebGPU). Images flow th
 
 Edits persist in SQLite (`edits.db`, keyed by content hash), optionally mirrored to `.negpy` JSON sidecars next to sources. The DB wins; a loaded sidecar is promoted into the DB (`negpy/services/assets/sidecar.py`, `session.py`).
 
-The content hash comes from `file_hashes()` (`negpy/kernel/image/logic.py`). Asset discovery reads it through `FileHashCache` (`negpy/infrastructure/storage/hash_cache.py`), a per-machine `hash_cache.db` keyed on absolute path and served only while size, mtime_ns and ctime_ns match. It stores file fingerprints only. Half-frame and composite hashes derive from them. A change to either digest bumps `FINGERPRINT_VERSION`.
+The content hash comes from `file_hashes()` (`negpy/kernel/image/logic.py`). Asset discovery and the library scan for search by meaning read it through `FileHashCache` (`negpy/infrastructure/storage/hash_cache.py`), a per-machine `hash_cache.db` keyed on absolute path and served only while size, mtime_ns and ctime_ns match. It stores file fingerprints only. Half-frame and composite hashes derive from them. A change to either digest bumps `FINGERPRINT_VERSION`.
 
 On Windows, `desktop.py` checks data-folder access before it imports app configuration. A blocked default folder opens a native dialog that suggests Local AppData or another folder; no data is copied. The choice is saved under Local AppData and outranks Documents; `NEGPY_USER_DIR` outranks it.
 
