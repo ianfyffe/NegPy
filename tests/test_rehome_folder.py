@@ -174,3 +174,14 @@ def test_only_configs_that_name_the_old_folder_are_read(repo, monkeypatch):
 
     assert [d["green_path"] for d in read] == [_in(OLD, "g.tif")]
     assert repo.load_file_settings("h2").rgbscan.green_path == "/mnt/other/roll_a/g.tif"
+
+
+def test_a_rehome_keeps_each_edits_saved_time(repo):
+    repo.save_file_settings("ha", WorkspaceConfig(), file_path=_in(OLD, "a.tif"), updated_at=5.0)
+    repo.save_file_mark("ha", "keeper", file_path=_in(OLD, "a.tif"), marked_at=6.0)
+
+    rehome_path_prefix(repo, OLD, NEW)
+
+    assert repo.load_file_settings_by_path(_in(NEW, "a.tif"))[0] == "ha"
+    assert repo.load_file_updated_at("ha") == 5.0
+    assert repo.load_mark_record("ha") == ("keeper", 6.0)
