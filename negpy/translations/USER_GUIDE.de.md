@@ -496,14 +496,14 @@ Eine Filmsorte legt das Format fest. Setze ein Format wie `6×7` daher nach der 
 
 Gespeicherte Export-Rezepte: Format, Größe, Farbe, Ordner und Dateiname. Schalte die gewünschten ein, dann schreibt **Vorgaben exportieren** jedes Bild einmal pro Vorgabe. **Verwalten** bearbeitet sie. Vorgaben funktionieren nicht mit linearer Ausgabe.
 
-<!-- panel:export_alongside src:423d2652 -->
+<!-- panel:export_alongside src:42118d1e -->
 ### Begleitexporte
 
 Zusätzliche Dateien neben dem Abzug. Jede hat links einen Schalter und rechts eine einmalige Aktion.
 
 *   **Abzugsnotizen**: eine beschriftete Kopie des Bildes mit Abwedeln, Nachbelichten und Abzugseinstellungen, wie sie ein Dunkelkammer-Printer führt. **Vorschau** zeigt sie (`Shift+N`). **Notizen exportieren** speichert sie.
 *   **Auto-Dichte / Gradation**: **Beim Export festschreiben** fixiert die automatische Helligkeit und den Kontrast jedes exportierten Bildes, damit sie sich später nicht ändern. **In Rolle festschreiben** tut das jetzt für jedes sichtbare Bild.
-*   **Bearbeitungs-Sidecar-Dateien**: **Beim Export speichern** schreibt neben jede Quelle eine `.negpy`-Datei mit der Bearbeitung. **Sidecar-Dateien exportieren** schreibt sie für alle sichtbaren Bilder. **Aktuell halten** aktualisiert die Datei jedes Bildes während der Arbeit, damit ein anderer Computer deine Bearbeitungen öffnen kann. Rechtsklick auf ein Bild → **Bearbeitung aus Sidecar-Datei laden…** liest eine zurück.
+*   **Bearbeitungs-Sidecar-Dateien**: **Beim Export speichern** schreibt neben jede Quelle eine `.negpy`-Datei mit der Bearbeitung. **Sidecar-Dateien exportieren** schreibt sie für alle sichtbaren Bilder. **Aktuell halten** aktualisiert die Datei jedes Bildes während der Arbeit, damit ein anderer Computer deine Bearbeitungen öffnen kann. Rechtsklick auf ein Bild → **Bearbeitung aus Sidecar-Datei laden…** liest eine zurück. Beim Öffnen eines Ordners listet **Neuere Sidecar-Dateien** Bearbeitungen auf, die ein anderer Computer später gespeichert hat: **Auswahl laden** übernimmt sie, **Meine behalten** fragt nicht mehr.
 
 <!-- panel:contact_sheet src:3ab6797d -->
 ### Kontaktbogen
