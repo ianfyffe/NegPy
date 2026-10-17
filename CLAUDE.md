@@ -37,7 +37,7 @@ NegPy is a film-negative processing desktop app (PyQt6 + WebGPU). Images flow th
 
 `WorkspaceConfig` (`negpy/domain/models.py`) is a frozen dataclass of per-feature configs and the single source of truth for an edit. Change it via `dataclasses.replace`, never mutate. `to_dict`/`from_flat_dict` serialize to one **flat** key namespace, so a duplicate field name across sub-configs silently clobbers.
 
-Edits persist in SQLite (`edits.db`, keyed by content hash), optionally mirrored to `.negpy` sidecars. The DB wins; a loaded sidecar is promoted into the DB.
+Edits persist in SQLite (`edits.db`, keyed by content hash), optionally mirrored to `.negpy` sidecars. A sidecar's reserved `sync` key holds its dates and mark, so no config field may take that name. Keep Current mirrors every repository write (`add_write_observer`), so a new write path needs no sidecar code. The DB wins; a sidecar fills a DB miss.
 
 **Migrations** (`negpy/domain/migrations.py`) hold every legacy fixup for persisted configs, never inline code in `from_flat_dict`. Renaming or removing a config field, or retiring an enum value, means one entry there (`KEY_RENAMES`, `DROPPED_KEYS`, `RETIRED_EXPORT_FORMATS` or `migrate_flat_config()`). Only a fixup that must run on every construction stays in a `__post_init__`. The module imports nothing from `models.py`, which imports it, so use string literals. Migrations that rewrite rows need a repository and live in `services/assets/migrations/`, one module each.
 

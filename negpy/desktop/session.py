@@ -376,6 +376,9 @@ class AppState:
     # Bake on Export: freeze Auto Density / Auto Grade on every export, app-wide.
     bake_on_export: bool = False
 
+    # Keep Current: keep each frame's .negpy sidecar equal to its saved edit and mark, app-wide.
+    keep_sidecars_current: bool = False
+
     @property
     def local_hidden_masks(self) -> set:
         """The current file's hidden-mask indices (empty = all shown). Returns a fresh,
@@ -1031,6 +1034,10 @@ class DesktopSessionManager(QObject):
         saved_bake_export = self.repo.get_global_setting("bake_on_export")
         if saved_bake_export is not None:
             self.state.bake_on_export = bool(saved_bake_export)
+
+        saved_keep_current = self.repo.get_global_setting("keep_sidecars_current")
+        if saved_keep_current is not None:
+            self.state.keep_sidecars_current = bool(saved_keep_current)
 
         self.state.export_presets = self.repo.load_export_presets()
         self.state.config = self._empty_session_config()
