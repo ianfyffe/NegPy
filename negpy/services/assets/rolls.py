@@ -520,7 +520,7 @@ def rename_folder_roll_disk(repo: Any, roll_id: str, new_name: str) -> Optional[
 
 
 def rehome_paths(repo: Any, move: Callable[[str], str]) -> None:
-    """Pass every folder and member path of every roll through *move*."""
+    """Pass every folder and member path of every roll, and every import source, through *move*."""
     store = _read(repo)
     for entry in store.values():
         if entry.get("folder_path"):
@@ -529,6 +529,10 @@ def rehome_paths(repo: Any, move: Callable[[str], str]) -> None:
             if key in entry:
                 entry[key] = [move(p) for p in entry[key]]
     _write(repo, store)
+    sources = import_sources(repo)
+    moved = [move(p) for p in sources]
+    if moved != sources:
+        repo.save_global_setting(IMPORT_SOURCES_KEY, moved)
 
 
 def delete_roll(repo: Any, roll_id: str) -> None:

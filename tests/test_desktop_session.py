@@ -1235,15 +1235,52 @@ class TestDesktopSessionSync(unittest.TestCase):
                 "stitch_transforms": [[1, 0, 0], [0, 1, 0]],
                 "stitch_canvas": [100, 100],
                 "stitch_sizes": [[50, 100], [50, 100]],
+                "stitch_triplets": [[_native("/scans/roll_a/1g.tif"), _native("/scans/roll_a/1b.tif")], ["", ""]],
+            },
+            {
+                "name": "merge",
+                "path": _native("/scans/roll_a/m1.tif"),
+                "hash": "hm",
+                "hdr_paths": [_native("/scans/roll_a/m2.tif")],
+                "hdr_anchor": _native("/scans/roll_a/m2.tif"),
             },
         ]
 
         self.session.rehome_folder_paths(_native("/scans/roll_a"), _native("/scans/roll_b"))
 
-        triplet, stitch = self.session.state.uploaded_files
+        triplet, stitch, merge = self.session.state.uploaded_files
         self.assertEqual(triplet["green_path"], _native("/scans/roll_b/g.tif"))
         self.assertEqual(triplet["blue_path"], _native("/scans/roll_b/b.tif"))
         self.assertEqual(stitch["stitch_paths"], [_native("/scans/roll_b/1.tif"), _native("/scans/roll_b/2.tif")])
+        self.assertEqual(stitch["stitch_triplets"], [[_native("/scans/roll_b/1g.tif"), _native("/scans/roll_b/1b.tif")], ["", ""]])
+        self.assertEqual(merge["hdr_paths"], [_native("/scans/roll_b/m2.tif")])
+        self.assertEqual(merge["hdr_anchor"], _native("/scans/roll_b/m2.tif"))
+
+    def test_rehome_folder_paths_moves_the_open_frames_source_paths_and_keeps_its_bounds(self):
+        bounds = {"local_floors": (0.1, 0.2, 0.3), "local_ceils": (0.7, 0.8, 0.9)}
+        cfg = DEFAULT_WORKSPACE_CONFIG
+        self.session.state.uploaded_files = [{"name": "r.tif", "path": _native("/scans/roll_a/r.tif"), "hash": "ha"}]
+        self.session.state.current_file_path = _native("/scans/roll_a/r.tif")
+        self.session.state.config = replace(
+            cfg,
+            process=replace(cfg.process, **bounds),
+            rgbscan=RgbScanConfig(enabled=True, green_path=_native("/scans/roll_a/g.tif"), blue_path=_native("/scans/roll_a/b.tif")),
+            stitch=replace(
+                cfg.stitch, stitch_paths=(_native("/scans/roll_a/2.tif"),), stitch_triplets=((_native("/scans/roll_a/2g.tif"), ""),)
+            ),
+            hdr=replace(cfg.hdr, hdr_paths=(_native("/scans/roll_a/2.tif"),), hdr_anchor=_native("/scans/roll_a/2.tif")),
+        )
+
+        self.session.rehome_folder_paths(_native("/scans/roll_a"), _native("/scans/roll_b"))
+
+        moved = self.session.state.config
+        self.assertEqual(
+            (moved.rgbscan.green_path, moved.rgbscan.blue_path), (_native("/scans/roll_b/g.tif"), _native("/scans/roll_b/b.tif"))
+        )
+        self.assertEqual(moved.stitch.stitch_paths, (_native("/scans/roll_b/2.tif"),))
+        self.assertEqual(moved.stitch.stitch_triplets, ((_native("/scans/roll_b/2g.tif"), ""),))
+        self.assertEqual((moved.hdr.hdr_paths, moved.hdr.hdr_anchor), ((_native("/scans/roll_b/2.tif"),), _native("/scans/roll_b/2.tif")))
+        self.assertEqual((moved.process.local_floors, moved.process.local_ceils), (bounds["local_floors"], bounds["local_ceils"]))
 
     def test_rehome_folder_paths_is_a_noop_when_nothing_matches(self):
         self.session.state.uploaded_files = [{"name": "c.tif", "path": "/elsewhere/c.tif", "hash": "hc"}]
