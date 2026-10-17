@@ -223,3 +223,28 @@ def test_a_triplet_made_by_hand_restores_with_its_flag(tmp_path):
     worker.process(AssetDiscoveryTask(paths=[r, g, b], supported_extensions=(".raw",), rgb_scan=False, restore_triplets=restore))
     (asset,) = seen.pop()
     assert asset["green_path"] == g and asset["triplet_by_hand"] is True
+
+
+def test_restored_triplets_count_as_assembled_in_the_report(tmp_path, monkeypatch):
+    """A roll whose triplets all came from the store is not one where nothing assembled."""
+    from tests.test_rgbscan import BLUE, GREEN, RED, _fake_probes
+
+    names = ["f1_r.raw", "f1_g.raw", "f1_b.raw", "stray_r.raw"]
+    for n in names:
+        (tmp_path / n).write_bytes(n.encode() * 64)
+    _fake_probes(monkeypatch, {n: {"r": RED, "g": GREEN, "b": BLUE}[n[-5]] for n in names})
+    p = {n: str(tmp_path / n) for n in names}
+
+    worker = AssetDiscoveryWorker()
+    reports: list = []
+    worker.rgb_grouped.connect(reports.append)
+    worker.finished.connect(lambda assets: None)
+    worker.process(
+        AssetDiscoveryTask(
+            paths=[str(tmp_path)],
+            supported_extensions=(".raw",),
+            rgb_scan=True,
+            restore_triplets={p["f1_r.raw"]: [p["f1_g.raw"], p["f1_b.raw"], True]},
+        )
+    )
+    assert [(r["made"], r["loose"]) for r in reports] == [(1, 1)]

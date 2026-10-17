@@ -1223,7 +1223,7 @@ class AssetDiscoveryWorker(QObject):
         loose = len(candidates) - len(grouped)
         if loose:
             summary = {
-                "made": len(grouped) // 3,
+                "made": len(assembled) + len(grouped) // 3,
                 "loose": loose,
                 "incomplete": incomplete,
                 "mismatched": mismatched,
