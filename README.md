@@ -123,6 +123,7 @@ Everything is in `Documents/NegPy`. On Windows, if that folder is blocked, NegPy
 
 * `edits.db`: your edits.
 * `settings.db`: app settings.
+* `hash_cache.db`: file fingerprints for this computer. Safe to delete.
 * `cache/`: thumbnails. Safe to delete.
 * `export/`: default export folder.
 * `icc/`: paper and printer profiles.
