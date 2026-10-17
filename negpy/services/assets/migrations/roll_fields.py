@@ -88,24 +88,47 @@ def migrate_new_roll_field_locks(repo) -> None:
                 for roll_id in _rolls_for_row(repo, file_hash, file_path):
                     locks.extend((roll_id, rolls.unforked_hash(file_hash), card) for card in cards)
         for roll_id, file_hash, card in locks:
-            rolls.set_frame_override(repo, roll_id, file_hash, card, True)
+            rolls.set_frame_override(repo, roll_id, file_hash, card, True, stamp=False)
     except Exception:
         logger.exception("New roll-field lock migration failed; continuing without it")
     repo.save_global_setting(_DONE_FLAG, True)
 
 
-def migrate_baseline_card_split(repo) -> None:
+def split_baseline_locks(entry: dict) -> None:
     """Use Luma/Color Average left the Normalization (``process``) card for their own
     ``baseline`` card. A frame locked on the old card keeps both halves of that lock, so
-    nothing it renders changes. Runs before migrate_new_roll_field_locks, whose new
-    ``process`` locks are about White/Black Point alone."""
+    nothing it renders changes."""
+    overrides = entry.get("frame_overrides", {})
+    split = {h: sorted({*cards, "baseline"}) if "process" in cards else cards for h, cards in overrides.items()}
+    if split != overrides:
+        entry["frame_overrides"] = split
+
+
+def split_paper_push(entry: dict) -> None:
+    """The paper curve controls left the Tone card for their own ``paper`` card. A whole-roll
+    Tone apply recorded before the split moves its paper fields to ``paper``, so each card
+    reads Roll and resets to the roll against its own fields alone."""
+    rolls.move_section_push_fields(entry, "tone", "paper", _PAPER_FIELDS)
+
+
+# Card-key rewrites of one roll entry, in the order the cards split. A roll file records how
+# many its writer knew (CARD_KEYS_VERSION), and a reader runs the rest (migrate_roll_entry).
+ENTRY_MIGRATIONS = (split_baseline_locks, split_paper_push)
+CARD_KEYS_VERSION = len(ENTRY_MIGRATIONS)
+
+
+def migrate_roll_entry(entry: dict, version: int) -> None:
+    for migrate in ENTRY_MIGRATIONS[max(0, version) :]:
+        migrate(entry)
+
+
+def migrate_baseline_card_split(repo) -> None:
+    """``split_baseline_locks`` over every roll. Runs before migrate_new_roll_field_locks,
+    whose new ``process`` locks are about White/Black Point alone."""
     if repo.get_global_setting(_BASELINE_SPLIT_FLAG):
         return
     try:
-        for roll_id, entry in rolls.saved_rolls(repo).items():
-            for file_hash, cards in entry.get("frame_overrides", {}).items():
-                if "process" in cards:
-                    rolls.set_frame_override(repo, roll_id, file_hash, "baseline", True)
+        rolls.rewrite_entries(repo, split_baseline_locks)
     except Exception:
         logger.exception("Roll Analysis card split migration failed; continuing without it")
     repo.save_global_setting(_BASELINE_SPLIT_FLAG, True)
@@ -136,20 +159,18 @@ def migrate_cast_removal_roll_locks(repo) -> None:
                 for roll_id in _rolls_for_row(repo, file_hash, file_path):
                     locks.append((roll_id, rolls.unforked_hash(file_hash)))
         for roll_id, file_hash in locks:
-            rolls.set_frame_override(repo, roll_id, file_hash, "cast_removal", True)
+            rolls.set_frame_override(repo, roll_id, file_hash, "cast_removal", True, stamp=False)
     except Exception:
         logger.exception("Cast Removal roll-card lock migration failed; continuing without it")
     repo.save_global_setting(_CAST_REMOVAL_FLAG, True)
 
 
 def migrate_paper_card_split(repo) -> None:
-    """The paper curve controls left the Tone card for their own ``paper`` card. A
-    whole-roll Tone apply recorded before the split moves its paper fields to ``paper``, so
-    each card reads Roll and resets to the roll against its own fields alone."""
+    """``split_paper_push`` over every roll."""
     if repo.get_global_setting(_PAPER_SPLIT_FLAG):
         return
     try:
-        rolls.move_section_push_fields(repo, "tone", "paper", _PAPER_FIELDS)
+        rolls.rewrite_entries(repo, split_paper_push)
     except Exception:
         logger.exception("Paper Response card split migration failed; continuing without it")
     repo.save_global_setting(_PAPER_SPLIT_FLAG, True)
@@ -173,7 +194,7 @@ def migrate_auto_crop_roll_locks(repo) -> None:
                 for roll_id in _rolls_for_row(repo, file_hash, file_path):
                     locks.append((roll_id, rolls.unforked_hash(file_hash)))
         for roll_id, file_hash in locks:
-            rolls.set_frame_override(repo, roll_id, file_hash, "auto_crop", True)
+            rolls.set_frame_override(repo, roll_id, file_hash, "auto_crop", True, stamp=False)
     except Exception:
         logger.exception("Auto Crop roll-card lock migration failed; continuing without it")
     repo.save_global_setting(_AUTO_CROP_FLAG, True)

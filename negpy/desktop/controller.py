@@ -136,11 +136,13 @@ from negpy.services.assets.half_frame import (
 )
 from negpy.services.export.templating import path_safe, render_export_filename
 from negpy.services.assets.sidecar import (
+    RollSidecarOffer,
     SidecarMirror,
     SidecarPlan,
     apply_sidecar_plan,
     config_from_payload,
     decline_sidecar_offers,
+    export_roll_sidecar,
     load_or_promote,
     merge_sidecar_mark,
     mirror_payload,
@@ -148,6 +150,9 @@ from negpy.services.assets.sidecar import (
     plan_frame_sidecars,
     promote_sidecars,
     read_payload,
+    read_roll_sidecar,
+    roll_sidecar_path,
+    sidecar_edit,
     sidecar_path_for,
     sync_from_payload,
     sync_from_repo,
@@ -568,6 +573,7 @@ class AppController(QObject):
     bake_on_export_changed = pyqtSignal(bool)
     keep_sidecars_current_changed = pyqtSignal(bool)
     _edit_saved = pyqtSignal(str, str)  # file_hash, file_path; a repository write, carried to the UI thread
+    _roll_dated = pyqtSignal(str)  # roll_id; a roll write that dated it, carried to the UI thread
     flat_peek_changed = pyqtSignal(bool)
     negative_peek_changed = pyqtSignal(bool)
     embedded_peek_changed = pyqtSignal(bool)
@@ -1175,6 +1181,11 @@ class AppController(QObject):
         add_write_observer = getattr(self.session.repo, "add_write_observer", None)
         if add_write_observer is not None:
             add_write_observer(self._edit_saved.emit)
+        self._roll_dated.connect(self._queue_roll)
+        add_roll_observer = getattr(self.session.repo, "add_roll_observer", None)
+        if add_roll_observer is not None:
+            add_roll_observer(self._roll_dated.emit)
+        self._pending_roll_offers: Dict[str, RollSidecarOffer] = {}
         self.session.active_file_changing.connect(self.flush_sidecars)
         self.session.session_emptied.connect(self._render_memo.clear)
         self.session.session_emptied.connect(self._strip_memo.clear)
@@ -1707,6 +1718,7 @@ class AppController(QObject):
         self.thumb_worker.cancel_pending()
         self.thumbnail_cancel_requested.emit()
         self._announce_rgb = announce_rgb
+        self._read_roll_sidecars(paths)
         active_roll_id = self.state.active_roll_id
         request = _DiscoveryRequest(
             paths=tuple(paths),
@@ -2027,8 +2039,8 @@ class AppController(QObject):
             self.session.settings_saved.emit()
             self.session.frames_edited_offscreen.emit(changed_hashes)
 
-    _HALF_FRAME_MODE_BY_ROLL_KEY = "half_frame_mode_by_roll"
-    _RGB_SCAN_MODE_BY_ROLL_KEY = "rgbscan_mode_by_roll"
+    _HALF_FRAME_MODE_BY_ROLL_KEY = rolls.HALF_FRAME_MODE_KEY
+    _RGB_SCAN_MODE_BY_ROLL_KEY = rolls.TRICHROME_MODE_KEY
 
     def _announce_roll_modes(self, roll_id: Optional[str]) -> None:
         self.half_frame_mode_changed.emit(self.half_frame_mode_for_roll(roll_id))
@@ -2046,8 +2058,11 @@ class AppController(QObject):
         self.session.repo.save_global_setting("rgbscan_mode", bool(enabled))
         if roll_id:
             by_roll = dict(self.session.repo.get_global_setting(self._RGB_SCAN_MODE_BY_ROLL_KEY, default=None) or {})
+            changed = by_roll.get(roll_id) != bool(enabled)
             by_roll[roll_id] = bool(enabled)
             self.session.repo.save_global_setting(self._RGB_SCAN_MODE_BY_ROLL_KEY, by_roll)
+            if changed:
+                rolls.touch_roll(self.session.repo, roll_id)
 
     def _rgb_scan_mode_for_discovery(self, roll_id: Optional[str]) -> bool:
         """The mode a discovery groups with; a roll's first discovery records it as the roll's own."""
@@ -2077,10 +2092,17 @@ class AppController(QObject):
         roll_id = self.state.active_roll_id
         if roll_id:
             by_roll = dict(self.session.repo.get_global_setting(self._HALF_FRAME_MODE_BY_ROLL_KEY, default=None) or {})
+            changed = bool(by_roll.get(roll_id, False)) != bool(enabled)
             by_roll[roll_id] = bool(enabled)
             self.session.repo.save_global_setting(self._HALF_FRAME_MODE_BY_ROLL_KEY, by_roll)
+            if changed:
+                rolls.touch_roll(self.session.repo, roll_id)
         else:
             self.session.repo.save_global_setting("half_frame_mode", bool(enabled))
+        self._rediscover_loaded()
+
+    def _rediscover_loaded(self) -> None:
+        """Discover the loaded assets again, so a Half Frame change splits or joins them in place."""
         self._active_diptych_memo = ("", None)
         files = self.session.state.uploaded_files
         if not files:
@@ -7463,10 +7485,42 @@ class AppController(QObject):
         if self._sidecar_mirror.pending():
             self._sidecar_flush_timer.start()
 
+    def _queue_roll(self, roll_id: str) -> None:
+        if not self.state.keep_sidecars_current:
+            return
+        self._sidecar_mirror.queue_roll(roll_id)
+        self._sidecar_flush_timer.start()
+
     def flush_sidecars(self) -> None:
-        """Write every queued Keep Current sidecar now. Safe with nothing queued."""
+        """Write every queued Keep Current sidecar now, and the roll file of each loaded folder. Safe with nothing queued."""
         self._sidecar_flush_timer.stop()
-        self._sidecar_mirror.flush()
+        loaded = {os.path.dirname(f["path"]) for f in self.state.uploaded_files if f.get("path")}
+        self._sidecar_mirror.flush(loaded if self.state.keep_sidecars_current else ())
+
+    def _read_roll_sidecars(self, paths: List[str]) -> None:
+        """Read the roll file of each folder roll *paths* hold, before discovery, which its modes and
+        split profile steer. A roll with no state here takes it; a newer one waits for the next offer."""
+        repo = self.session.repo
+        active = self.state.active_roll_id
+        before = (self.half_frame_mode_for_roll(active), self.rgb_scan_mode_for_roll(active))
+        folders = {p if os.path.isdir(p) else os.path.dirname(p) for p in paths}
+        for roll_id in rolls.folder_rolls_holding(repo, folders):
+            offer = read_roll_sidecar(repo, roll_id)
+            if offer is not None:
+                self._pending_roll_offers[roll_id] = offer
+        if (self.half_frame_mode_for_roll(active), self.rgb_scan_mode_for_roll(active)) != before:
+            self._announce_roll_modes(active)
+
+    def _lock_diverged_without_roll_file(self, edits: list) -> None:
+        """Lock the cards on which each (asset, config) differs from its roll, where no roll file
+        brought the frame's locks."""
+        has_file: Dict[str, bool] = {}
+        for asset, config in edits:
+            folder = os.path.dirname(asset["path"])
+            if folder not in has_file:
+                has_file[folder] = os.path.exists(roll_sidecar_path(folder))
+            if not has_file[folder]:
+                self.session.lock_diverged_cards(asset, config)
 
     def _apply_sidecar_plan(self, assets: List[Dict], plan: Optional[SidecarPlan]) -> None:
         """Fill and merge what the frames' sidecars hold that the database lacks, then offer the newer edits."""
@@ -7478,8 +7532,11 @@ class AppController(QObject):
             forked = {(a["path"], int(a.get("half") or 0)) for a in assets if "#roll:" in a["hash"]}
             if forked:
                 plan = plan.without_edits_for(lambda a: (a["path"], int(a.get("half") or 0)) not in forked)
-        apply_sidecar_plan(repo, plan)
-        offers = offers_from_plan(repo, plan)
+        filled, _merged = apply_sidecar_plan(repo, plan)
+        self._lock_diverged_without_roll_file([(asset, config) for asset, config, _at in plan.fill if asset["hash"] in filled])
+        roll_offers = [o for o in self._pending_roll_offers.values() if o.saved_at > (rolls.roll_updated_at(repo, o.roll_id) or 0.0)]
+        self._pending_roll_offers = {}
+        offers = [*roll_offers, *offers_from_plan(repo, plan)]
         if offers:
             QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))
 
@@ -7494,17 +7551,39 @@ class AppController(QObject):
         self.apply_sidecar_offers(load, [o for o in offers if not any(o is chosen for chosen in load)])
 
     def apply_sidecar_offers(self, load: list, keep: list) -> None:
-        """Make each loaded offer its frame's edit, dated by its file; remember the kept ones as declined."""
+        """Make each loaded offer its roll's state or its frame's edit, dated by its file; remember the kept
+        ones as declined. Roll files load first, so a frame compares against the loaded roll."""
         repo = self.session.repo
-        for offer in load:
+        roll_load = [o for o in load if isinstance(o, RollSidecarOffer)]
+        frame_load = [o for o in load if not isinstance(o, RollSidecarOffer)]
+        active = self.state.active_roll_id
+        before = (self.half_frame_mode_for_roll(active), self.rgb_scan_mode_for_roll(active), self.half_frame_profile())
+        for offer in roll_load:
+            rolls.replace_portable_state(repo, offer.roll_id, offer.sidecar.state, offer.sidecar.modes, offer.saved_at)
+        for offer in frame_load:
             repo.save_file_settings(offer.asset["hash"], offer.config, file_path=offer.asset["path"], updated_at=offer.saved_at)
+        self._lock_diverged_without_roll_file([(o.asset, o.config) for o in frame_load])
         decline_sidecar_offers(repo, keep)
         if not load:
             return
-        if any(o.asset["hash"] == self.state.current_file_hash for o in load):
+        if roll_load:
+            self.session.refresh_scene_marks()
+            self.config_updated.emit()
+        if roll_load and (self.half_frame_mode_for_roll(active), self.rgb_scan_mode_for_roll(active), self.half_frame_profile()) != before:
+            self._announce_roll_modes(active)
+            self._rediscover_loaded()
+        elif roll_load or any(o.asset["hash"] == self.state.current_file_hash for o in frame_load):
             self.session.reload_current_file()
-        self.refresh_thumbnails_for([o.asset["hash"] for o in load])
-        self.set_status(tr("Loaded {value} from sidecars", value=count_of(len(load), "edit")), 4000)
+        loaded = self.state.uploaded_files if roll_load else [o.asset for o in frame_load]
+        self.refresh_thumbnails_for([a["hash"] for a in loaded])
+        edits = count_of(len(frame_load), "edit")
+        if roll_load and frame_load:
+            message = tr("Loaded roll settings and {value} from sidecars", value=edits)
+        elif roll_load:
+            message = tr("Loaded roll settings from sidecars")
+        else:
+            message = tr("Loaded {value} from sidecars", value=edits)
+        self.set_status(message, 4000)
 
     def load_edit_from_sidecar(self, path: str) -> bool:
         """Replace the current frame's edit with the sidecar at *path*, as one undo step. The frame's
@@ -7536,7 +7615,7 @@ class AppController(QObject):
             self.set_status(tr("{value} holds no edit", value=name), 4000)
             return True
         saved_at = sync.saved_at if own and sync is not None else None
-        self.session.load_edit_from_sidecar(config, saved_at=saved_at)
+        self.session.load_edit_from_sidecar(sidecar_edit(self.session.repo, asset["path"], config), saved_at=saved_at)
         self.set_status(tr("Loaded edit from {value}", value=name), 4000)
         return True
 
@@ -8572,14 +8651,20 @@ class AppController(QObject):
         return os.path.basename(os.path.dirname(paths[0])) if paths and paths[0] else ""
 
     def _write_edit_sidecars(self, files: list[dict], keep_newer: bool = False) -> tuple[int, int, int]:
-        """Write a .negpy edit sidecar next to each source. Returns (written, failed, skipped), so a
-        read-only folder is no silent success. A composite or a roll fork is skipped: the sidecar
-        beside its path belongs to the shared frame. *keep_newer* keeps a newer edit or mark the file
-        holds, as Keep Current does; a file already current counts as written."""
+        """Write a .negpy edit sidecar next to each source, and the roll file of each folder roll they
+        are in. Returns (written, failed, skipped), so a read-only folder is no silent success. A composite
+        or a roll fork is skipped: the sidecar beside its path belongs to the shared frame. *keep_newer*
+        keeps a newer edit or mark the file holds, as Keep Current does; a file already current counts as written."""
         repo = self.session.repo
         written = 0
         failed = 0
         skipped = 0
+        for roll_id in rolls.folder_rolls_holding(repo, {os.path.dirname(f["path"]) for f in files}):
+            try:
+                export_roll_sidecar(repo, roll_id)
+            except OSError as exc:
+                failed += 1
+                logger.warning("Roll file write failed for roll %s: %s", roll_id, exc)
         for f in files:
             if f.get("hdr_paths") or f.get("stitch_paths") or "#roll:" in f["hash"]:
                 skipped += 1
@@ -8589,7 +8674,7 @@ class AppController(QObject):
             try:
                 if keep_newer:
                     path = sidecar_path_for(f["path"], half)
-                    payload = mirror_payload(repo, f["hash"], read_payload(path), fallback=params)
+                    payload = mirror_payload(repo, f["hash"], read_payload(path), fallback=params, source_path=f["path"])
                     if payload is not None and not write_payload(path, payload):
                         failed += 1
                         continue
