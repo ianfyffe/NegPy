@@ -2476,6 +2476,7 @@
   "This frame is not a Bayer or X-Trans RAW, so it arrives already de-mosaiced.": "このフレームは Bayer または X-Trans RAW ではないため、すでにモザイクが解除された状態で届きます。",
   "This frame overrides: {value}": "このフレームは次をオーバーライドします: {value}",
   "This frame's place in the Film Strip's order and filter": "フィルム ストリップの順序とフィルターにおけるこのフレームの位置",
+  "This frame's profile is not on this computer (made on another one, or removed here). Copy its .npz into the flatfield folder.": "このフレームのプロファイルはこのコンピューターにありません (別のコンピューターで作成されたか、ここで削除されました)。その .npz を flatfield フォルダーにコピーしてください。",
   "This layer's Dye Separation trim on top of the global value — pushes/pulls this channel's density separation independently. Neutrals stay flat at any trim value.": "このレイヤーの色素分離はグローバル値の上にトリムされ、このチャンネルの濃度分離を独立してプッシュ/プルします。ニュートラルはどのトリム値でもフラットなままです。",
   "This layer's shoulder width trim on top of the global Width — per-layer roll-off extent (sharpness crossover): how far this layer's highlight knee reaches down the tonal scale.": "このレイヤーの肩幅は、グローバル幅の上でトリムされます。レイヤーごとのロールオフ範囲 (シャープネス クロスオーバー): このレイヤーのハイライト ニーが色調スケールの下にどれだけ到達するか。",
   "This layer's toe width trim on top of the global Toe Width — per-layer roll-off extent (sharpness crossover): how far this layer's shadow knee reaches up the tonal scale.": "このレイヤーのトーの幅は、グローバルなトーの幅の上でトリムされます。レイヤーごとのロールオフ範囲 (シャープネス クロスオーバー): このレイヤーのシャドウ ニーが色調スケールにどれだけ到達するか。",
