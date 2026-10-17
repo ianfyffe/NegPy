@@ -1244,7 +1244,9 @@ class TestAppController(unittest.TestCase):
         mock_load.assert_not_called()
         mock_write.assert_not_called()
 
-    def test_discovery_promotes_sidecars_before_adding_files(self):
+    def test_discovery_fills_from_sidecars_before_adding_files(self):
+        from negpy.services.assets.sidecar import SidecarPlan
+
         state = self.mock_session_manager.state
         state.uploaded_files = []
         order = []
@@ -1252,12 +1254,16 @@ class TestAppController(unittest.TestCase):
         self.mock_session_manager.asset_model = MagicMock()
         self.controller.generate_missing_thumbnails = MagicMock()
         discovered = [{"name": "a", "path": "/a.dng", "hash": "h1"}]
+        plan = SidecarPlan()
 
-        with patch("negpy.desktop.controller.promote_sidecars", side_effect=lambda *_a: order.append("promote")) as mock_promote:
-            self.controller._on_discovery_finished(discovered)
+        with (
+            patch("negpy.desktop.controller.apply_sidecar_plan", side_effect=lambda *_a: order.append("fill") or ([], [])) as mock_apply,
+            patch("negpy.desktop.controller.offers_from_plan", return_value=[]),
+        ):
+            self.controller._on_discovery_finished(discovered, plan)
 
-        mock_promote.assert_called_once_with(self.mock_session_manager.repo, discovered)
-        self.assertEqual(order[:2], ["promote", "add"])
+        mock_apply.assert_called_once_with(self.mock_session_manager.repo, plan)
+        self.assertEqual(order[:2], ["fill", "add"])
 
     def _wire_repo_store(self) -> dict:
         """Backs the mocked repo's global settings with a real dict, so a roll write

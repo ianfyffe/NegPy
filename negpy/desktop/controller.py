@@ -137,11 +137,19 @@ from negpy.services.assets.half_frame import (
 from negpy.services.export.templating import path_safe, render_export_filename
 from negpy.services.assets.sidecar import (
     SidecarMirror,
+    SidecarPlan,
+    apply_sidecar_plan,
+    config_from_payload,
+    decline_sidecar_offers,
     load_or_promote,
+    merge_sidecar_mark,
     mirror_payload,
+    offers_from_plan,
+    plan_frame_sidecars,
     promote_sidecars,
     read_payload,
     sidecar_path_for,
+    sync_from_payload,
     sync_from_repo,
     write_payload,
     write_sidecar,
@@ -770,7 +778,7 @@ class AppController(QObject):
         self.norm_thread.start()
 
         self.discovery_thread = QThread()
-        self.discovery_worker = AssetDiscoveryWorker()
+        self.discovery_worker = AssetDiscoveryWorker(self.session.repo)
         self.discovery_worker.moveToThread(self.discovery_thread)
         # Shares the discovery thread: a library search ends in a discovery anyway,
         # and neither should ever run while the other is walking the disk.
@@ -2450,14 +2458,15 @@ class AppController(QObject):
         for h in set(self.state.source_exif) - hashes:
             del self.state.source_exif[h]
 
-    def _on_discovery_finished(self, valid_assets: List[Dict]) -> None:
+    def _on_discovery_finished(self, valid_assets: List[Dict], sidecar_plan: Optional[SidecarPlan] = None) -> None:
         """
-        Adds discovered assets to the session and starts thumbnail generation.
+        Adds discovered assets to the session and starts thumbnail generation. *sidecar_plan* is
+        the worker's reading of the frames' sidecars; without one they are read here.
         """
         remember_split_scans(self.session.repo, {base_hash(a["hash"]) for a in valid_assets if a.get("half")})
         self._mark_diptychs(valid_assets)
         self._apply_roll_forks(valid_assets)
-        promote_sidecars(self.session.repo, valid_assets)
+        self._apply_sidecar_plan(valid_assets, sidecar_plan)
         self._active_diptych_memo = ("", None)
         ended_batch = self._end_batch("discovery")
         self._hot_folder_sequence_active = False
@@ -7458,6 +7467,78 @@ class AppController(QObject):
         """Write every queued Keep Current sidecar now. Safe with nothing queued."""
         self._sidecar_flush_timer.stop()
         self._sidecar_mirror.flush()
+
+    def _apply_sidecar_plan(self, assets: List[Dict], plan: Optional[SidecarPlan]) -> None:
+        """Fill and merge what the frames' sidecars hold that the database lacks, then offer the newer edits."""
+        repo = self.session.repo
+        if plan is None:
+            plan = plan_frame_sidecars(repo, assets)
+        else:
+            # The worker planned before roll forks applied, and a fork's edit is its own.
+            forked = {(a["path"], int(a.get("half") or 0)) for a in assets if "#roll:" in a["hash"]}
+            if forked:
+                plan = plan.without_edits_for(lambda a: (a["path"], int(a.get("half") or 0)) not in forked)
+        apply_sidecar_plan(repo, plan)
+        offers = offers_from_plan(repo, plan)
+        if offers:
+            QTimer.singleShot(0, lambda: self._show_sidecar_offers(offers))
+
+    def _show_sidecar_offers(self, offers: list) -> None:
+        from negpy.desktop.view.widgets.sidecar_reload_dialog import SidecarReloadDialog
+
+        dlg = SidecarReloadDialog(offers, repo=self.session.repo)
+        dlg.exec()
+        if dlg.decision is None:
+            return
+        load = dlg.selected_offers() if dlg.decision == "load" else []
+        self.apply_sidecar_offers(load, [o for o in offers if not any(o is chosen for chosen in load)])
+
+    def apply_sidecar_offers(self, load: list, keep: list) -> None:
+        """Make each loaded offer its frame's edit, dated by its file; remember the kept ones as declined."""
+        repo = self.session.repo
+        for offer in load:
+            repo.save_file_settings(offer.asset["hash"], offer.config, file_path=offer.asset["path"], updated_at=offer.saved_at)
+        decline_sidecar_offers(repo, keep)
+        if not load:
+            return
+        if any(o.asset["hash"] == self.state.current_file_hash for o in load):
+            self.session.reload_current_file()
+        self.refresh_thumbnails_for([o.asset["hash"] for o in load])
+        self.set_status(tr("Loaded {value} from sidecars", value=count_of(len(load), "edit")), 4000)
+
+    def load_edit_from_sidecar(self, path: str) -> bool:
+        """Replace the current frame's edit with the sidecar at *path*, as one undo step. The frame's
+        own sidecar also brings a newer mark and keeps its saved time, so Keep Current does not date
+        it as a newer edit. False when *path* is not a sidecar."""
+        idx = self.state.selected_file_idx
+        data = read_payload(path)
+        if not 0 <= idx < len(self.state.uploaded_files) or data is None:
+            return False
+        try:
+            config = config_from_payload(data)
+        except Exception as exc:
+            logger.warning("Failed to load sidecar %s: %s", path, exc)
+            return False
+        asset = self.state.uploaded_files[idx]
+        sync = sync_from_payload(data)
+        own_path = sidecar_path_for(asset["path"], int(asset.get("half") or 0))
+        own = (
+            not (asset.get("hdr_paths") or asset.get("stitch_paths"))
+            and "#roll:" not in asset["hash"]
+            and os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(own_path))
+        )
+        if own and sync is not None and merge_sidecar_mark(self.session.repo, asset["hash"], asset["path"], sync):
+            self.session.refresh_marks()
+        name = os.path.basename(path)
+        if config is None:
+            if sync is None:
+                return False
+            self.set_status(tr("{value} holds no edit", value=name), 4000)
+            return True
+        saved_at = sync.saved_at if own and sync is not None else None
+        self.session.load_edit_from_sidecar(config, saved_at=saved_at)
+        self.set_status(tr("Loaded edit from {value}", value=name), 4000)
+        return True
 
     def set_bake_on_export(self, enabled: bool) -> None:
         """Toggle the app-wide Bake on Export: freeze Auto Density / Auto Grade on every export."""

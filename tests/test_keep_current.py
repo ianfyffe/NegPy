@@ -1,4 +1,5 @@
-"""Keep Current: every saved edit and mark reaches its frame's sidecar, whichever code path saved it."""
+"""Sidecars at the controller: Keep Current writes every saved edit and mark, whichever code path
+saved it, and discovery fills, merges and offers what another computer wrote."""
 
 import gc
 import json
@@ -132,3 +133,96 @@ def test_save_on_export_keeps_a_newer_edit_the_file_holds(ctl):
 
     assert ctl._write_edit_sidecars([a]) == (1, 0, 0)
     assert _sidecar(a["path"])["sync"]["saved_at"] == 100.0
+
+
+# --- Discovery and Load Edit from Sidecar ------------------------------------------------
+
+
+def test_the_discovery_worker_plans_the_sidecars_it_found(ctl, tmp_path):
+    from negpy.desktop.workers.render import AssetDiscoveryWorker
+
+    a, _ = ctl.state.uploaded_files
+    _dated(a["path"], saved_at=200.0)
+
+    plan = AssetDiscoveryWorker(ctl.session.repo)._plan_sidecars([a])
+
+    assert [entry[0]["hash"] for entry in plan.fill] == ["ha"]
+    assert AssetDiscoveryWorker()._plan_sidecars([a]) is None
+
+
+def test_a_planned_fill_skips_a_frame_the_active_roll_forked(ctl):
+    from negpy.services.assets.sidecar import plan_frame_sidecars
+
+    a, b = ctl.state.uploaded_files
+    for frame in (a, b):
+        _dated(frame["path"], saved_at=200.0)
+    plan = plan_frame_sidecars(ctl.session.repo, [a, b])
+
+    ctl._apply_sidecar_plan([{**a, "hash": "ha#roll:r1"}, b], plan)
+
+    assert ctl.session.repo.load_file_updated_at("ha") is None
+    assert ctl.session.repo.load_file_updated_at("hb") == 200.0
+
+
+def test_loading_an_offer_dates_it_by_its_file_and_keep_mine_declines_the_rest(ctl):
+    from negpy.services.assets.sidecar import SidecarOffer, offers_from_plan, plan_frame_sidecars
+
+    a, b = ctl.state.uploaded_files
+    repo = ctl.session.repo
+    for frame, file_hash in ((a, "ha"), (b, "hb")):
+        repo.save_file_settings(file_hash, WorkspaceConfig(), file_path=frame["path"], updated_at=100.0)
+    theirs = _density(0.9)
+    ctl.state.current_file_hash = "ha"
+    ctl.refresh_thumbnails_for = MagicMock()
+
+    ctl.apply_sidecar_offers([SidecarOffer(a, theirs, 300.0)], [SidecarOffer(b, theirs, 300.0)])
+
+    assert repo.load_file_settings("ha").exposure.density == 0.9
+    assert repo.load_file_updated_at("ha") == 300.0
+    ctl.session.reload_current_file.assert_called_once()
+    ctl.refresh_thumbnails_for.assert_called_once_with(["ha"])
+    _dated(b["path"], cfg=theirs, saved_at=300.0)
+    assert offers_from_plan(repo, plan_frame_sidecars(repo, [b])) == []
+
+
+def test_the_frames_own_sidecar_keeps_its_saved_time_and_brings_its_mark(ctl, tmp_path):
+    a, _ = ctl.state.uploaded_files
+    ctl.state.selected_file_idx = 0
+    path = _dated(a["path"], cfg=_density(0.9), saved_at=300.0, mark="keeper", mark_at=310.0)
+
+    assert ctl.load_edit_from_sidecar(path)
+
+    assert ctl.session.load_edit_from_sidecar.call_args.kwargs["saved_at"] == 300.0
+    assert ctl.session.load_edit_from_sidecar.call_args.args[0].exposure.density == 0.9
+    assert ctl.session.repo.load_mark_record("ha") == ("keeper", 310.0)
+    ctl.session.refresh_marks.assert_called_once()
+
+
+def test_another_frames_sidecar_is_a_new_edit_and_a_mark_only_file_loads_nothing(ctl, tmp_path):
+    from negpy.services.assets.sidecar import write_payload
+
+    a, b = ctl.state.uploaded_files
+    ctl.state.selected_file_idx = 0
+    foreign = _dated(b["path"], cfg=_density(0.9), saved_at=300.0, mark="keeper", mark_at=310.0)
+
+    assert ctl.load_edit_from_sidecar(foreign)
+    assert ctl.session.load_edit_from_sidecar.call_args.kwargs["saved_at"] is None
+    assert ctl.session.repo.load_mark_record("ha") is None
+
+    ctl.session.load_edit_from_sidecar.reset_mock()
+    mark_only = str(tmp_path / "marks.negpy")
+    write_payload(mark_only, {"sync": {"saved_at": None, "mark": "keeper", "mark_at": 5.0}})
+    assert ctl.load_edit_from_sidecar(mark_only)
+    ctl.session.load_edit_from_sidecar.assert_not_called()
+    assert not ctl.load_edit_from_sidecar(str(tmp_path / "missing.negpy"))
+
+
+def _density(value: float) -> WorkspaceConfig:
+    cfg = WorkspaceConfig()
+    return replace(cfg, exposure=replace(cfg.exposure, density=value))
+
+
+def _dated(src: str, cfg=None, saved_at=None, mark=None, mark_at=None) -> str:
+    from negpy.services.assets.sidecar import SidecarSync, write_sidecar
+
+    return write_sidecar(src, cfg or WorkspaceConfig(), sync=SidecarSync(saved_at, mark, mark_at))
