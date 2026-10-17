@@ -545,28 +545,31 @@ class GphotoCamera:
         self._names[key] = None
         return None
 
-    def _set_choice(self, key: str, index: int) -> None:
+    def _set_choice(self, key: str, index: int) -> bool:
+        """Write one of the body's choices; False when it has no such setting or choice, or did
+        not report the value back."""
         with self._lock:
             name = self._property(key)
             if name is None:
-                return
+                return False
             camera = self._require()
             widget = camera.get_single_config(name)
             choices = _choices(self._gp, widget)
             if not 0 <= index < len(choices):
                 logger.warning("gphoto2: %s has no choice %d", name, index)
-                return
-            self._set_verified(name, choices[index])
+                return False
+            landed = self._set_verified(name, choices[index])
             self._publish_settings()  # the UI reads the body's state from the file, not from its own write
+            return landed
 
-    def set_iso(self, raw: int) -> None:
-        self._set_choice("iso", int(raw))
+    def set_iso(self, raw: int) -> bool:
+        return self._set_choice("iso", int(raw))
 
-    def set_shutter(self, raw: int) -> None:
-        self._set_choice("shutter", int(raw))
+    def set_shutter(self, raw: int) -> bool:
+        return self._set_choice("shutter", int(raw))
 
-    def set_aperture(self, raw: int) -> None:
-        self._set_choice("aperture", int(raw))
+    def set_aperture(self, raw: int) -> bool:
+        return self._set_choice("aperture", int(raw))
 
     def read_settings(self) -> dict:
         """Current value + options for each settable property, in the UI's schema.
