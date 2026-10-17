@@ -109,7 +109,7 @@ from negpy.domain.models import (
 )
 from negpy.services.assets.composites import forget_composite, restore_maps, source_files
 from negpy.services.assets.triplets import forget_triplets, saved_triplets
-from negpy.services.assets import rolls
+from negpy.services.assets import rehome, rolls
 from negpy.services.assets.sensor import SensorProfiles
 from negpy.services.export.contact_sheet_layout import ContactSheetSettings
 from negpy.services.export.contact_sheet_roll import (
@@ -1868,13 +1868,15 @@ class AppController(QObject):
             if new_path is None:
                 return False
             if old_path:
-                from negpy.services.assets.rehome import rehome_path_prefix
-
-                rehome_path_prefix(self.session.repo, old_path, new_path)
-            if old_path and roll_id == self.state.active_roll_id:
-                self.session.rehome_folder_paths(old_path, new_path)
+                self.rehome_folder(old_path, new_path)
         rolls.rename_roll(self.session.repo, roll_id, new_name)
         return True
+
+    def rehome_folder(self, old_path: str, new_path: str) -> None:
+        """Point every stored and loaded path under *old_path* at *new_path*."""
+        rehome.rehome_path_prefix(self.session.repo, old_path, new_path)
+        self.session.rehome_folder_paths(old_path, new_path)
+        self.invalidate_library_walk()
 
     def invalidate_library_walk(self) -> None:
         """Drop the cached traversal so the next search re-reads the folders."""

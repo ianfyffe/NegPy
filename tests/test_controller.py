@@ -6970,6 +6970,7 @@ class TestLibrarySearch(unittest.TestCase):
         self.controller.session.rehome_folder_paths.assert_not_called()
 
     def test_request_rename_roll_also_renames_the_folder_when_not_active(self):
+        """Loaded frames follow the folder whichever roll is open."""
         self._dict_repo()
         from negpy.services.assets.rolls import recognize_folder, roll_for_id
 
@@ -6979,14 +6980,16 @@ class TestLibrarySearch(unittest.TestCase):
             roll_id = recognize_folder(self.controller.session.repo, old_path)
             self.controller.state.active_roll_id = None
 
-            result = self.controller.request_rename_roll(roll_id, "roll_b", True)
+            with patch.object(self.controller, "invalidate_library_walk") as invalidate:
+                result = self.controller.request_rename_roll(roll_id, "roll_b", True)
 
             self.assertTrue(result)
             new_path = os.path.join(d, "roll_b")
             self.assertTrue(os.path.isdir(new_path))
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["folder_path"], new_path)
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["name"], "roll_b")
-            self.controller.session.rehome_folder_paths.assert_not_called()
+            self.controller.session.rehome_folder_paths.assert_called_once_with(old_path, new_path)
+            invalidate.assert_called_once_with()
 
     def test_request_rename_roll_rehomes_the_active_rolls_paths(self):
         self._dict_repo()
