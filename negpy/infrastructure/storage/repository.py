@@ -7,6 +7,9 @@ from typing import Any, Callable, List, Optional
 import numpy as np
 from negpy.domain.models import ExportPreset, WorkspaceConfig
 from negpy.domain.interfaces import IRepository
+from negpy.kernel.system.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class StorageRepository(IRepository):
@@ -25,6 +28,18 @@ class StorageRepository(IRepository):
         # History panel refreshes re-read every step; WorkspaceConfig is frozen, so a parse keyed
         # by its JSON text is safe to share and needs no invalidation.
         self._history_parse: dict[str, WorkspaceConfig] = {}
+        self._write_observers: list[Callable[[str, str], None]] = []
+
+    def add_write_observer(self, observer: Callable[[str, str], None]) -> None:
+        """Call ``observer(file_hash, file_path)`` after each saved edit or mark, on the writing thread."""
+        self._write_observers.append(observer)
+
+    def _notify_write(self, file_hash: str, file_path: str) -> None:
+        for observer in self._write_observers:
+            try:
+                observer(file_hash, file_path)
+            except Exception:
+                logger.exception("A write observer failed")
 
     @contextmanager
     def _connect(self, path: str):
@@ -143,6 +158,7 @@ class StorageRepository(IRepository):
                 "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path, marked_at) VALUES (?, ?, ?, ?)",
                 (file_hash, mark or "", file_path, time.time() if marked_at is None else marked_at),
             )
+        self._notify_write(file_hash, file_path)
 
     def load_mark_record(self, file_hash: str) -> Optional[tuple[Optional[str], float]]:
         """(mark, marked_at) for this hash, the mark None when cleared; None when never marked."""
@@ -173,6 +189,7 @@ class StorageRepository(IRepository):
                 "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path, updated_at) VALUES (?, ?, ?, ?)",
                 (file_hash, settings_json, file_path, time.time() if updated_at is None else updated_at),
             )
+        self._notify_write(file_hash, file_path)
 
     def load_file_updated_at(self, file_hash: str) -> Optional[float]:
         """When this hash's edit was saved, or None with no saved edit."""

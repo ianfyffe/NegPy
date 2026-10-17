@@ -3201,6 +3201,7 @@ class TestBatchExportFiltering(unittest.TestCase):
         self.mock_session_manager.state = AppState()
         self.mock_session_manager.repo = MagicMock()
         self.mock_session_manager.repo.load_file_settings.return_value = None
+        self.mock_session_manager.repo.load_file_settings_by_path.return_value = None
         self.mock_session_manager.config_for_asset.side_effect = lambda f: self.mock_session_manager.repo.load_file_settings(f["hash"])
 
         self.mock_session_manager.state.uploaded_files = [
