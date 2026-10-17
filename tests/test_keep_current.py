@@ -226,3 +226,96 @@ def _dated(src: str, cfg=None, saved_at=None, mark=None, mark_at=None) -> str:
     from negpy.services.assets.sidecar import SidecarSync, write_sidecar
 
     return write_sidecar(src, cfg or WorkspaceConfig(), sync=SidecarSync(saved_at, mark, mark_at))
+
+
+def _roll(ctl, tmp_path) -> str:
+    from negpy.services.assets import rolls
+
+    roll_id = rolls.recognize_folder(ctl.session.repo, str(tmp_path))
+    ctl.state.active_roll_id = roll_id
+    return roll_id
+
+
+def _roll_file(tmp_path):
+    path = tmp_path / ".negpy-roll"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def test_a_roll_write_with_no_frame_save_reaches_the_roll_file(ctl, tmp_path):
+    from negpy.services.assets import rolls
+
+    roll_id = _roll(ctl, tmp_path)
+    rolls.set_roll_film_base(ctl.session.repo, roll_id, (0.1, 0.2, 0.3))
+    ctl.flush_sidecars()
+    assert _roll_file(tmp_path) is None
+
+    ctl.set_keep_sidecars_current(True)
+    ctl.flush_sidecars()
+    assert _roll_file(tmp_path)["roll"]["film_base"] == [0.1, 0.2, 0.3]
+
+    rolls.create_scene(ctl.session.repo, roll_id, "Beach", ["ha"])
+    assert ctl._sidecar_mirror.pending()
+    ctl.flush_sidecars()
+    assert list(_roll_file(tmp_path)["roll"]["scenes"].values())[0]["name"] == "Beach"
+
+
+def test_discovery_takes_a_new_rolls_file_before_it_splits_the_frames(ctl, tmp_path):
+    _roll(ctl, tmp_path)
+    (tmp_path / ".negpy-roll").write_text(
+        json.dumps({"roll_sidecar_format": 1, "saved_at": 10.0, "half_frame_mode": True, "roll": {}}), encoding="utf-8"
+    )
+    ctl._start_asset_discovery = MagicMock()
+
+    ctl.request_asset_discovery([str(tmp_path)])
+
+    assert ctl._start_asset_discovery.call_args[0][0].half_frame is True
+    assert not ctl._pending_roll_offers
+
+
+def test_a_newer_roll_file_is_offered_and_loading_it_splits_the_loaded_frames(ctl, tmp_path):
+    from negpy.services.assets import rolls
+    from negpy.services.assets.sidecar import SidecarPlan
+
+    roll_id = _roll(ctl, tmp_path)
+    rolls.set_roll_defaults(ctl.session.repo, roll_id, hue_trim=2.0)
+    payload = {"roll_sidecar_format": 1, "saved_at": 4e9, "half_frame_mode": True, "roll": {"defaults": {"hue_trim": 3.0}}}
+    (tmp_path / ".negpy-roll").write_text(json.dumps(payload), encoding="utf-8")
+    ctl._start_asset_discovery = MagicMock()
+    ctl.request_asset_discovery([str(tmp_path)])
+    assert ctl._start_asset_discovery.call_args[0][0].half_frame is False
+    shown = []
+    ctl._show_sidecar_offers = shown.append
+    with patch("negpy.desktop.controller.QTimer.singleShot", lambda _ms, fn: fn()):
+        ctl._apply_sidecar_plan(ctl.state.uploaded_files, SidecarPlan())
+    (offers,) = shown
+    assert [o.label for o in offers] == ["Roll settings: " + rolls.roll_for_id(ctl.session.repo, roll_id)["name"]]
+
+    ctl.request_asset_discovery = MagicMock()
+    ctl.apply_sidecar_offers(offers, [])
+
+    assert rolls.roll_defaults(ctl.session.repo, roll_id) == {"hue_trim": 3.0}
+    assert ctl.half_frame_mode_for_roll(roll_id) is True
+    assert ctl.request_asset_discovery.call_args.kwargs["replace_existing"] is True
+
+
+def test_a_filled_edit_locks_its_diverged_cards_only_without_a_roll_file(ctl, tmp_path):
+    asset = ctl.state.uploaded_files[0]
+    ctl._lock_diverged_without_roll_file([(asset, WorkspaceConfig())])
+    ctl.session.lock_diverged_cards.assert_called_once_with(asset, WorkspaceConfig())
+
+    ctl.session.lock_diverged_cards.reset_mock()
+    (tmp_path / ".negpy-roll").write_text("{}", encoding="utf-8")
+    ctl._lock_diverged_without_roll_file([(asset, WorkspaceConfig())])
+    ctl.session.lock_diverged_cards.assert_not_called()
+
+
+def test_export_sidecars_writes_the_roll_file(ctl, tmp_path):
+    from negpy.services.assets import rolls
+
+    roll_id = _roll(ctl, tmp_path)
+    rolls.set_roll_defaults(ctl.session.repo, roll_id, hue_trim=2.0)
+    ctl.session.config_for_asset.return_value = WorkspaceConfig()
+
+    ctl._write_edit_sidecars(ctl.state.uploaded_files)
+
+    assert _roll_file(tmp_path)["roll"]["defaults"] == {"hue_trim": 2.0}

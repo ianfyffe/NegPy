@@ -5,31 +5,31 @@ from PyQt6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QPushButton, QScrol
 
 from negpy.desktop.view.styles.templates import hint_label, pin_dialog_default
 from negpy.desktop.view.widgets.dialog_geometry import remember_dialog_geometry
-from negpy.services.assets.sidecar import SidecarOffer
+from negpy.services.assets.sidecar import RollSidecarOffer, SidecarOffer
 
 
 _VISIBLE_ROWS = 12
 
 
 class SidecarReloadDialog(QDialog):
-    """Frames whose sidecar was saved after the edit here. ``decision`` is "load" (the checked frames;
-    the rest are declined), "keep" (all declined) or None when closed, which leaves every offer open."""
+    """Frames and folder rolls whose sidecar was saved after the state here. ``decision`` is "load" (the
+    checked rows; the rest are declined), "keep" (all declined) or None when closed, which leaves every
+    offer open."""
 
-    def __init__(self, offers: list[SidecarOffer], parent=None, *, repo=None):
+    def __init__(self, offers: list[SidecarOffer | RollSidecarOffer], parent=None, *, repo=None):
         super().__init__(parent)
         self.setWindowTitle("Newer Sidecars")
         self.setMinimumWidth(320)
         self.decision: Optional[str] = None
 
+        if any(isinstance(o, RollSidecarOffer) for o in offers):
+            lead = "These rolls and frames have sidecars saved after their settings on this computer. Load replaces the settings here"
+        else:
+            lead = "These frames have a .negpy sidecar saved after the edit on this computer. Load replaces the edit here"
         root = QVBoxLayout(self)
-        root.addWidget(
-            hint_label(
-                "These frames have a .negpy sidecar saved after the edit on this computer. "
-                "Load replaces the edit here; Keep Mine leaves the files alone and does not ask again for these versions."
-            )
-        )
+        root.addWidget(hint_label(lead + "; Keep Mine leaves the files alone and does not ask again for these versions."))
 
-        self._checks: list[tuple[QCheckBox, SidecarOffer]] = []
+        self._checks: list[tuple[QCheckBox, SidecarOffer | RollSidecarOffer]] = []
         body = QWidget()
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
@@ -65,7 +65,7 @@ class SidecarReloadDialog(QDialog):
         root.addLayout(footer)
         remember_dialog_geometry(self, repo, "sidecar_reload")
 
-    def selected_offers(self) -> list[SidecarOffer]:
+    def selected_offers(self) -> list[SidecarOffer | RollSidecarOffer]:
         return [offer for box, offer in self._checks if box.isChecked()]
 
     def _load(self) -> None:

@@ -29,6 +29,7 @@ class StorageRepository(IRepository):
         # by its JSON text is safe to share and needs no invalidation.
         self._history_parse: dict[str, WorkspaceConfig] = {}
         self._write_observers: list[Callable[[str, str], None]] = []
+        self._roll_observers: list[Callable[[str], None]] = []
 
     def add_write_observer(self, observer: Callable[[str, str], None]) -> None:
         """Call ``observer(file_hash, file_path)`` after each saved edit or mark, on the writing thread."""
@@ -40,6 +41,17 @@ class StorageRepository(IRepository):
                 observer(file_hash, file_path)
             except Exception:
                 logger.exception("A write observer failed")
+
+    def add_roll_observer(self, observer: Callable[[str], None]) -> None:
+        """Call ``observer(roll_id)`` after each write that dates a roll, on the writing thread."""
+        self._roll_observers.append(observer)
+
+    def notify_roll_dated(self, roll_id: str) -> None:
+        for observer in self._roll_observers:
+            try:
+                observer(roll_id)
+            except Exception:
+                logger.exception("A roll observer failed")
 
     @contextmanager
     def _connect(self, path: str):

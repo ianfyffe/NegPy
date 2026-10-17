@@ -1007,6 +1007,8 @@ The printer's record for this frame, as described under Dodge & Burn. **Preview*
 
 When a folder opens, a frame with no edit in the database takes its sidecar's edit, and a newer mark loads without asking. An edit that another computer saved later, and that differs from yours, is listed in the **Newer Sidecars** dialog: **Load Selected** replaces yours, and **Keep Mine** keeps yours and stops asking for those versions. The newer copy wins by its saved time, so keep the computers' clocks close.
 
+A folder roll's settings travel in a `.negpy-roll` file in its folder, which Keep Current, Save on Export and Export Sidecars write: card defaults and locks, Film Base, Roll Analysis and scene baselines, scenes, Half Frame and Trichrome Mode, the half-frame split and the files removed from the roll. A roll with no settings on this computer takes the file when its folder opens; newer roll settings are a **Roll settings** row in the **Newer Sidecars** dialog. The roll's name, its forks and its added files stay on this computer.
+
 <!-- panel:export_bake -->
 #### Auto Density/Grade
 

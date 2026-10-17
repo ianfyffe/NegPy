@@ -1559,7 +1559,7 @@ class DesktopSessionManager(QObject):
                 synced = replace(synced, process=replace(synced.process, **changes))
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=target_path)
-            self._lock_diverged_cards(self.state.uploaded_files[idx], synced)
+            self.lock_diverged_cards(self.state.uploaded_files[idx], synced)
             changed_hashes.append(target_hash)
             count += 1
 
@@ -1613,7 +1613,7 @@ class DesktopSessionManager(QObject):
                 synced = finish(synced)
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=self.state.uploaded_files[idx]["path"])
-            self._lock_diverged_cards(self.state.uploaded_files[idx], synced)
+            self.lock_diverged_cards(self.state.uploaded_files[idx], synced)
             changed_hashes.append(target_hash)
             count += 1
 
@@ -1883,9 +1883,9 @@ class DesktopSessionManager(QObject):
         idx = self.state.selected_file_idx
         if not self.state.current_file_hash or not (0 <= idx < len(self.state.uploaded_files)):
             return
-        self._lock_diverged_cards(self.state.uploaded_files[idx], self.state.config)
+        self.lock_diverged_cards(self.state.uploaded_files[idx], self.state.config)
 
-    def _lock_diverged_cards(self, asset: dict, config: WorkspaceConfig) -> None:
+    def lock_diverged_cards(self, asset: dict, config: WorkspaceConfig) -> None:
         roll_id = rolls.frame_roll(self.repo, self.state.active_roll_id, asset)
         if roll_id is None:
             return
