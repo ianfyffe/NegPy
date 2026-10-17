@@ -409,7 +409,7 @@ def roll_sidecar_path(folder: str) -> str:
     return os.path.join(folder, ROLL_SIDECAR_NAME)
 
 
-def _file_names(value: Any) -> list:
+def leaf_names(value: Any) -> list:
     """The plain file names in *value*; a path or a non-string is not one."""
     if not isinstance(value, list):
         return []
@@ -430,7 +430,7 @@ def load_roll_sidecar(folder: str) -> Optional[RollSidecar]:
         return None
     state = {k: v for k, v in state.items() if k not in rolls.LOCAL_FIELDS}
     if "excluded_names" in state:
-        state["excluded_names"] = _file_names(state["excluded_names"])
+        state["excluded_names"] = leaf_names(state["excluded_names"])
     card_keys = data.get("card_keys_version")
     migrate_roll_entry(state, card_keys if isinstance(card_keys, int) else 0)
     modes = {k: data.get(k) if isinstance(data.get(k), bool) else None for k in ("half_frame_mode", "trichrome_mode")}

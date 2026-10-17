@@ -148,7 +148,7 @@ Importing never changes the folder. Reorganize on disk, then import again (or **
 Right-click a roll for:
 
 *   **Close Roll…** (loaded roll only): empties the Film Strip. Edits stay saved.
-*   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default). A cloud-sync folder (Dropbox, iCloud, OneDrive) can treat that rename as a delete and upload again.
+*   **Rename…**: renames the roll. A folder roll also offers **Also rename the folder on disk** (off by default); another computer on the same share follows that rename when the folder has a `.negpy-roll` file. A cloud-sync folder (Dropbox, iCloud, OneDrive) can treat that rename as a delete and upload again.
 *   **Delete…**: forgets the roll only; folder, images and edits stay. **Clear Library** in *Manage Database* forgets all rolls.
 *   **Roll Analysis** (loaded roll only): runs Roll Analysis ([§10.6](#106-roll-analysis)).
 
