@@ -430,6 +430,33 @@ class TestAppController(unittest.TestCase):
         self.controller.request_render.assert_not_called()
         self.controller.set_status.assert_called_once_with("invalid edge", 3000, "warning")
 
+    def test_half_frame_profile_is_saved_per_active_roll(self):
+        from negpy.services.assets.rolls import recognize_folder
+
+        store: dict = {}
+        repo = self.controller.session.repo
+        repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+        roll_a, roll_b = recognize_folder(repo, "/scans/a"), recognize_folder(repo, "/scans/b")
+        self.controller.state.active_roll_id = roll_a
+        self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
+
+        self.assertNotIn("half_frame_profile", store)
+        self.assertEqual(self.controller.half_frame_profile()["split_x"], 0.6)
+        self.controller.state.active_roll_id = roll_b
+        self.assertIsNone(self.controller.half_frame_profile())
+
+    def test_half_frame_profile_with_a_deleted_active_roll_is_the_shared_profile(self):
+        store: dict = {}
+        repo = self.controller.session.repo
+        repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+        self.controller.state.active_roll_id = "deleted-roll"
+        self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
+
+        self.assertEqual(store["half_frame_profile"]["split_x"], 0.6)
+        self.assertEqual(self.controller.half_frame_profile()["split_x"], 0.6)
+
     def test_half_frame_override_round_trip(self):
         self.controller.session.repo.get_global_setting.return_value = None
         self.assertEqual(self.controller.half_frame_overrides(), {})

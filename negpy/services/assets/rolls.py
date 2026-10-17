@@ -921,6 +921,25 @@ def set_roll_film_base(repo: Any, roll_id: str, base_log: Optional[tuple]) -> bo
     return True
 
 
+def roll_half_frame_profile(repo: Any, roll_id: Optional[str]) -> Optional[dict]:
+    """The roll's Half Frame split profile (``crop_rect``, ``split_x``, ``gutter_thickness``,
+    ``split_axis``) that Apply to All set, or None."""
+    entry = roll_for_id(repo, roll_id) if roll_id else None
+    saved = entry.get("half_frame_profile") if entry else None
+    return dict(saved) if isinstance(saved, dict) and saved else None
+
+
+def set_roll_half_frame_profile(repo: Any, roll_id: str, profile: dict) -> bool:
+    """Records the roll's Half Frame split profile. False for an unknown roll id."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return False
+    entry["half_frame_profile"] = dict(profile)
+    _write(repo, store)
+    return True
+
+
 def roll_scenes(repo: Any, roll_id: Optional[str]) -> List[tuple]:
     """The roll's scenes as ``(scene_id, entry)`` pairs, in creation order: a scene's
     ordinal is its 1-based position here."""

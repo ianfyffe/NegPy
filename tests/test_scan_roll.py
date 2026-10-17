@@ -3,7 +3,14 @@ from unittest.mock import MagicMock
 
 from negpy.desktop.controller import AppController
 from negpy.desktop.session import AppState
-from negpy.services.assets.rolls import folder_roll_id_for_path, recognize_folder, roll_defaults, roll_for_id, saved_rolls
+from negpy.services.assets.rolls import (
+    folder_roll_id_for_path,
+    recognize_folder,
+    roll_defaults,
+    roll_for_id,
+    saved_rolls,
+    set_roll_half_frame_profile,
+)
 
 
 def _controller(as_roll=False, capture_req=None):
@@ -21,6 +28,7 @@ def _controller(as_roll=False, capture_req=None):
     c._save_rgb_scan_mode = MethodType(AppController._save_rgb_scan_mode, c)
     c._set_roll_sensor_profile = MethodType(AppController._set_roll_sensor_profile, c)
     c._RGB_SCAN_MODE_BY_ROLL_KEY = AppController._RGB_SCAN_MODE_BY_ROLL_KEY
+    c._HALF_FRAME_PROFILE_KEY = AppController._HALF_FRAME_PROFILE_KEY
     c._store = store
     return c
 
@@ -223,3 +231,18 @@ def test_a_triplet_capture_never_takes_a_sensor_profile(monkeypatch):
     AppController._on_capture_finished(c, ["/hot/R1/r.ARW", "/hot/R1/g.ARW", "/hot/R1/b.ARW"])
 
     assert "sensor_profile" not in roll_defaults(c.session.repo, folder_roll_id_for_path(c.session.repo, "/hot/R1"))
+
+
+def test_a_scan_into_another_roll_reads_that_rolls_split_profile():
+    c = _controller(as_roll=True)
+    c.half_frame_profile = MethodType(AppController.half_frame_profile, c)
+    roll_id = recognize_folder(c.session.repo, "/out/Roll002")
+    c._store["half_frame_profile"] = {"split_x": 0.5, "split_axis": "x"}
+    set_roll_half_frame_profile(c.session.repo, roll_id, {"split_x": 0.4, "split_axis": "y"})
+    c.state.active_roll_id = recognize_folder(c.session.repo, "/out/Roll001")
+    seen = []
+    c.request_asset_discovery.side_effect = lambda *_a, **_k: seen.append(c.half_frame_profile())
+
+    AppController._on_scan_finished(c, "/out/Roll002/a.tif")
+
+    assert seen == [{"split_x": 0.4, "split_axis": "y"}]

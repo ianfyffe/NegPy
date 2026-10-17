@@ -2032,22 +2032,24 @@ class AppController(QObject):
     _HALF_FRAME_OVERRIDES_KEY = "half_frame_overrides"
 
     def half_frame_profile(self) -> dict | None:
-        """Saved ``(crop_rect, split_x, gutter_thickness)`` profile, shared across
-        every half-frame split that has no override of its own. Scanner-independent —
-        the same crop/split applies whether the scans came from a SANE scanner, a
-        camera copy-stand, or a folder import."""
-        return self.session.repo.get_global_setting(self._HALF_FRAME_PROFILE_KEY, default=None)
+        """Saved ``(crop_rect, split_x, gutter_thickness, split_axis)`` profile for every half-frame
+        split with no override of its own: the active roll's, else the shared one. Scanner-independent:
+        the same crop/split applies to a SANE scan, a camera copy-stand or a folder import."""
+        repo = self.session.repo
+        own = rolls.roll_half_frame_profile(repo, self.state.active_roll_id)
+        return own or repo.get_global_setting(self._HALF_FRAME_PROFILE_KEY, default=None)
 
     def save_half_frame_profile(self, crop_rect, split_x: float, gutter_thickness: float, split_axis: str = "x") -> None:
-        self.session.repo.save_global_setting(
-            self._HALF_FRAME_PROFILE_KEY,
-            {
-                "crop_rect": [float(v) for v in crop_rect],
-                "split_x": float(split_x),
-                "gutter_thickness": float(gutter_thickness),
-                "split_axis": str(split_axis),
-            },
-        )
+        """Save the profile on the active roll. Only with no known roll does it become the shared profile,
+        because a shared profile turns gutter detection off on every roll without its own."""
+        profile = {
+            "crop_rect": [float(v) for v in crop_rect],
+            "split_x": float(split_x),
+            "gutter_thickness": float(gutter_thickness),
+            "split_axis": str(split_axis),
+        }
+        if not (self.state.active_roll_id and rolls.set_roll_half_frame_profile(self.session.repo, self.state.active_roll_id, profile)):
+            self.session.repo.save_global_setting(self._HALF_FRAME_PROFILE_KEY, profile)
 
     def half_frame_overrides(self) -> dict:
         """Per-file ``(crop_rect, split_x, gutter_thickness)`` overrides, keyed by
