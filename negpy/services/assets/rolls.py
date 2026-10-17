@@ -41,6 +41,8 @@ DISCOVERY_FILTERS_KEY = "roll_discovery_filters"
 HALF_FRAME_MODE_KEY = "half_frame_mode_by_roll"
 TRICHROME_MODE_KEY = "rgbscan_mode_by_roll"
 DEFAULT_DISCOVERY_FILTERS = ("export",)
+# Leaf names a folder roll's folder had, newest last, so another computer can follow a rename.
+FORMER_NAMES_KEPT = 8
 _FORK_SEP = "#roll:"
 
 
@@ -669,8 +671,27 @@ def rename_folder_roll_disk(repo: Any, roll_id: str, new_name: str) -> Optional[
     except OSError:
         return None
     entry["folder_path"] = new_path
+    old_leaf = os.path.basename(os.path.normpath(old_path))
+    kept = [n for n in entry.get("former_names", []) if n not in (old_leaf, new_name)]
+    entry["former_names"] = [*kept, old_leaf][-FORMER_NAMES_KEPT:]
     _write(repo, store)
     return new_path
+
+
+def follow_folder_name(repo: Any, roll_id: str, former_names: Sequence[str]) -> None:
+    """After a rename made on another computer: take the folder's new leaf as the roll's name where it
+    named the roll by the old leaf. A roll with state here takes the roll file's *former_names*, undated,
+    so the rename alone is no newer roll file; one without takes the whole file on discovery."""
+    store = _read(repo)
+    entry = store.get(roll_id)
+    if entry is None:
+        return
+    if entry.get("updated_at") is not None or portable_state(entry):
+        entry["former_names"] = list(former_names)[-FORMER_NAMES_KEPT:]
+    prefix, sep, leaf = (entry.get("name") or "").rpartition(ROLL_PATH_SEP)
+    if leaf and leaf in former_names:
+        entry["name"] = prefix + sep + os.path.basename(os.path.normpath(entry.get("folder_path") or ""))
+    _write(repo, store, stamp=False)
 
 
 def rehome_paths(repo: Any, move: Callable[[str], str]) -> None:
