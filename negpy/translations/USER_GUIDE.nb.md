@@ -501,14 +501,14 @@ En filmtype angir formatet, så angi et format som `6×7` etter filmtypen.
 
 Lagrede eksportoppskrifter: format, størrelse, farge, mappe og filnavn. Slå på dem du vil ha, så skriver **Eksportforhåndsinnstillinger** hvert bilde én gang per forhåndsinnstilling. **Administrer** redigerer dem. Forhåndsinnstillinger virker ikke med lineært resultat.
 
-<!-- panel:export_alongside src:423d2652 -->
+<!-- panel:export_alongside src:42118d1e -->
 ### Ved siden av eksportene
 
 Ekstra filer ved siden av kopien. Hver har en bryter til venstre og en engangshandling til høyre.
 
 *   **Kopieringsnotater**: en merket kopi av bildet med skygging og etterbelysning og kopiinnstillinger, slik en mørkeromskopist tar vare på. **Forhåndsvisning** viser den (`Shift+N`); **Eksporter notater** lagrer den.
 *   **Autotetthet / -gradering**: **Bak inn ved eksport** fastsetter den automatiske lysheten og kontrasten for hvert eksporterte bilde, så de ikke endres senere. **Bak inn i rullen** gjør det for hvert synlig bilde nå.
-*   **Redigeringssidefiler**: **Lagre ved eksport** skriver en `.negpy`-fil med redigeringen ved siden av hver kilde. **Eksporter sidefiler** skriver dem for alle synlige bilder. **Hold oppdatert** oppdaterer filen for hvert bilde mens du arbeider, slik at en annen datamaskin kan åpne redigeringene dine. Høyreklikk et bilde → **Last inn redigering fra sidefil…** leser en tilbake.
+*   **Redigeringssidefiler**: **Lagre ved eksport** skriver en `.negpy`-fil med redigeringen ved siden av hver kilde. **Eksporter sidefiler** skriver dem for alle synlige bilder. **Hold oppdatert** oppdaterer filen for hvert bilde mens du arbeider, slik at en annen datamaskin kan åpne redigeringene dine. Høyreklikk et bilde → **Last inn redigering fra sidefil…** leser en tilbake. Når en mappe åpnes, viser **Nyere sidefiler** redigeringer som en annen datamaskin lagret senere: **Last inn valgte** tar dem i bruk, **Behold mine** slutter å spørre.
 
 <!-- panel:contact_sheet src:ddc8d6ef -->
 ### Kontaktark
