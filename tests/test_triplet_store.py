@@ -1,3 +1,4 @@
+import itertools
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -223,6 +224,39 @@ def test_a_triplet_made_by_hand_restores_with_its_flag(tmp_path):
     worker.process(AssetDiscoveryTask(paths=[r, g, b], supported_extensions=(".raw",), rgb_scan=False, restore_triplets=restore))
     (asset,) = seen.pop()
     assert asset["green_path"] == g and asset["triplet_by_hand"] is True
+
+
+def _attach_claims(tmp_path, names: tuple, claims: dict) -> list:
+    """(name, green name) of each asset after re-attaching `claims` (red name -> green, blue names)."""
+    for n in names:
+        (tmp_path / n).write_bytes(b"x")
+    p = {n: str(tmp_path / n) for n in names}
+    assets = [{"name": p[n], "path": p[n], "hash": p[n]} for n in names]
+    triplets = {p[red]: [p[green], p[blue]] for red, (green, blue) in claims.items()}
+    out = AssetDiscoveryWorker()._attach_restored_triplets(assets, triplets)
+    return [(os.path.basename(a["path"]), a.get("green_path") and os.path.basename(a["green_path"])) for a in out]
+
+
+def test_a_file_claimed_twice_goes_to_the_first_triplet(tmp_path):
+    out = _attach_claims(tmp_path, ("a", "g1", "b1", "b2"), {"a": ("g1", "b1"), "g1": ("b2", "a")})
+    assert out == [("a", "g1"), ("b2", None)]
+
+
+def test_a_later_triplet_cannot_take_an_earlier_ones_red(tmp_path):
+    out = _attach_claims(tmp_path, ("r1", "r2", "g1", "b1", "b2"), {"r1": ("g1", "b1"), "r2": ("r1", "b2")})
+    assert out == [("r1", "g1"), ("r2", None), ("b2", None)]
+
+
+def test_a_shared_member_goes_to_the_first_red_by_path(tmp_path):
+    out = _attach_claims(tmp_path, ("r1", "r2", "g1", "b1", "b2"), {"r1": ("g1", "b1"), "r2": ("g1", "b2")})
+    assert out == [("r1", "g1"), ("r2", None), ("b2", None)]
+
+
+def test_the_winner_does_not_depend_on_listing_order(tmp_path):
+    """Computers that share a folder over a NAS list it in different orders."""
+    claims = {"r1": ("g1", "b1"), "r2": ("g1", "b2")}
+    for names in itertools.permutations(("r1", "r2", "g1", "b1", "b2")):
+        assert sorted(_attach_claims(tmp_path, names, claims), key=str) == [("b2", None), ("r1", "g1"), ("r2", None)]
 
 
 def test_restored_triplets_count_as_assembled_in_the_report(tmp_path, monkeypatch):
