@@ -43,7 +43,7 @@ def migrate_legacy_normalization_rolls(repo) -> None:
                 floors = tuple(json.loads(floors_json))
                 ceils = tuple(json.loads(ceils_json))
                 cast = tuple(json.loads(cast_json)) if cast_json else (0.0, 0.0, 0.0)
-                rolls.set_roll_normalization(repo, roll_id, floors, ceils, cast, bounds_version=0)
+                rolls.set_roll_normalization(repo, roll_id, floors, ceils, cast, bounds_version=0, stamp=False)
                 conn.execute("DELETE FROM normalization_rolls WHERE name = ?", (name,))
             if unmatched:
                 return
