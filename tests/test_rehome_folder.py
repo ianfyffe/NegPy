@@ -302,3 +302,14 @@ def test_edited_file_names_follow_the_platforms_case_rule(tmp_path, monkeypatch)
     assert repo.edited_file_names_under(asked) == set()
     monkeypatch.setattr(os.path, "normcase", str.lower)
     assert repo.edited_file_names_under(asked) == {"a.tif"}
+
+
+def test_a_rehome_keeps_each_edits_saved_time(repo):
+    repo.save_file_settings("ha", WorkspaceConfig(), file_path=_in(OLD, "a.tif"), updated_at=5.0)
+    repo.save_file_mark("ha", "keeper", file_path=_in(OLD, "a.tif"), marked_at=6.0)
+
+    rehome_path_prefix(repo, OLD, NEW)
+
+    assert repo.load_file_settings_by_path(_in(NEW, "a.tif"))[0] == "ha"
+    assert repo.load_file_updated_at("ha") == 5.0
+    assert repo.load_mark_record("ha") == ("keeper", 6.0)
