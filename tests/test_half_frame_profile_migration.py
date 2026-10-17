@@ -29,6 +29,7 @@ def test_each_half_frame_roll_without_a_profile_takes_the_shared_one(repo):
     assert rolls.roll_half_frame_profile(repo, off) is None
     assert rolls.roll_half_frame_profile(repo, own) == OWN
     assert repo.get_global_setting("half_frame_profile") is None
+    assert rolls.roll_updated_at(repo, on) is None
 
 
 def test_without_a_shared_profile_nothing_changes(repo):

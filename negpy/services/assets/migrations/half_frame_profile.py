@@ -23,7 +23,7 @@ def migrate_shared_half_frame_profile(repo) -> None:
         modes = repo.get_global_setting(_MODE_BY_ROLL_KEY, None) or {}
         for roll_id, enabled in modes.items():
             if enabled and rolls.roll_half_frame_profile(repo, roll_id) is None:
-                rolls.set_roll_half_frame_profile(repo, roll_id, shared)
+                rolls.set_roll_half_frame_profile(repo, roll_id, shared, stamp=False)
     except Exception:
         logger.exception("Half-frame profile migration failed; continuing without it")
         return
