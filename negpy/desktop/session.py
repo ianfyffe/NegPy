@@ -1911,7 +1911,7 @@ class DesktopSessionManager(QObject):
                 synced = replace(synced, process=replace(synced.process, **changes))
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=target_path)
-            self._lock_diverged_cards(self.state.uploaded_files[idx], synced, target_config, applied=_row_fields(rows))
+            self.lock_diverged_cards(self.state.uploaded_files[idx], synced, target_config, applied=_row_fields(rows))
             changed_hashes.append(target_hash)
             count += 1
 
@@ -1966,7 +1966,7 @@ class DesktopSessionManager(QObject):
                 synced = finish(synced)
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=self.state.uploaded_files[idx]["path"])
-            self._lock_diverged_cards(self.state.uploaded_files[idx], synced, target_config, applied=_row_fields(rows))
+            self.lock_diverged_cards(self.state.uploaded_files[idx], synced, target_config, applied=_row_fields(rows))
             changed_hashes.append(target_hash)
             count += 1
 
@@ -2368,7 +2368,7 @@ class DesktopSessionManager(QObject):
                 continue
             self.push_external_history(asset["hash"], before, after)
             self.repo.save_file_settings(asset["hash"], after, file_path=asset["path"])
-            self._lock_diverged_cards(asset, after, before)
+            self.lock_diverged_cards(asset, after, before)
             written.append(asset["hash"])
         return written
 
@@ -2414,9 +2414,9 @@ class DesktopSessionManager(QObject):
         idx = self.state.selected_file_idx
         if not self.state.current_file_hash or not (0 <= idx < len(self.state.uploaded_files)):
             return
-        self._lock_diverged_cards(self.state.uploaded_files[idx], self.state.config, before, applied)
+        self.lock_diverged_cards(self.state.uploaded_files[idx], self.state.config, before, applied)
 
-    def _lock_diverged_cards(
+    def lock_diverged_cards(
         self, asset: dict, config: WorkspaceConfig, before: Optional[WorkspaceConfig] = None, applied: frozenset = frozenset()
     ) -> None:
         """*applied* holds the field names an apply wrote: a card it covers whole settles even when its values did

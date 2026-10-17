@@ -414,7 +414,10 @@ def test_reset_roll_drops_the_rolls_values_and_frame_edits_and_undo_puts_them_ba
 
         controller.undo_last_batch()
 
-        assert rolls.roll_for_id(repo, roll_id) == before
+        # Undo is a newer write, so only the roll's date moves.
+        after = rolls.roll_for_id(repo, roll_id)
+        assert {**after, "updated_at": None} == {**before, "updated_at": None}
+        assert after["updated_at"] > before["updated_at"]
         assert "fade" in rolls.frame_override_cards(repo, roll_id, "h2")
         assert session.config_for_asset(session.state.uploaded_files[1]).process.fade_ratio_g == 0.7
         assert session.config_for_asset(session.state.uploaded_files[2]).process.fade_ratio_g == 0.9
