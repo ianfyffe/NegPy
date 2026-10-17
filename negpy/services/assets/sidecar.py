@@ -1,17 +1,19 @@
 """``.negpy`` edit sidecars: one frame's flat config next to its source, plus ``bounds_version``
 and one reserved key, ``sync`` (``saved_at``, ``mark``, ``mark_at``). A reader without ``sync``
-drops that key and keeps the edit."""
+drops that key and keeps the edit. A folder roll's state travels in ``<folder>/.negpy-roll``."""
 
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Collection, Dict, List, NamedTuple, Optional
 
 from negpy.domain.models import WorkspaceConfig
 from negpy.features.exposure.normalization import BOUNDS_VERSION
 from negpy.kernel.system.logging import get_logger
 from negpy.kernel.system.paths import apply_umask_mode
+from negpy.services.assets import rolls
+from negpy.services.assets.migrations.roll_fields import CARD_KEYS_VERSION, migrate_roll_entry
 from negpy.services.assets.rolls import unforked_hash
 
 logger = get_logger(__name__)
@@ -153,6 +155,18 @@ def same_edit(a: Optional[WorkspaceConfig], b: Optional[WorkspaceConfig]) -> boo
     return json.dumps(a.to_dict(), sort_keys=True, default=str) == json.dumps(b.to_dict(), sort_keys=True, default=str)
 
 
+def sidecar_edit(repo, source_path: str, config: Optional[WorkspaceConfig]) -> Optional[WorkspaceConfig]:
+    """*config* read from the sidecar beside *source_path*. Roll ids are per computer, so a
+    baseline taken from a roll unknown here names the frame's folder roll, or no roll."""
+    if config is None:
+        return None
+    kind, _, ref = config.process.baseline_source.partition(":")
+    if kind != "roll" or rolls.roll_for_id(repo, ref) is not None:
+        return config
+    roll_id = rolls.folder_roll_id_for_path(repo, os.path.dirname(source_path)) if source_path else None
+    return replace(config, process=replace(config.process, baseline_source=f"roll:{roll_id}" if roll_id else ""))
+
+
 def sync_from_repo(repo, file_hash: str) -> SidecarSync:
     """The ``sync`` for this hash's saved edit and mark."""
     record = repo.load_mark_record(file_hash)
@@ -161,7 +175,7 @@ def sync_from_repo(repo, file_hash: str) -> SidecarSync:
 
 def promote_payload(repo, file_hash: str, source_path: str, data: Dict[str, Any]) -> Optional[WorkspaceConfig]:
     """Make the payload's edit this hash's saved edit, dated by the file (0 when undated). None without an edit."""
-    cfg = config_from_payload(data)
+    cfg = sidecar_edit(repo, source_path, config_from_payload(data))
     if cfg is not None:
         sync = sync_from_payload(data)
         saved_at = sync.saved_at if sync is not None and sync.saved_at is not None else 0.0
@@ -287,7 +301,7 @@ def plan_frame_sidecars(repo, assets: List[dict]) -> SidecarPlan:
         if data is None:
             continue
         try:
-            config = config_from_payload(data) if "#roll:" not in file_hash else None
+            config = sidecar_edit(repo, path, config_from_payload(data)) if "#roll:" not in file_hash else None
         except Exception as exc:
             logger.warning("Failed to load sidecar for %s: %s", path, exc)
             config = None
@@ -355,6 +369,135 @@ def decline_sidecar_offers(repo, offers) -> None:
     repo.save_global_setting(DECLINED_KEY, declined)
 
 
+ROLL_SIDECAR_NAME = ".negpy-roll"
+ROLL_SIDECAR_FORMAT = 1
+
+
+@dataclass(frozen=True)
+class RollSidecar:
+    """One folder roll's ``.negpy-roll``: its portable state (``rolls.portable_state``) and its
+    Half Frame and Trichrome Mode, each None when the writer had none."""
+
+    saved_at: float
+    state: Dict[str, Any]
+    modes: Dict[str, Optional[bool]]
+
+    def same_as(self, state: Dict[str, Any], modes: Dict[str, Optional[bool]]) -> bool:
+        """Whether *state* and *modes* hold what this file holds; a mode the file lacks matches any."""
+        return _json(self.state) == _json(state) and all(v is None or modes.get(k) == v for k, v in self.modes.items())
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+class RollSidecarOffer(NamedTuple):
+    """A roll file saved after the roll's state here, a row in the Newer Sidecars dialog."""
+
+    roll_id: str
+    name: str
+    sidecar: RollSidecar
+
+    @property
+    def key(self) -> str:
+        return f"roll:{self.roll_id}"
+
+    @property
+    def saved_at(self) -> float:
+        return self.sidecar.saved_at
+
+
+def roll_sidecar_path(folder: str) -> str:
+    return os.path.join(folder, ROLL_SIDECAR_NAME)
+
+
+def _file_names(value: Any) -> list:
+    """The plain file names in *value*; a path or a non-string is not one."""
+    if not isinstance(value, list):
+        return []
+    return [n for n in value if isinstance(n, str) and n not in ("", ".", "..") and os.path.basename(n) == n]
+
+
+def load_roll_sidecar(folder: str) -> Optional[RollSidecar]:
+    """The roll file in *folder*, its card keys migrated to this build's. None if absent, malformed
+    or written in a newer ``roll_sidecar_format``."""
+    data = read_payload(roll_sidecar_path(folder))
+    if data is None:
+        return None
+    version, saved_at, state = data.get("roll_sidecar_format"), _number(data.get("saved_at")), data.get("roll")
+    if not isinstance(version, int) or version > ROLL_SIDECAR_FORMAT:
+        logger.warning("Roll file in %s has format %r; this build reads up to %d", folder, version, ROLL_SIDECAR_FORMAT)
+        return None
+    if saved_at is None or not isinstance(state, dict):
+        return None
+    state = {k: v for k, v in state.items() if k not in rolls.LOCAL_FIELDS}
+    if "excluded_names" in state:
+        state["excluded_names"] = _file_names(state["excluded_names"])
+    card_keys = data.get("card_keys_version")
+    migrate_roll_entry(state, card_keys if isinstance(card_keys, int) else 0)
+    modes = {k: data.get(k) if isinstance(data.get(k), bool) else None for k in ("half_frame_mode", "trichrome_mode")}
+    return RollSidecar(saved_at, state, modes)
+
+
+def roll_sidecar_payload(repo, roll_id: str, saved_at: float) -> Dict[str, Any]:
+    entry = rolls.roll_for_id(repo, roll_id) or {}
+    return {
+        "roll_sidecar_format": ROLL_SIDECAR_FORMAT,
+        "card_keys_version": CARD_KEYS_VERSION,
+        "saved_at": saved_at,
+        **rolls.roll_modes(repo, roll_id),
+        "roll": rolls.portable_state(entry),
+    }
+
+
+def plan_roll_file_write(repo, roll_id: str) -> Optional[tuple[str, Dict[str, Any]]]:
+    """(path, payload) to write for a folder roll this computer has dated: only over no file or
+    an older one. A file this build cannot read is never written over."""
+    entry = rolls.roll_for_id(repo, roll_id)
+    saved_at = rolls.roll_updated_at(repo, roll_id)
+    if not entry or entry.get("kind") != "folder" or not entry.get("folder_path") or saved_at is None:
+        return None
+    path = roll_sidecar_path(entry["folder_path"])
+    if os.path.lexists(path):
+        on_disk = load_roll_sidecar(entry["folder_path"])
+        if on_disk is None or on_disk.saved_at >= saved_at:
+            return None
+    return path, roll_sidecar_payload(repo, roll_id, saved_at)
+
+
+def export_roll_sidecar(repo, roll_id: str) -> Optional[str]:
+    """Write a folder roll's file for Export Sidecars. State no change here has dated is dated now,
+    unless the folder already has a file. Returns the path, or None when nothing was written."""
+    entry = rolls.roll_for_id(repo, roll_id) or {}
+    folder = entry.get("folder_path") or ""
+    if entry.get("kind") != "folder" or not os.path.isdir(folder):
+        return None
+    if rolls.roll_updated_at(repo, roll_id) is None and rolls.portable_state(entry) and not os.path.lexists(roll_sidecar_path(folder)):
+        rolls.touch_roll(repo, roll_id)
+    found = plan_roll_file_write(repo, roll_id)
+    return found[0] if found is not None and write_payload(*found) else None
+
+
+def read_roll_sidecar(repo, roll_id: str) -> Optional[RollSidecarOffer]:
+    """Read a folder roll's file. A roll with no state here, dated or held, takes it; a file saved
+    after the state here that holds something else is offered, unless Keep Mine declined it."""
+    entry = rolls.roll_for_id(repo, roll_id)
+    if not entry or entry.get("kind") != "folder":
+        return None
+    sidecar = load_roll_sidecar(entry.get("folder_path") or "")
+    if sidecar is None or sidecar.same_as(rolls.portable_state(entry), rolls.roll_modes(repo, roll_id)):
+        return None
+    local = rolls.roll_updated_at(repo, roll_id)
+    if local is None and not rolls.portable_state(entry):
+        rolls.replace_portable_state(repo, roll_id, sidecar.state, sidecar.modes, sidecar.saved_at)
+        return None
+    offer = RollSidecarOffer(roll_id, entry.get("name") or "", sidecar)
+    declined = repo.get_global_setting(DECLINED_KEY, default=None) or {}
+    if sidecar.saved_at <= (local or 0.0) or declined.get(offer.key) == sidecar.saved_at:
+        return None
+    return offer
+
+
 def sidecar_half(file_hash: str) -> Optional[int]:
     """The half whose sidecar holds this hash's edit (0 for a whole frame), or None when the hash
     has no sidecar of its own: a roll fork or a composite."""
@@ -367,7 +510,7 @@ def sidecar_half(file_hash: str) -> Optional[int]:
 
 
 def mirror_payload(
-    repo, file_hash: str, on_disk: Optional[Dict[str, Any]], fallback: Optional[WorkspaceConfig] = None
+    repo, file_hash: str, on_disk: Optional[Dict[str, Any]], fallback: Optional[WorkspaceConfig] = None, source_path: str = ""
 ) -> Optional[Dict[str, Any]]:
     """What this hash's sidecar must hold so it is current, or None when *on_disk* already is.
     Per part, the edit and the mark, the newer of the file and the rows wins; a tie keeps the rows.
@@ -385,7 +528,9 @@ def mirror_payload(
         edit_current = True
     elif config is not None:
         edit, saved_at = sidecar_payload(config), local_at
-        edit_current = bool(disk_edit) and disk_at == local_at and same_edit(config_from_payload(disk), config)
+        edit_current = (
+            bool(disk_edit) and disk_at == local_at and same_edit(sidecar_edit(repo, source_path, config_from_payload(disk)), config)
+        )
     elif fallback is not None:
         edit, saved_at, edit_current = sidecar_payload(fallback), None, False
     else:
@@ -408,25 +553,33 @@ def mirror_payload(
 
 
 class SidecarMirror:
-    """Keep Current: each queued frame's sidecar follows its rows at the next flush, which reads
-    the rows back rather than an in-flight config."""
+    """Keep Current: each queued frame's sidecar and each queued folder roll's file follow their
+    rows at the next flush, which reads the rows back rather than an in-flight config."""
 
     def __init__(self, repo) -> None:
         self._repo = repo
         self._queued: Dict[str, str] = {}
+        self._queued_rolls: set[str] = set()
+        self._checked_rolls: Dict[str, float] = {}
         self._unwritable_dirs: set[str] = set()
 
     def queue(self, file_hash: str, source_path: str = "") -> None:
         if file_hash and sidecar_half(file_hash) is not None:
             self._queued[file_hash] = source_path or self._queued.get(file_hash, "")
 
-    def pending(self) -> int:
-        return len(self._queued)
+    def queue_roll(self, roll_id: str) -> None:
+        if roll_id:
+            self._queued_rolls.add(roll_id)
 
-    def flush(self) -> tuple[int, int]:
-        """Write every queued frame whose file is not current. Returns (written, failed). A frame whose
-        source is gone is skipped, and a folder that refuses a write is skipped for the session."""
+    def pending(self) -> int:
+        return len(self._queued) + len(self._queued_rolls)
+
+    def flush(self, folders: Collection[str] = ()) -> tuple[int, int]:
+        """Write every queued frame and roll whose file is not current, and the roll of each of *folders*
+        dated since the last flush. Returns (written, failed). A frame whose source is gone is skipped,
+        and a folder that refuses a write is skipped for the session."""
         queued, self._queued = self._queued, {}
+        queued_rolls, self._queued_rolls = self._queued_rolls, set()
         written = failed = 0
         for file_hash, source_path in queued.items():
             half = sidecar_half(file_hash) or 0
@@ -436,7 +589,7 @@ class SidecarMirror:
                 continue
             path = sidecar_path_for(source_path, half)
             try:
-                payload = mirror_payload(self._repo, file_hash, read_payload(path))
+                payload = mirror_payload(self._repo, file_hash, read_payload(path), source_path=source_path)
                 if payload is not None and write_payload(path, payload):
                     written += 1
             except OSError as exc:
@@ -446,4 +599,18 @@ class SidecarMirror:
             except Exception:
                 failed += 1
                 logger.exception("Sidecar write failed for %s", source_path)
+        for roll_id in queued_rolls | set(rolls.folder_rolls_holding(self._repo, folders)):
+            stamp = rolls.roll_updated_at(self._repo, roll_id)
+            if stamp is None or self._checked_rolls.get(roll_id) == stamp:
+                continue
+            found = plan_roll_file_write(self._repo, roll_id)
+            folder = os.path.dirname(found[0]) if found is not None else ""
+            try:
+                if found is not None and folder not in self._unwritable_dirs and write_payload(*found):
+                    written += 1
+                self._checked_rolls[roll_id] = stamp
+            except OSError as exc:
+                failed += 1
+                self._unwritable_dirs.add(folder)
+                logger.warning("Roll file write failed in %s, skipping that folder: %s", folder, exc)
         return written, failed

@@ -694,7 +694,7 @@ Extra files beside the print. Each has a switch on the left and a one-time actio
 
 *   **Printing Notes**: a marked-up copy of the frame with its dodge and burn and print settings, as a darkroom printer keeps. **Preview** shows it (`Shift+N`); **Export Notes** saves it.
 *   **Auto Density / Grade**: **Bake on Export** fixes the automatic brightness and contrast of each exported frame, so they do not change later. **Bake to Roll** does it for every visible frame now.
-*   **Edit Sidecars**: **Save on Export** writes a `.negpy` file with the edit beside each source. **Export Sidecars** writes them for all visible frames. **Keep Current** updates each frame's file as you work, so another computer can open your edits. Right-click a frame → **Load Edit from Sidecar…** reads one back. When a folder opens, **Newer Sidecars** lists edits that another computer saved later: **Load Selected** takes them, **Keep Mine** stops asking.
+*   **Edit Sidecars**: **Save on Export** writes a `.negpy` file with the edit beside each source. **Export Sidecars** writes them for all visible frames. **Keep Current** updates each frame's file as you work, so another computer can open your edits. Right-click a frame → **Load Edit from Sidecar…** reads one back. When a folder opens, **Newer Sidecars** lists edits that another computer saved later: **Load Selected** takes them, **Keep Mine** stops asking. A folder roll's settings travel the same way, in a `.negpy-roll` file in its folder.
 
 <!-- panel:contact_sheet -->
 ### Contact Sheet

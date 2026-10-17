@@ -222,3 +222,53 @@ def test_a_reset_frame_takes_its_rolls_frame_seed(repo, tmp_path):
     session.state.active_roll_id = roll
 
     assert session._reset_frame({"name": "a.tif", "path": path, "hash": "a"}).geometry.autocrop_ratio == "6:7"
+
+
+def test_no_roll_migration_dates_a_roll(repo, monkeypatch):
+    """A migration's rewrite is not a newer roll file for another computer to take."""
+    from negpy.services.assets.migrations import roll_fields
+
+    monkeypatch.setattr(rolls.time, "time", lambda: 100.0)
+    roll = rolls.create_virtual_roll(repo, "Roll", ["/r/a.tif"])
+    repo.save_file_settings(
+        "a", replace(_crop(auto=True), process=replace(WorkspaceConfig().process, white_point_offset=0.1)), file_path="/r/a.tif"
+    )
+    rolls.set_roll_defaults(repo, roll, cast_removal_strength=0.4, autocrop_ratio="3:2")
+    for card in ("process", "sensor", "cast_removal", "autocrop"):
+        rolls.set_frame_override(repo, roll, "a", card, True)
+    rolls.set_section_push(repo, roll, "tone", {"toe": 0.3})
+    rolls.set_section_push(repo, roll, "geometry", {"crop_rect": (0.1, 0.1, 0.9, 0.9)})
+    assert rolls.roll_updated_at(repo, roll) == 100.0
+
+    monkeypatch.setattr(rolls.time, "time", lambda: 200.0)
+    for migrate in (
+        roll_fields.migrate_baseline_card_split,
+        roll_fields.migrate_paper_card_split,
+        roll_fields.migrate_linear_raw_card_split,
+        roll_fields.migrate_new_roll_field_locks,
+        roll_fields.migrate_cast_removal_to_frames,
+        roll_fields.migrate_auto_crop_roll_locks,
+        roll_fields.migrate_crop_to_frames,
+    ):
+        migrate(repo)
+
+    assert rolls.roll_updated_at(repo, roll) == 100.0
+    assert rolls.frame_override_cards(repo, roll, "a") == {"process", "baseline", "sensor", "demosaic"}
+    assert rolls.frame_seed(repo, roll) == {"cast_removal_strength": 0.4, "autocrop_ratio": "3:2"}
+
+
+def test_a_roll_file_from_before_crop_left_the_roll_is_migrated_on_read():
+    from negpy.services.assets.migrations.roll_fields import migrate_roll_entry
+
+    entry = {
+        "defaults": {"cast_removal_strength": 0.4, "crop_from_auto": True, "hue_trim": 2.0},
+        "frame_overrides": {"a": ["auto_crop", "cast_removal", "sensor"], "b": ["autocrop"]},
+        "section_pushes": {"geometry": {"crop_rect": [0, 0, 1, 1], "fine_rotation": 1.0}},
+    }
+
+    migrate_roll_entry(entry, 2)
+
+    assert entry["defaults"] == {"hue_trim": 2.0}
+    assert entry["frame_seed"] == {"cast_removal_strength": 0.4, "crop_from_auto": True}
+    assert entry["frame_overrides"] == {"a": ["demosaic", "sensor"]}
+    assert entry["section_pushes"] == {"geometry": {"fine_rotation": 1.0}, "autocrop": {"crop_rect": [0, 0, 1, 1]}}
