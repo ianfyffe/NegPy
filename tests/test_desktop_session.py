@@ -2609,26 +2609,30 @@ class ResetKeepsScanSetup(unittest.TestCase):
         self.assertIn("demosaic", rolls.frame_override_cards(self.repo, roll_id, "hash1"))
 
     def test_loading_a_sidecar_replaces_the_edit_as_one_undo_step(self):
-        import tempfile
-
         from negpy.services.assets import rolls
-        from negpy.services.assets.sidecar import write_sidecar
 
         roll_id = self._own_linear_raw_then_reset()
         own = self.session.state.config
         before = self.session.state.undo_index
-        with tempfile.TemporaryDirectory() as d:
-            path = write_sidecar(
-                f"{d}/frame.tif",
-                replace(own, process=replace(own.process, linear_raw=False), exposure=replace(own.exposure, density=0.77)),
-            )
-            self.assertTrue(self.session.load_edit_from_sidecar(path))
-            self.assertFalse(self.session.load_edit_from_sidecar(f"{d}/missing.negpy"))
+        theirs = replace(own, process=replace(own.process, linear_raw=False), exposure=replace(own.exposure, density=0.77))
+
+        self.assertTrue(self.session.load_edit_from_sidecar(theirs, saved_at=123.0))
 
         self.assertEqual(self.session.state.config.exposure.density, 0.77)
         self.assertEqual(self.repo.load_file_settings("hash1").exposure.density, 0.77)
+        self.assertEqual(self.repo.load_file_updated_at("hash1"), 123.0)
         self.assertIn("demosaic", rolls.frame_override_cards(self.repo, roll_id, "hash1"))
         self.assertEqual(self.session.state.undo_index, before + 1)
+
+    def test_a_reload_drops_a_slider_preview_instead_of_saving_it(self):
+        self.repo.save_file_settings("hash1", self.session.state.config, file_path=f"{self.tmp.name}/a.raw", updated_at=50.0)
+        own = self.session.state.config
+        self.session.update_config(replace(own, exposure=replace(own.exposure, density=0.33)))
+
+        self.session.reload_current_file()
+
+        self.assertEqual(self.repo.load_file_updated_at("hash1"), 50.0)
+        self.assertNotEqual(self.session.state.config.exposure.density, 0.33)
 
     def test_a_paste_locks_a_card_that_differs_from_the_roll(self):
         from negpy.services.assets import rolls

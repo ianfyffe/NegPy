@@ -831,14 +831,19 @@ def _without_parts(assets: list, parts: set) -> list:
 
 class AssetDiscoveryWorker(QObject):
     """
-    Background worker for file system crawling and hashing.
+    Background worker for file system crawling and hashing. With a repository, it also reads the
+    found frames' sidecars against it; the repository keeps one connection per thread, so reads are safe here.
     """
 
     progress = pyqtSignal(int, int, str)
-    finished = pyqtSignal(list)
+    finished = pyqtSignal(list, object)  # assets, SidecarPlan or None
     error = pyqtSignal(str)
     rgb_grouped = pyqtSignal(dict)  # RGB-scan grouping outcome; the controller decides how loudly to say it
     splits_detected = pyqtSignal(dict)  # {path: (split, thickness, crop_rect|None, axis)}, for AutoDetectAllSplitsTask
+
+    def __init__(self, repo=None) -> None:
+        super().__init__()
+        self._repo = repo
 
     def _map_files(
         self,
@@ -960,7 +965,18 @@ class AssetDiscoveryWorker(QObject):
                 halves.setdefault(half["path"], []).append(half)
             valid_assets = [h for a in valid_assets for h in (halves.get(a["path"]) or [a] if a["path"] in split_paths else [a])]
 
-        self.finished.emit(valid_assets)
+        self.finished.emit(valid_assets, self._plan_sidecars(valid_assets))
+
+    def _plan_sidecars(self, assets: list):
+        if self._repo is None:
+            return None
+        from negpy.services.assets.sidecar import plan_frame_sidecars
+
+        try:
+            return plan_frame_sidecars(self._repo, assets)
+        except Exception:
+            logger.exception("Sidecar scan failed")
+            return None
 
     def _expand_half_frames(
         self,

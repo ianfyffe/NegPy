@@ -5,13 +5,14 @@ drops that key and keeps the edit."""
 import json
 import os
 import tempfile
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from negpy.domain.models import WorkspaceConfig
 from negpy.features.exposure.normalization import BOUNDS_VERSION
 from negpy.kernel.system.logging import get_logger
 from negpy.kernel.system.paths import apply_umask_mode
+from negpy.services.assets.rolls import unforked_hash
 
 logger = get_logger(__name__)
 
@@ -229,6 +230,129 @@ def promote_sidecars(repo, assets: List[dict]) -> None:
             composite=bool(a.get("hdr_paths") or a.get("stitch_paths")),
             forked="#roll:" in a["hash"],
         )
+
+
+DECLINED_KEY = "sidecar_offers_declined"
+
+
+class SidecarOffer(NamedTuple):
+    """An edit another computer saved after the one here. ``key`` and ``saved_at`` identify the version
+    Keep Mine declines; ``label`` names the row in the Newer Sidecars dialog."""
+
+    asset: Dict[str, Any]
+    config: WorkspaceConfig
+    saved_at: float
+
+    @property
+    def key(self) -> str:
+        return str(self.asset["hash"])
+
+    @property
+    def label(self) -> str:
+        return str(self.asset.get("name") or os.path.basename(self.asset["path"]))
+
+
+@dataclass
+class SidecarPlan:
+    """What a folder's sidecars hold that this computer lacks: edits to fill (asset, config, saved_at),
+    marks to merge (asset, sync) and edits to offer. Built with reads only, so it runs off the UI thread;
+    ``apply_sidecar_plan`` and ``offers_from_plan`` check each entry again."""
+
+    fill: List[tuple[Dict[str, Any], WorkspaceConfig, float]] = field(default_factory=list)
+    merge: List[tuple[Dict[str, Any], SidecarSync]] = field(default_factory=list)
+    offer: List[SidecarOffer] = field(default_factory=list)
+
+    def without_edits_for(self, keep: Callable[[Dict[str, Any]], bool]) -> "SidecarPlan":
+        """This plan with the fills and offers of the assets *keep* rejects; their marks still merge."""
+        return SidecarPlan([f for f in self.fill if keep(f[0])], list(self.merge), [o for o in self.offer if keep(o.asset)])
+
+
+def _mark_is_newer(repo, file_hash: str, sync: SidecarSync) -> bool:
+    record = repo.load_mark_record(file_hash)
+    if sync.mark_at is None or (record is not None and sync.mark_at <= record[1]):
+        return False
+    return sync.mark != (record[0] if record else None)
+
+
+def plan_frame_sidecars(repo, assets: List[dict]) -> SidecarPlan:
+    """Read each frame's sidecar and compare it with the DB. A frame with no edit here fills from its file;
+    an edit here older than the file's and different from it is offered the file's; a newer mark of a
+    different value merges into the shared hash. A roll fork takes only the mark, and a composite has no sidecar."""
+    plan = SidecarPlan()
+    for asset in assets:
+        file_hash, path = asset.get("hash") or "", asset.get("path") or ""
+        if not file_hash or not path or asset.get("hdr_paths") or asset.get("stitch_paths"):
+            continue
+        data = read_payload(sidecar_path_for(path, int(asset.get("half") or 0)))
+        if data is None:
+            continue
+        try:
+            config = config_from_payload(data) if "#roll:" not in file_hash else None
+        except Exception as exc:
+            logger.warning("Failed to load sidecar for %s: %s", path, exc)
+            config = None
+        sync = sync_from_payload(data) or SidecarSync()
+        if config is not None:
+            local_at = repo.load_file_updated_at(file_hash)
+            saved_at = sync.saved_at or 0.0
+            if local_at is None:
+                plan.fill.append((asset, config, saved_at))
+            elif saved_at > local_at and not same_edit(config, repo.load_file_settings(file_hash)):
+                plan.offer.append(SidecarOffer(asset, config, saved_at))
+        if _mark_is_newer(repo, unforked_hash(file_hash), sync):
+            plan.merge.append((asset, sync))
+    return plan
+
+
+def apply_sidecar_plan(repo, plan: SidecarPlan) -> tuple[list[str], list[str]]:
+    """Write the plan's fills and marks. Returns (hashes whose edit was filled, hashes whose mark changed).
+    A frame that took an edit since the plan is not filled, and a whole frame whose path still has
+    a saved edit takes that edit instead (``load_or_promote``)."""
+    filled: list[str] = []
+    merged: list[str] = []
+    for asset, config, saved_at in plan.fill:
+        file_hash, path = asset["hash"], asset["path"]
+        if repo.load_file_updated_at(file_hash) is not None:
+            continue
+        if not asset.get("half") and (found := repo.load_file_settings_by_path(path)) is not None:
+            repo.rehome_file_settings(found[0], file_hash, path)
+            continue
+        repo.save_file_settings(file_hash, config, file_path=path, updated_at=saved_at)
+        filled.append(file_hash)
+    for asset, sync in plan.merge:
+        if merge_sidecar_mark(repo, asset["hash"], asset["path"], sync):
+            merged.append(unforked_hash(asset["hash"]))
+    return filled, merged
+
+
+def merge_sidecar_mark(repo, file_hash: str, source_path: str, sync: SidecarSync) -> bool:
+    """Take the file's mark into the shared hash when it is newer and different. True when the mark changed."""
+    shared = unforked_hash(file_hash)
+    if not _mark_is_newer(repo, shared, sync):
+        return False
+    repo.save_file_mark(shared, sync.mark, file_path=source_path, marked_at=sync.mark_at)
+    return True
+
+
+def offers_from_plan(repo, plan: SidecarPlan) -> list[SidecarOffer]:
+    """The plan's offers still newer than the edit here, minus the versions Keep Mine declined."""
+    declined = repo.get_global_setting(DECLINED_KEY, default=None) or {}
+    offers = []
+    for offer in plan.offer:
+        local = repo.load_file_updated_at(offer.asset["hash"])
+        if local is not None and offer.saved_at > local and declined.get(offer.key) != offer.saved_at:
+            offers.append(offer)
+    return offers
+
+
+def decline_sidecar_offers(repo, offers) -> None:
+    """Remember these versions as declined; a later save to the file asks again."""
+    if not offers:
+        return
+    declined = dict(repo.get_global_setting(DECLINED_KEY, default=None) or {})
+    for offer in offers:
+        declined[offer.key] = offer.saved_at
+    repo.save_global_setting(DECLINED_KEY, declined)
 
 
 def sidecar_half(file_hash: str) -> Optional[int]:
