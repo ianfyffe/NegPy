@@ -149,6 +149,7 @@ class LiveViewWindow(QDialog):
     closed = pyqtSignal()
     scanRequested = pyqtSignal()
     retakeRequested = pyqtSignal()
+    focusRequested = pyqtSignal()
     meterRequested = pyqtSignal()
 
     def __init__(self, parent=None, *, repo=None) -> None:
@@ -164,8 +165,13 @@ class LiveViewWindow(QDialog):
         self.scan_btn = labeled_action("fa5s.camera-retro", " Scan", "Capture this frame, or stop the capture")
         self.scan_btn.setFixedHeight(SCAN_BUTTON_HEIGHT)
         self.retake_btn = labeled_action("fa5s.redo", " Retake", "Re-capture the current frame without advancing the counter")
+        self.focus_btn = labeled_action(
+            "fa5s.bullseye", " Focus", "Run the camera's autofocus once; needs a body with an autofocus drive over USB"
+        )
+        self.focus_btn.setEnabled(False)
         bar.addWidget(self.scan_btn, 2)
         bar.addWidget(self.retake_btn, 1)
+        bar.addWidget(self.focus_btn, 1)
         # One RAW probe sets the shutter for the light as lit. Hidden with the exposure steppers.
         self.meter_btn = labeled_action(
             "fa5s.tachometer-alt",
@@ -264,6 +270,7 @@ class LiveViewWindow(QDialog):
 
         self.scan_btn.clicked.connect(lambda: self.scanRequested.emit())
         self.retake_btn.clicked.connect(lambda: self.retakeRequested.emit())
+        self.focus_btn.clicked.connect(lambda: self.focusRequested.emit())
         self.meter_btn.clicked.connect(lambda: self.meterRequested.emit())
 
         # Pin Scan as the dialog's permanent default button. Without this, Qt hands "default"
@@ -276,6 +283,7 @@ class LiveViewWindow(QDialog):
             "live_view_scan": self.scan_btn,
             "live_view_scan_space": self.scan_btn,
             "live_view_retake": self.retake_btn,
+            "live_view_focus": self.focus_btn,
             "live_view_meter": self.meter_btn,
             "live_view_histogram": self.histogram_btn,
             "live_view_zebra": self.zebra_btn,
