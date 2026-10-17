@@ -119,7 +119,7 @@ from negpy.domain.models import (
 from negpy.services.assets.capture_modes import BLEND, SINGLE, record_capture_mode
 from negpy.services.assets.composites import forget_composite, frame_count, part_paths, restore_maps, saved_composites, source_files
 from negpy.services.assets.triplets import applied_triplets, forget_triplets, saved_triplets
-from negpy.services.assets import rolls
+from negpy.services.assets import follow, rolls
 from negpy.services.assets.rehome import (
     folder_roll_missing,
     gone_member_paths,
@@ -1854,7 +1854,11 @@ class AppController(QObject):
         return [p for p in paths if os.path.exists(p)]
 
     def restore_session(self) -> None:
-        """Re-loads the previous session's files and reselects the active one."""
+        """Re-loads the previous session's files and reselects the active one, following a folder
+        another computer renamed."""
+        saved = self.session.repo.get_global_setting("session_files", []) or []
+        gone = {os.path.dirname(p) for p in saved if isinstance(p, str) and not os.path.exists(p)}
+        self._follow_moved_rolls(rolls.folder_rolls_holding(self.session.repo, gone))
         paths = self.saved_session_paths()
         if not paths:
             return
@@ -2069,6 +2073,7 @@ class AppController(QObject):
     def import_subfolders_as_rolls(self, parent_path: str) -> List[str]:
         """Recognize every roll folder under *parent_path* as its own roll, and
         register it as a search root -- nothing is opened or loaded."""
+        self._follow_moved_rolls()
         roll_ids = rolls.import_subfolders_as_rolls(self.session.repo, parent_path)
         if roll_ids:
             self._register_library_roots([parent_path])
@@ -2084,6 +2089,7 @@ class AppController(QObject):
         """Walk every Import Subfolders source again under the current discovery filters;
         returns (new rolls, rolls dropped by a filter)."""
         repo = self.session.repo
+        self._follow_moved_rolls()
         dropped = rolls.prune_filtered_rolls(repo)
         before = len(rolls.saved_rolls(repo))
         for source in rolls.import_sources(repo):
@@ -2101,6 +2107,9 @@ class AppController(QObject):
         if not present:
             self.set_status(tr("Folder is no longer on disk"), 3000)
             return
+        for folder in present:
+            if (roll_id := follow.roll_moved_to(self.session.repo, folder)) is not None:
+                self._follow_folder(roll_id, folder)
         if not add_to_session:
             # Recognizing every opened folder is independent of which one, if any,
             # becomes the active roll -- that only makes sense for a single one.
@@ -2123,8 +2132,11 @@ class AppController(QObject):
             return
         if entry["kind"] == "folder":
             if folder_roll_missing(self.session.repo, roll_id):
-                self.roll_folder_missing.emit(roll_id)
-                return
+                self._follow_moved_rolls([roll_id])
+                if folder_roll_missing(self.session.repo, roll_id):
+                    self.roll_folder_missing.emit(roll_id)
+                    return
+                entry = rolls.roll_for_id(self.session.repo, roll_id) or entry
             paths = [entry["folder_path"]]
             self._extras_notice = roll_id if self._unnoticed_extras(roll_id, entry) else None
         else:
@@ -2298,6 +2310,9 @@ class AppController(QObject):
                 return False
             if old_path:
                 self.rehome_folder(old_path, new_path)
+            # Another computer follows the rename by the former names in the roll file.
+            if os.path.exists(roll_sidecar_path(new_path)):
+                export_roll_sidecar(self.session.repo, roll_id)
         rolls.rename_roll(self.session.repo, roll_id, new_name)
         return True
 
@@ -2320,6 +2335,24 @@ class AppController(QObject):
         for old_folder, new_folder in sorted(moves, key=lambda move: len(move[0]), reverse=True):
             self.rehome_folder(old_folder, new_folder)
         self.open_roll(roll_id)
+
+    def _follow_moved_rolls(self, roll_ids: Optional[Collection[str]] = None) -> None:
+        """Follow each folder roll (every one by default) whose folder another computer renamed."""
+        repo = self.session.repo
+        for roll_id in rolls.saved_rolls(repo) if roll_ids is None else roll_ids:
+            if (folder := follow.moved_folder(repo, roll_id)) is not None:
+                self._follow_folder(roll_id, folder)
+
+    def _follow_folder(self, roll_id: str, folder: str) -> None:
+        """Point the folder roll and every path stored under its old folder at *folder*."""
+        repo = self.session.repo
+        old, _reason = relink_folder_roll(repo, roll_id, folder)
+        if not old:
+            return
+        self.session.rehome_folder_paths(old, folder)
+        self.invalidate_library_walk()
+        rolls.take_former_names(repo, roll_id, follow.former_names(folder))
+        self.library_cleared.emit()
 
     def rehome_folder(self, old_path: str, new_path: str) -> None:
         """Point every stored and loaded path under *old_path* at *new_path*."""
