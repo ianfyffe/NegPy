@@ -129,6 +129,8 @@ class ExportSidebar(BaseSidebar):
         self.controller.printing_notes_changed.connect(self._on_printing_notes_changed)
 
         self.sidecars_enabled_btn.toggled.connect(lambda _: self.update_timer.start())
+        self.keep_current_btn.toggled.connect(lambda checked: self.controller.set_keep_sidecars_current(checked))
+        self.controller.keep_sidecars_current_changed.connect(self._on_keep_current_changed)
         self.export_sidecars_btn.clicked.connect(self._on_export_sidecars)
 
         self.bake_on_export_btn.toggled.connect(lambda checked: self.controller.set_bake_on_export(checked))
@@ -234,6 +236,11 @@ class ExportSidebar(BaseSidebar):
         self.printing_notes_preview_btn.setChecked(active)
         self.printing_notes_preview_btn.blockSignals(False)
 
+    def _on_keep_current_changed(self, active: bool) -> None:
+        self.keep_current_btn.blockSignals(True)
+        self.keep_current_btn.setChecked(active)
+        self.keep_current_btn.blockSignals(False)
+
     def _on_bake_on_export_changed(self, active: bool) -> None:
         self.bake_on_export_btn.blockSignals(True)
         self.bake_on_export_btn.setChecked(active)
@@ -284,7 +291,11 @@ class ExportSidebar(BaseSidebar):
             self.cs_output_path_edit.setText(path)
 
     def apply_shortcut_tooltips(self) -> None:
-        for btn, action in ((self.contact_sheet_btn, "contact_sheet"), (self.soft_proof_btn, "toggle_soft_proof")):
+        for btn, action in (
+            (self.contact_sheet_btn, "contact_sheet"),
+            (self.soft_proof_btn, "toggle_soft_proof"),
+            (self.keep_current_btn, "toggle_keep_current"),
+        ):
             btn.setToolTip(wrap_tooltip(tooltip_with_shortcut(btn.plain_tooltip, action)))
 
     def _add_flat_master_section(self) -> None:
@@ -956,7 +967,7 @@ class ExportSidebar(BaseSidebar):
     # --- Edit sidecars -------------------------------------------------------
 
     def _add_sidecars_section(self) -> None:
-        """Collapsible EXPORT EDITS SIDECARS section: on-export toggle + manual export, side by side."""
+        """Collapsible EXPORT EDITS SIDECARS section: Keep Current and the on-export toggle side by side, then the manual export."""
         conf = self.state.config.export
 
         content = QWidget()
@@ -964,7 +975,15 @@ class ExportSidebar(BaseSidebar):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(6)
 
-        btn_row = QHBoxLayout()
+        toggle_row = QHBoxLayout()
+        self.keep_current_btn = self._small_toggle(
+            "fa5s.sync-alt",
+            "Keep Current",
+            self.state.keep_sidecars_current,
+            "When on, each saved edit and mark is written to a .negpy sidecar next to its source frame, "
+            "so another computer that opens the folder finds it. Edits stay in the database too.",
+        )
+        toggle_row.addWidget(self.keep_current_btn)
 
         self.sidecars_enabled_btn = self._small_toggle(
             "fa5s.file-export",
@@ -972,8 +991,10 @@ class ExportSidebar(BaseSidebar):
             conf.export_sidecars_enabled,
             "When on, every export also writes a .negpy edit sidecar next to each source frame. Edits stay in the database too.",
         )
-        btn_row.addWidget(self.sidecars_enabled_btn)
+        toggle_row.addWidget(self.sidecars_enabled_btn)
+        content_layout.addLayout(toggle_row)
 
+        btn_row = QHBoxLayout()
         self.export_sidecars_btn = labeled_action("fa5s.file-code", " Export Sidecars", "Write edit sidecars for all visible frames now")
         self.export_sidecars_btn.setObjectName("export_sidecars_btn")
         btn_row.addWidget(self.export_sidecars_btn)
@@ -1334,6 +1355,7 @@ class ExportSidebar(BaseSidebar):
             if not self.cs_output_path_edit.hasFocus():
                 self.cs_output_path_edit.setText(conf.contact_sheet_output_path)
             self.sidecars_enabled_btn.setChecked(conf.export_sidecars_enabled)
+            self.keep_current_btn.setChecked(self.state.keep_sidecars_current)
             self.bake_on_export_btn.setChecked(self.state.bake_on_export)
             self.printing_notes_preview_btn.setChecked(self.state.printing_notes)
             self.intent_btn.setCurrentIndex(self._state_intent())
@@ -1366,6 +1388,7 @@ class ExportSidebar(BaseSidebar):
             self.display_combo,
             self.cs_output_path_edit,
             self.sidecars_enabled_btn,
+            self.keep_current_btn,
             self.bake_on_export_btn,
             self.flat_peek_btn,
             self.printing_notes_preview_btn,

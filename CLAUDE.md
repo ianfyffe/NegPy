@@ -33,7 +33,7 @@ NegPy is a film-negative processing desktop app (PyQt6 + WebGPU). Images flow th
 
 `WorkspaceConfig` (`negpy/domain/models.py`) is a frozen dataclass of per-feature configs and the single source of truth for an edit. Change it via `dataclasses.replace`, never mutate. `to_dict`/`from_flat_dict` serialize to one **flat** key namespace, so a duplicate field name across sub-configs silently clobbers.
 
-Edits persist in SQLite (`edits.db`, keyed by content hash), optionally mirrored to `.negpy` JSON sidecars next to sources. The DB wins; a loaded sidecar is promoted into the DB (`negpy/services/assets/sidecar.py`, `session.py`).
+Edits persist in SQLite (`edits.db`, keyed by content hash, each edit and mark dated), optionally mirrored to `.negpy` JSON sidecars next to sources (`negpy/services/assets/sidecar.py`). A sidecar is the flat config plus `bounds_version` and the reserved key `sync` (`saved_at`, `mark`, `mark_at`), which no config field may take. Keep Current queues a frame on each repository write (`add_write_observer`); `SidecarMirror.flush` keeps the newer of file and DB per part. The DB wins; a sidecar fills a DB miss.
 
 On Windows, `desktop.py` checks data-folder access before it imports app configuration. A blocked default folder opens a native dialog that suggests Local AppData or another folder; no data is copied. The choice is saved under Local AppData and outranks Documents; `NEGPY_USER_DIR` outranks it.
 

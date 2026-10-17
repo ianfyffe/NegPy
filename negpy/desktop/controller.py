@@ -133,7 +133,17 @@ from negpy.services.assets.half_frame import (
     split_scans,
 )
 from negpy.services.export.templating import path_safe, render_export_filename
-from negpy.services.assets.sidecar import load_or_promote, promote_sidecars, sidecar_path_for, write_sidecar
+from negpy.services.assets.sidecar import (
+    SidecarMirror,
+    load_or_promote,
+    mirror_payload,
+    promote_sidecars,
+    read_payload,
+    sidecar_path_for,
+    sync_from_repo,
+    write_payload,
+    write_sidecar,
+)
 from negpy.services.assets.frame_merge import carry_edit, carry_sidecar
 from negpy.services.export.frame_merge import (
     MERGEABLE_KINDS,
@@ -236,6 +246,8 @@ logger = get_logger(__name__)
 # Busy toasts are cleared when the frame lands; the timeout is only a backstop for a
 # render that dies without reaching _on_render_finished.
 _BUSY_TOAST_MS = 30000
+# Keep Current writes trail the last save by this much, so a run of saves costs one file write.
+SIDECAR_FLUSH_MS = 2000
 # Batch owners that share norm_thread (and its CPU) with the background thumbnail
 # refresh — the only ones a running refresh actually needs to get out of the way of.
 _NORM_THREAD_BATCH_OWNERS = frozenset({"autocrop", "normalization"})
@@ -531,6 +543,8 @@ class AppController(QObject):
     flat_output_changed = pyqtSignal(bool)
     linear_output_changed = pyqtSignal(bool)
     bake_on_export_changed = pyqtSignal(bool)
+    keep_sidecars_current_changed = pyqtSignal(bool)
+    _edit_saved = pyqtSignal(str, str)  # file_hash, file_path; a repository write, carried to the UI thread
     flat_peek_changed = pyqtSignal(bool)
     negative_peek_changed = pyqtSignal(bool)
     embedded_peek_changed = pyqtSignal(bool)
@@ -1127,6 +1141,16 @@ class AppController(QObject):
         self.capture_worker.light_temp_polled.connect(self.light_temp_polled.emit)
 
         self.session.active_file_changing.connect(self._update_thumbnail_from_state)
+        self._sidecar_mirror = SidecarMirror(self.session.repo)
+        self._sidecar_flush_timer = QTimer(self)
+        self._sidecar_flush_timer.setSingleShot(True)
+        self._sidecar_flush_timer.setInterval(SIDECAR_FLUSH_MS)
+        self._sidecar_flush_timer.timeout.connect(self.flush_sidecars)
+        self._edit_saved.connect(self._queue_sidecar)
+        add_write_observer = getattr(self.session.repo, "add_write_observer", None)
+        if add_write_observer is not None:
+            add_write_observer(self._edit_saved.emit)
+        self.session.active_file_changing.connect(self.flush_sidecars)
         self.session.session_emptied.connect(self._render_memo.clear)
         self.session.session_emptied.connect(self._strip_memo.clear)
         self.session.file_selected.connect(self._on_file_selected_load)
@@ -1837,6 +1861,8 @@ class AppController(QObject):
         if rename_folder:
             entry = rolls.roll_for_id(self.session.repo, roll_id)
             old_path = entry.get("folder_path", "") if entry else ""
+            # A sidecar queued under the old path would land in a folder that is gone.
+            self.flush_sidecars()
             new_path = rolls.rename_folder_roll_disk(self.session.repo, roll_id, new_name)
             if new_path is None:
                 return False
@@ -6255,6 +6281,8 @@ class AppController(QObject):
         A frame whose edit did not move keeps its sources."""
         self._end_batch("frame_merge")
         self.session.save_active_edit()
+        # Queued sidecars are written before their sources go to the Trash, so they go with them.
+        self.flush_sidecars()
         repo = self.session.repo
         index_by_path = {f["path"]: i for i, f in enumerate(self.state.uploaded_files) if composite_kind(f)}
         replacements: dict[int, dict] = {}
@@ -7254,6 +7282,28 @@ class AppController(QObject):
         self.session.save_flat_output_prefs()
         self.linear_output_changed.emit(enabled)
 
+    def set_keep_sidecars_current(self, enabled: bool) -> None:
+        """Toggle the app-wide Keep Current. Turning it on writes the frame on screen without waiting for its next save."""
+        if self.state.keep_sidecars_current == enabled:
+            return
+        self.state.keep_sidecars_current = enabled
+        self.session.repo.save_global_setting("keep_sidecars_current", enabled)
+        self.keep_sidecars_current_changed.emit(enabled)
+        if enabled and self.state.current_file_hash:
+            self._queue_sidecar(self.state.current_file_hash, self.state.current_file_path or "")
+
+    def _queue_sidecar(self, file_hash: str, file_path: str) -> None:
+        if not self.state.keep_sidecars_current:
+            return
+        self._sidecar_mirror.queue(file_hash, file_path)
+        if self._sidecar_mirror.pending():
+            self._sidecar_flush_timer.start()
+
+    def flush_sidecars(self) -> None:
+        """Write every queued Keep Current sidecar now. Safe with nothing queued."""
+        self._sidecar_flush_timer.stop()
+        self._sidecar_mirror.flush()
+
     def set_bake_on_export(self, enabled: bool) -> None:
         """Toggle the app-wide Bake on Export: freeze Auto Density / Auto Grade on every export."""
         if self.state.bake_on_export == enabled:
@@ -7946,7 +7996,7 @@ class AppController(QObject):
             return
 
         if self.state.config.export.export_sidecars_enabled:
-            self._write_edit_sidecars(files)
+            self._write_edit_sidecars(files, keep_newer=True)
 
         if self.state.bake_on_export:
             self._bake_auto_density_grade_for_export(files)
@@ -8053,6 +8103,8 @@ class AppController(QObject):
         hashes = [f["hash"] for f in files if f["hash"] != self.state.current_file_hash]
         if not hashes:
             return True
+        # A sidecar another computer wrote since discovery fills its frame first.
+        promote_sidecars(self.session.repo, files)
         saved = self.session.repo.saved_hashes(hashes)
         unopened = sum(1 for h in hashes if h not in saved)
         if not unopened:
@@ -8099,7 +8151,7 @@ class AppController(QObject):
             return
 
         if self.state.config.export.export_sidecars_enabled:
-            self._write_edit_sidecars(files)
+            self._write_edit_sidecars(files, keep_newer=True)
 
         if self.state.bake_on_export:
             self._bake_auto_density_grade_for_export(files)
@@ -8266,10 +8318,11 @@ class AppController(QObject):
         paths = [str(f.asset.get("path", "")) for f in frames]
         return os.path.basename(os.path.dirname(paths[0])) if paths and paths[0] else ""
 
-    def _write_edit_sidecars(self, files: list[dict]) -> tuple[int, int, int]:
+    def _write_edit_sidecars(self, files: list[dict], keep_newer: bool = False) -> tuple[int, int, int]:
         """Write a .negpy edit sidecar next to each source. Returns (written, failed, skipped), so a
         read-only folder is no silent success. A composite or a roll fork is skipped: the sidecar
-        beside its path belongs to the shared frame."""
+        beside its path belongs to the shared frame. *keep_newer* keeps a newer edit or mark the file
+        holds, as Keep Current does; a file already current counts as written."""
         repo = self.session.repo
         written = 0
         failed = 0
@@ -8281,7 +8334,15 @@ class AppController(QObject):
             half = int(f.get("half") or 0)
             params = load_or_promote(repo, f["hash"], f["path"], half=half) or self.session.config_for_asset(f)
             try:
-                write_sidecar(f["path"], params, half=half)
+                if keep_newer:
+                    path = sidecar_path_for(f["path"], half)
+                    payload = mirror_payload(repo, f["hash"], read_payload(path), fallback=params)
+                    if payload is not None and not write_payload(path, payload):
+                        failed += 1
+                        continue
+                elif write_sidecar(f["path"], params, half=half, sync=sync_from_repo(repo, f["hash"])) is None:
+                    failed += 1
+                    continue
                 written += 1
             except Exception as exc:
                 failed += 1

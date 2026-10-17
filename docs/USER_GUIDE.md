@@ -250,7 +250,7 @@ Thumbnails are positives. Until you open a frame, it shows a quick inversion of 
 Right-click a thumbnail, or use shortcuts, to mark frames (multi-selection works):
 
 *   **Keep**: a check badge.
-*   **Reject**: a cross badge and dimming. Batch exports and sidecar writes skip it. The file never changes.
+*   **Reject**: a cross badge and dimming. Batch exports and Export Sidecars skip it; Keep Current still writes the mark. The file never changes.
 
 #### Reading the badges
 
@@ -1003,7 +1003,7 @@ The printer's record for this frame, as described under Dodge & Burn. **Preview*
 <!-- panel:export_sidecars -->
 #### Sidecars
 
-**Save on Export** writes a `.negpy` sidecar next to each source on export. **Export Sidecars** writes them for all visible frames at once. Edits always stay in the database too. A frame with no edit in the database takes its sidecar when its folder opens. **Load Edit from Sidecar…** (right-click a frame) replaces the frame's edit with a chosen `.negpy`, as one undo step.
+**Keep Current** (off by default, app-wide) writes each frame's saved edit and mark to a `.negpy` sidecar next to its source as you work. **Save on Export** writes a `.negpy` sidecar next to each source on export. Both keep a newer edit or mark that another computer saved in the file. **Export Sidecars** writes this computer's edits for all visible frames at once. Edits always stay in the database too. A frame with no edit in the database takes its sidecar when its folder opens. **Load Edit from Sidecar…** (right-click a frame) replaces the frame's edit with a chosen `.negpy`, as one undo step.
 
 <!-- panel:export_bake -->
 #### Auto Density/Grade
@@ -1228,7 +1228,7 @@ The button reads **"Open Releases Page"** when NegPy cannot update itself: a sou
 
 ## Additional Info
 
-*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. Optional `.negpy` sidecars mirror them.
+*   **Database**: edits live in a local SQLite database keyed by file hash, so files can move or be renamed. Optional `.negpy` sidecars mirror them and carry them between computers.
 *   **Saving edits**: written on export, on frame switch, or on save; closing mid-edit before any of these loses unsaved changes.
 *   **Keyboard shortcuts**: [KEYBOARD.md](KEYBOARD.md)
 *   **Filename templating**: [TEMPLATING.md](TEMPLATING.md)
