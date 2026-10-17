@@ -434,3 +434,14 @@ def test_locating_one_folder_finds_its_moved_siblings_by_name_and_files(tmp_path
     assert sorted(moves) == sorted(
         [(a, str(new_parent / "roll A")), (inner, str(new_parent / "roll A" / "rejects")), (b, str(new_parent / "roll B"))]
     )
+
+
+def test_a_rehome_keeps_each_edits_saved_time(repo):
+    repo.save_file_settings("ha", WorkspaceConfig(), file_path=_in(OLD, "a.tif"), updated_at=5.0)
+    repo.save_file_mark("ha", "keeper", file_path=_in(OLD, "a.tif"), marked_at=6.0)
+
+    rehome_path_prefix(repo, OLD, NEW)
+
+    assert repo.load_file_settings_by_path(_in(NEW, "a.tif"))[0] == "ha"
+    assert repo.load_file_updated_at("ha") == 5.0
+    assert repo.load_mark_record("ha") == ("keeper", 6.0)
