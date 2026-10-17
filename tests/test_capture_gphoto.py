@@ -115,6 +115,8 @@ class _Camera:
     def set_single_config(self, name, widget):
         if self._fake.reject_writes:
             raise _Err("[-2] bad parameters")
+        if self._fake.af_fails and name == "autofocusdrive":
+            raise _Err("[-1] Unspecified error")  # Nikon "Out of Focus" reaches the binding as this
         self._fake.writes.append((name, widget.pending))
         self._fake.settle(name, widget.pending)
 
@@ -201,6 +203,7 @@ class FakeGP:
         cameras=(("FAKE-1", "usb:1"),),
         raw_name="capt0001.ARW",
         magnifier="sony",  # "sony" | "canon" | None
+        autofocus=True,  # the body exposes `autofocusdrive`
         aperture_name="f-number",
         capture_target="sdram",
         driver_model="USB PTP Class Camera",
@@ -222,6 +225,7 @@ class FakeGP:
         self.undrained = False
         self.gone = False  # set by unplug(): the body stops answering, as on a pulled cable
         self.reject_writes = False  # a value this body does not offer
+        self.af_fails = False  # the body answers but refuses the drive: it cannot lock focus
         self.readback_error = False
         self.captures = self.previews = 0
         self.writes: list[tuple[str, str]] = []
@@ -244,6 +248,8 @@ class FakeGP:
             self.props["focusmagnifier"] = _Widget(self, "focusmagnifier", "Off,320,240", ["Off", "1", "6.9", "13.7"])
         elif magnifier == "canon":  # ratio only; choices[0] == "1" *is* off
             self.props["eoszoom"] = _Widget(self, "eoszoom", "1", ["1", "5", "10"])
+        if autofocus:
+            self.props["autofocusdrive"] = _Widget(self, "autofocusdrive", 0, [])
         self.Camera = lambda: _Camera(self)
         self.Camera.autodetect = lambda: _CameraList(self._cameras)
 
@@ -504,6 +510,65 @@ def test_magnifier_ratios_are_read_from_the_body(cam):
     assert cam._magnifier_off == "Off"
 
 
+# ---- autofocus --------------------------------------------------------------
+
+
+def test_one_write_runs_the_autofocus_drive():
+    fake = FakeGP()
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    fake.writes.clear()
+    assert camera.has_autofocus()
+    assert camera.autofocus() is True
+    assert fake.writes == [("autofocusdrive", 1)]
+    camera.close()
+
+
+def test_the_autofocus_probe_runs_again_after_a_reopen():
+    fake = FakeGP()
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.has_autofocus()
+    camera.close()
+    del fake.props["autofocusdrive"]
+    camera.open()
+    assert not camera.has_autofocus()
+    camera.close()
+
+
+def test_a_refused_lock_is_reported_and_keeps_the_session(caplog):
+    fake = FakeGP()
+    fake.af_fails = True
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.autofocus() is False
+    assert camera.is_open()
+    assert "did not lock" in caplog.text
+    camera.close()
+
+
+def test_an_autofocus_failure_on_a_gone_body_raises():
+    fake = FakeGP()
+    camera = GphotoCamera(gp_module=fake)
+    camera.open()
+    assert camera.has_autofocus()
+    fake.unplug()
+    with pytest.raises(GphotoError, match="stopped answering"):
+        camera.autofocus()
+    camera.close()
+
+
+def test_published_settings_carry_autofocus_availability(tmp_path):
+    for expected in (True, False):
+        fake = FakeGP(autofocus=expected)
+        path = tmp_path / f"{expected}.json"
+        camera = GphotoCamera(gp_module=fake, jpeg_path=str(tmp_path / "lv.jpg"), settings_path=str(path))
+        camera.open()
+        camera._publish_settings()
+        assert json.loads(path.read_text())["autofocus"] == {"available": expected}
+        camera.close()
+
+
 # ---- other vendors ----------------------------------------------------------
 
 
@@ -718,7 +783,7 @@ def test_live_view_publishes_frames_and_settings(fake, tmp_path):
     finally:
         camera.close()
     assert jpeg.read_bytes().startswith(b"\xff\xd8")
-    assert set(json.loads(settings.read_text())) == {"iso", "shutter", "magnifier"}
+    assert set(json.loads(settings.read_text())) == {"iso", "shutter", "magnifier", "autofocus"}
     assert not camera.is_running()
 
 
@@ -860,7 +925,7 @@ def test_refusing_live_view_still_publishes_the_camera_settings(tmp_path):
     with pytest.raises(LiveViewUnsupported):
         camera.start()
 
-    assert set(json.loads(settings.read_text())) == {"iso", "shutter", "magnifier"}
+    assert set(json.loads(settings.read_text())) == {"iso", "shutter", "magnifier", "autofocus"}
     camera.close()
 
 
