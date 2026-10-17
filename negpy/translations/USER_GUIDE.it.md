@@ -736,14 +736,14 @@ La sua freccia sceglie cosa esportare: questo fotogramma (`Ctrl+E`), i fotogramm
 
 Ricette di esportazione salvate: formato, dimensioni, colore, cartella e nome file. Attiva quelle che vuoi, e **Preimpostazioni di esportazione** scrive ogni fotogramma una volta per preimpostazione. **Gestisci** le modifica. Le preimpostazioni non funzionano con l'uscita Lineare.
 
-<!-- panel:export_alongside src:423d2652 -->
+<!-- panel:export_alongside src:42118d1e -->
 ### Accanto alle esportazioni
 
 File aggiuntivi accanto alla stampa. Ognuno ha un interruttore a sinistra e un'azione una tantum a destra.
 
 *   **Note di stampa**: una copia annotata del fotogramma con la sua schermatura e bruciatura e le impostazioni di stampa, come quella che conserva uno stampatore in camera oscura. **Anteprima** la mostra (`Maiusc+N`); **Esporta note** la salva.
 *   **Densità / gradazione automatica**: **Fissa all'esportazione** fissa la luminosità e il contrasto automatici di ogni fotogramma esportato, così non cambiano in seguito. **Fissa sul rullino** lo fa subito per ogni fotogramma visibile.
-*   **File collaterali di modifica**: **Salva all'esportazione** scrive accanto a ogni sorgente un file `.negpy` con la modifica. **Esporta file collaterali** li scrive per tutti i fotogrammi visibili. **Mantieni aggiornato** aggiorna il file di ogni fotogramma mentre lavori, così un altro computer può aprire le tue modifiche. Clic destro su un fotogramma → **Carica modifica da file collaterale…** ne rilegge uno.
+*   **File collaterali di modifica**: **Salva all'esportazione** scrive accanto a ogni sorgente un file `.negpy` con la modifica. **Esporta file collaterali** li scrive per tutti i fotogrammi visibili. **Mantieni aggiornato** aggiorna il file di ogni fotogramma mentre lavori, così un altro computer può aprire le tue modifiche. Clic destro su un fotogramma → **Carica modifica da file collaterale…** ne rilegge uno. Quando si apre una cartella, **File collaterali più recenti** elenca le modifiche che un altro computer ha salvato dopo: **Carica selezionate** le applica, **Tieni le mie** smette di chiedere.
 
 <!-- panel:contact_sheet src:cc84fd86 -->
 ### Provino a contatto
