@@ -19,6 +19,7 @@ from negpy.services.assets.migrations.flatfield import migrate_legacy_flatfield_
 from negpy.services.assets.migrations.flatfield_layout import migrate_flatfield_sensor_layout
 from negpy.services.assets.gear import GearProfiles
 from negpy.services.assets.migrations.gear_presets import migrate_gear_presets
+from negpy.services.assets.migrations.half_frame_profile import migrate_shared_half_frame_profile
 from negpy.services.assets.migrations.normalization_roll import migrate_legacy_normalization_rolls
 from negpy.services.assets.migrations.positive_auto import migrate_auto_meter_for_positive_frames
 from negpy.services.assets.migrations.roll_fields import (
@@ -315,6 +316,7 @@ def main() -> None:
         migrate_new_roll_field_locks(repo)
         migrate_cast_removal_roll_locks(repo)
         migrate_auto_crop_roll_locks(repo)
+        migrate_shared_half_frame_profile(repo)
         migrate_stale_frame_bounds(repo)
 
         scale = float(repo.get_global_setting("ui_scale", 1.0) or 1.0)

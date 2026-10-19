@@ -259,3 +259,53 @@ def test_load_all_history_reuses_parsed_steps(tmp_path, monkeypatch):
     assert len(parses) == 1
     assert [c for _, c in second[:3]] == [c for _, c in first]
     assert second[3][1].exposure.density == 9.0
+
+
+def test_each_saved_edit_carries_its_saved_time(tmp_path):
+    repo = _repo(tmp_path)
+    repo.save_file_settings("a", WorkspaceConfig(), updated_at=5.0)
+    repo.save_file_settings("b", WorkspaceConfig())
+
+    assert repo.load_file_updated_at("a") == 5.0
+    assert repo.load_file_updated_at("b") > 5.0
+    assert repo.load_file_updated_at("missing") is None
+
+
+def test_a_cleared_mark_keeps_its_date_but_reads_as_unmarked(tmp_path):
+    repo = _repo(tmp_path)
+    repo.save_file_mark("a", "keeper", file_path="/r/a.tif", marked_at=5.0)
+    repo.save_file_mark("a", None, file_path="/r/a.tif", marked_at=9.0)
+
+    assert repo.load_mark_record("a") == (None, 9.0)
+    assert repo.load_mark_record("never") is None
+    assert repo.load_file_marks() == {}
+    assert repo.load_file_marks_by_path() == {}
+    assert repo.database_stats()["file_marks"] == 0
+
+
+def test_rows_from_before_the_date_columns_are_dated_zero(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "edits.db"))
+    conn.execute("CREATE TABLE file_settings (file_hash TEXT PRIMARY KEY, settings_json TEXT)")
+    conn.execute("CREATE TABLE file_marks (file_hash TEXT PRIMARY KEY, mark TEXT NOT NULL)")
+    conn.execute("INSERT INTO file_settings VALUES ('a', '{}')")
+    conn.execute("INSERT INTO file_marks VALUES ('a', 'keeper')")
+    conn.commit()
+    conn.close()
+
+    repo = _repo(tmp_path)
+
+    assert repo.load_file_updated_at("a") == 0.0
+    assert repo.load_mark_record("a") == ("keeper", 0.0)
+
+
+def test_rehoming_and_copying_an_edit_keep_its_dates(tmp_path):
+    repo = _repo(tmp_path)
+    repo.save_file_settings("old", WorkspaceConfig(), file_path="/r/a.tif", updated_at=5.0)
+    repo.save_file_mark("old", "keeper", file_path="/r/a.tif", marked_at=6.0)
+
+    assert repo.copy_file_edits("old", "fork", "/r/a.tif", lambda c: c)
+    repo.rehome_file_settings("old", "new", "/r/a.tif")
+
+    for file_hash in ("fork", "new"):
+        assert repo.load_file_updated_at(file_hash) == 5.0
+        assert repo.load_mark_record(file_hash) == ("keeper", 6.0)

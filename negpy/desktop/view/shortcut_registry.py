@@ -318,6 +318,7 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "index_library": ShortcutEntry("", tr("Index the library for search by meaning"), tr("Actions")),
     "metadata_infer_gear": ShortcutEntry("", tr("Infer gear from the folder name"), tr("Actions")),
     "toggle_gear_catalog": ShortcutEntry("", tr("Toggle the gear catalog"), tr("Actions")),
+    "toggle_keep_current": ShortcutEntry("", tr("Toggle Keep Current: keep each frame's .negpy sidecar current"), tr("Actions")),
     "persistent_settings": ShortcutEntry("", tr("Choose which settings carry to the next file"), tr("Actions")),
     "open_preferences": ShortcutEntry("Ctrl+,", tr("Open Preferences"), tr("Actions")),
     "save_work_print": ShortcutEntry("Ctrl+Shift+S", tr("Save the current edit as a named work print"), tr("Actions")),

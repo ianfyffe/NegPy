@@ -7,6 +7,9 @@ from typing import Any, Callable, List, Optional
 import numpy as np
 from negpy.domain.models import ExportPreset, WorkspaceConfig
 from negpy.domain.interfaces import IRepository
+from negpy.kernel.system.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class StorageRepository(IRepository):
@@ -25,6 +28,30 @@ class StorageRepository(IRepository):
         # History panel refreshes re-read every step; WorkspaceConfig is frozen, so a parse keyed
         # by its JSON text is safe to share and needs no invalidation.
         self._history_parse: dict[str, WorkspaceConfig] = {}
+        self._write_observers: list[Callable[[str, str], None]] = []
+        self._roll_observers: list[Callable[[str], None]] = []
+
+    def add_write_observer(self, observer: Callable[[str, str], None]) -> None:
+        """Call ``observer(file_hash, file_path)`` after each saved edit or mark, on the writing thread."""
+        self._write_observers.append(observer)
+
+    def _notify_write(self, file_hash: str, file_path: str) -> None:
+        for observer in self._write_observers:
+            try:
+                observer(file_hash, file_path)
+            except Exception:
+                logger.exception("A write observer failed")
+
+    def add_roll_observer(self, observer: Callable[[str], None]) -> None:
+        """Call ``observer(roll_id)`` after each write that dates a roll, on the writing thread."""
+        self._roll_observers.append(observer)
+
+    def notify_roll_dated(self, roll_id: str) -> None:
+        for observer in self._roll_observers:
+            try:
+                observer(roll_id)
+            except Exception:
+                logger.exception("A roll observer failed")
 
     @contextmanager
     def _connect(self, path: str):
@@ -107,6 +134,14 @@ class StorageRepository(IRepository):
             except sqlite3.OperationalError:
                 pass  # already exists
 
+            # Migration: when each edit and mark was saved, which a sidecar's saved time is compared
+            # against. A row from before the column is dated 0, older than any dated sidecar.
+            for table, column in (("file_settings", "updated_at"), ("file_marks", "marked_at")):
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL NOT NULL DEFAULT 0")
+                except sqlite3.OperationalError:
+                    pass  # already exists
+
             # Migration: index on file_path for path-based fallback queries
             conn.execute("CREATE INDEX IF NOT EXISTS idx_file_settings_path ON file_settings(file_path)")
 
@@ -127,37 +162,52 @@ class StorageRepository(IRepository):
                 )
             """)
 
-    def save_file_mark(self, file_hash: str, mark: Optional[str], file_path: str = "") -> None:
-        """Persists a triage mark ('keeper'/'excluded'); None clears it."""
+    def save_file_mark(self, file_hash: str, mark: Optional[str], file_path: str = "", marked_at: Optional[float] = None) -> None:
+        """Persists a triage mark ('keeper'/'excluded'), dated *marked_at* (now). None clears it;
+        a cleared mark keeps its row with an empty mark, so the clear has a date too."""
         with self._connect(self.edits_db_path) as conn:
-            if mark:
-                conn.execute(
-                    "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path) VALUES (?, ?, ?)",
-                    (file_hash, mark, file_path),
-                )
-            else:
-                conn.execute("DELETE FROM file_marks WHERE file_hash = ?", (file_hash,))
+            conn.execute(
+                "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path, marked_at) VALUES (?, ?, ?, ?)",
+                (file_hash, mark or "", file_path, time.time() if marked_at is None else marked_at),
+            )
+        self._notify_write(file_hash, file_path)
+
+    def load_mark_record(self, file_hash: str) -> Optional[tuple[Optional[str], float]]:
+        """(mark, marked_at) for this hash, the mark None when cleared; None when never marked."""
+        with self._connect(self.edits_db_path) as conn:
+            row = conn.execute("SELECT mark, marked_at FROM file_marks WHERE file_hash = ?", (file_hash,)).fetchone()
+        return (str(row[0]) or None, float(row[1])) if row else None
 
     def load_file_marks(self) -> dict[str, str]:
         """Returns all triage marks as {file_hash: mark}."""
         with self._connect(self.edits_db_path) as conn:
-            cursor = conn.execute("SELECT file_hash, mark FROM file_marks")
+            cursor = conn.execute("SELECT file_hash, mark FROM file_marks WHERE mark != ''")
             return {row[0]: row[1] for row in cursor.fetchall()}
 
     def load_file_marks_by_path(self) -> dict[str, str]:
         """Triage marks as {file_path: mark}, for lookups that have no hash in hand.
         Marks written before the path column exists are absent, not wrong."""
         with self._connect(self.edits_db_path) as conn:
-            cursor = conn.execute("SELECT file_path, mark FROM file_marks WHERE file_path IS NOT NULL AND file_path != ''")
+            cursor = conn.execute("SELECT file_path, mark FROM file_marks WHERE file_path IS NOT NULL AND file_path != '' AND mark != ''")
             return {str(row[0]): str(row[1]) for row in cursor.fetchall()}
 
-    def save_file_settings(self, file_hash: str, settings: WorkspaceConfig, file_path: str = "") -> None:
+    def save_file_settings(
+        self, file_hash: str, settings: WorkspaceConfig, file_path: str = "", updated_at: Optional[float] = None
+    ) -> None:
+        """Saves the edit, dated *updated_at* (now); a sidecar promotion passes the sidecar's saved time."""
         with self._connect(self.edits_db_path) as conn:
             settings_json = json.dumps(settings.to_dict(), default=str)
             conn.execute(
-                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path) VALUES (?, ?, ?)",
-                (file_hash, settings_json, file_path),
+                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path, updated_at) VALUES (?, ?, ?, ?)",
+                (file_hash, settings_json, file_path, time.time() if updated_at is None else updated_at),
             )
+        self._notify_write(file_hash, file_path)
+
+    def load_file_updated_at(self, file_hash: str) -> Optional[float]:
+        """When this hash's edit was saved, or None with no saved edit."""
+        with self._connect(self.edits_db_path) as conn:
+            row = conn.execute("SELECT updated_at FROM file_settings WHERE file_hash = ?", (file_hash,)).fetchone()
+        return float(row[0]) if row else None
 
     def load_file_settings(self, file_hash: str) -> Optional[WorkspaceConfig]:
         with self._connect(self.edits_db_path) as conn:
@@ -294,22 +344,22 @@ class StorageRepository(IRepository):
 
     def rehome_file_settings(self, old_hash: str, new_hash: str, file_path: str) -> None:
         """Move settings, undo history and triage mark from old_hash to new_hash (with
-        updated path). No-op if new_hash already holds an edit — a live edit is never
-        clobbered by a rehome."""
+        updated path), keeping their dates. No-op if new_hash already holds an edit — a live
+        edit is never clobbered by a rehome."""
         if old_hash == new_hash:
             return
         with self._connect(self.edits_db_path) as conn:
             if conn.execute("SELECT 1 FROM file_settings WHERE file_hash = ?", (new_hash,)).fetchone():
                 return
             row = conn.execute(
-                "SELECT settings_json FROM file_settings WHERE file_hash = ?",
+                "SELECT settings_json, updated_at FROM file_settings WHERE file_hash = ?",
                 (old_hash,),
             ).fetchone()
             if not row:
                 return
             conn.execute(
-                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path) VALUES (?, ?, ?)",
-                (new_hash, row[0], file_path),
+                "INSERT OR REPLACE INTO file_settings (file_hash, settings_json, file_path, updated_at) VALUES (?, ?, ?, ?)",
+                (new_hash, row[0], file_path, row[1]),
             )
             conn.execute("DELETE FROM file_settings WHERE file_hash = ?", (old_hash,))
             conn.execute("UPDATE OR REPLACE edit_history SET file_hash = ? WHERE file_hash = ?", (new_hash, old_hash))
@@ -324,8 +374,8 @@ class StorageRepository(IRepository):
         transform: Callable[[WorkspaceConfig], WorkspaceConfig],
     ) -> bool:
         """Copy settings, undo history, work prints and triage mark from old_hash to new_hash,
-        each edit passed through *transform*. The old rows stay. Returns False, copying
-        nothing, when new_hash already holds an edit."""
+        each edit passed through *transform* and each row keeping its date. The old rows stay.
+        Returns False, copying nothing, when new_hash already holds an edit."""
         if old_hash == new_hash:
             return False
 
@@ -336,11 +386,11 @@ class StorageRepository(IRepository):
         with self._connect(self.edits_db_path) as conn:
             if conn.execute("SELECT 1 FROM file_settings WHERE file_hash = ?", (new_hash,)).fetchone():
                 return False
-            row = conn.execute("SELECT settings_json FROM file_settings WHERE file_hash = ?", (old_hash,)).fetchone()
+            row = conn.execute("SELECT settings_json, updated_at FROM file_settings WHERE file_hash = ?", (old_hash,)).fetchone()
             if row:
                 conn.execute(
-                    "INSERT INTO file_settings (file_hash, settings_json, file_path) VALUES (?, ?, ?)",
-                    (new_hash, rewrite(row[0]), file_path),
+                    "INSERT INTO file_settings (file_hash, settings_json, file_path, updated_at) VALUES (?, ?, ?, ?)",
+                    (new_hash, rewrite(row[0]), file_path, row[1]),
                 )
             conn.execute("DELETE FROM edit_history WHERE file_hash = ?", (new_hash,))
             for step, settings_json in conn.execute(
@@ -357,11 +407,11 @@ class StorageRepository(IRepository):
                     "INSERT OR REPLACE INTO work_prints (file_hash, name, created_at, settings_json) VALUES (?, ?, ?, ?)",
                     (new_hash, name, created_at, rewrite(settings_json)),
                 )
-            mark = conn.execute("SELECT mark FROM file_marks WHERE file_hash = ?", (old_hash,)).fetchone()
+            mark = conn.execute("SELECT mark, marked_at FROM file_marks WHERE file_hash = ?", (old_hash,)).fetchone()
             if mark:
                 conn.execute(
-                    "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path) VALUES (?, ?, ?)",
-                    (new_hash, mark[0], file_path),
+                    "INSERT OR REPLACE INTO file_marks (file_hash, mark, file_path, marked_at) VALUES (?, ?, ?, ?)",
+                    (new_hash, mark[0], file_path, mark[1]),
                 )
         return True
 
@@ -447,6 +497,23 @@ class StorageRepository(IRepository):
                     f"UPDATE {table} SET file_path = ? || substr(file_path, ?) WHERE file_path = ? OR substr(file_path, 1, ?) = ?",
                     (new_prefix, len(old_prefix) + 1, old_prefix, len(under), under),
                 )
+
+    @staticmethod
+    def _like_containing(text: str) -> str:
+        escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
+
+    def rehome_saved_configs(self, old_prefix: str, move: Callable[[dict], Optional[dict]]) -> None:
+        """Replace each saved edit, work print and history step's flat config with ``move(config)``
+        where that is not None. Only rows whose JSON names *old_prefix* are read."""
+        contains = json.dumps(old_prefix)[1:-1]
+        with self._connect(self.edits_db_path) as conn:
+            for table in ("file_settings", "work_prints", "edit_history"):
+                rows = conn.execute(
+                    f"SELECT rowid, settings_json FROM {table} WHERE settings_json LIKE ? ESCAPE '\\'", (self._like_containing(contains),)
+                ).fetchall()
+                moved = [(json.dumps(new, default=str), rowid) for rowid, text in rows if (new := move(json.loads(text))) is not None]
+                conn.executemany(f"UPDATE {table} SET settings_json = ? WHERE rowid = ?", moved)
 
     def get_max_history_index(self, file_hash: str) -> int:
         with self._connect(self.edits_db_path) as conn:
@@ -547,9 +614,9 @@ class StorageRepository(IRepository):
     # Database management (view and clear), behind the DB Management dialog.
 
     @staticmethod
-    def _count(conn: sqlite3.Connection, table: str) -> int:
+    def _count(conn: sqlite3.Connection, table: str, where: str = "1") -> int:
         try:
-            return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            return int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}").fetchone()[0])
         except sqlite3.OperationalError:
             return 0  # table not created yet
 
@@ -575,7 +642,7 @@ class StorageRepository(IRepository):
             file_settings = self._count(conn, "file_settings")
             edit_history = self._count(conn, "edit_history")
             work_prints = self._count(conn, "work_prints")
-            file_marks = self._count(conn, "file_marks")
+            file_marks = self._count(conn, "file_marks", "mark != ''")
 
         with self._connect(self.settings_db_path) as conn:
             global_settings = self._count(conn, "global_settings")
