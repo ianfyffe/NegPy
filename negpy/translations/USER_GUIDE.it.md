@@ -821,13 +821,14 @@ NegPy tiene svegli macOS e Windows durante la scansione. Su Linux, disattiva la 
 *   **Misura fotogramma…** (Coolscan): misura l'esposizione su un fotogramma e la usa per ogni scansione successiva, così tutti i fotogrammi di un rullino corrispondono. **Sblocca** la termina. Misura di nuovo per ogni rullino.
 *   **Prescansione…** (Plustek): una rapida anteprima completa. Trascina un ritaglio, e la scansione successiva legge solo quell'area.
 
-<!-- panel:scan_camera src:0145e5d1 -->
+<!-- panel:scan_camera src:1009c80a -->
 ### Fotocamera
 
 Esegue la scansione con una fotocamera su uno stativo di riproduzione, collegata via USB in modalità **PC Remote** (macOS e Linux; richiede `python-gphoto2`). Con uno **Scanlight** di NegPy, NegPy controlla anche la luce. CAMERA_SCANNING.md spiega la configurazione.
 
 *   **Fotocamera** / **Luce**: lo stato della connessione. La luce diventa ambra quando si scalda. Su Linux, lo Scanlight richiede che il tuo utente sia nel gruppo `dialout`.
 *   **Live View**: un'immagine dal vivo dalla fotocamera. Fai clic per collocare la lente di messa a fuoco, e metti a fuoco finché l'**Indicatore di fuoco** non segna **al massimo**. Imposta ISO, otturatore e diaframma qui o sulla fotocamera. Quando si chiude, lo Scanlight torna com'era prima.
+*   **Autofocus**: esegue una volta l'autofocus della fotocamera, se la fotocamera può mettere a fuoco via USB.
 *   **Istogramma** e **Zebre**: l'istogramma del fotogramma, e strisce sulle parti che stanno per essere tosate, nei colori di tosatura impostati da Visione dei colori.
 *   **Esposimetro**: imposta l'otturatore in modo che la parte più luminosa che non deve essere tosata (la pellicola trasparente di un negativo, le alte luci di una diapositiva) cada appena sotto la tosatura. Misura prima della prima scansione. Senza una preimpostazione calibrata, una scansione usa l'esposizione impostata sulla fotocamera, e NegPy chiede conferma prima di eseguire una scansione non misurata.
 *   **Scansiona** scatta il fotogramma successivo e lo importa; **Riprendi** (la freccia di ripetizione) scatta di nuovo l'ultimo fotogramma. Quando una scansione viene tosata, la riga di stato indica quanta parte dell'immagine è tosata. Nella finestra del Live View, `Spazio` o `S` esegue la scansione e `R` riprende. Con uno Scanlight, **R**, **G**, **B** e **IR** scelgono quali esposizioni Riprendi ripete.
