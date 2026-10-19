@@ -2486,6 +2486,7 @@
   "This frame is not a Bayer or X-Trans RAW, so it arrives already de-mosaiced.": "이 프레임은 Bayer 또는 X-Trans RAW가 아니므로 이미 모자이크 처리된 상태로 도착합니다.",
   "This frame overrides: {value}": "이 프레임은 다음을 재정의합니다: {value}",
   "This frame's place in the Film Strip's order and filter": "필름 스트립의 순서 및 필터에서 이 프레임의 위치",
+  "This frame's profile is not on this computer (made on another one, or removed here). Copy its .npz into the flatfield folder.": "이 프레임의 프로필이 이 컴퓨터에 없습니다(다른 컴퓨터에서 만들었거나 여기서 삭제됨). 해당 .npz를 flatfield 폴더에 복사하세요.",
   "This layer's Dye Separation trim on top of the global value — pushes/pulls this channel's density separation independently. Neutrals stay flat at any trim value.": "전역 값 위에 있는 이 레이어의 염료 분리 트림 — 이 채널의 농도 분리를 독립적으로 밀거나 당깁니다. 중립은 어떤 트림 값에서도 균일하게 유지됩니다.",
   "This layer's shoulder width trim on top of the global Width — per-layer roll-off extent (sharpness crossover): how far this layer's highlight knee reaches down the tonal scale.": "전역 너비 위에 있는 이 레이어의 숄더 너비 트림 - 레이어별 롤오프 범위(선명도 크로스오버): 이 레이어의 하이라이트 무릎이 톤 스케일 아래로 도달하는 거리입니다.",
   "This layer's toe width trim on top of the global Toe Width — per-layer roll-off extent (sharpness crossover): how far this layer's shadow knee reaches up the tonal scale.": "전역 토 너비 위에 이 레이어의 토 너비 트림 - 레이어별 롤오프 범위(선명도 크로스오버): 이 레이어의 그림자 무릎이 색조 배율에 도달하는 정도입니다.",

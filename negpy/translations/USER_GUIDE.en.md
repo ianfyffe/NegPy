@@ -855,7 +855,7 @@ The scanning optics: one lens correction and one light correction for every fram
 
 Corrects uneven light (vignetting, falloff) from a copy-stand or scanner light, using a shot of the bare light source.
 
-*   **Profile**: **+** bakes a reference image into a named profile in NegPy's `flatfield` folder; the image can then be deleted. **Trash** asks first; every frame using the profile loses its correction.
+*   **Profile**: **+** bakes a reference image into a named profile in NegPy's `flatfield` folder; the image can then be deleted. **Trash** asks first; every frame using the profile loses its correction. A frame whose profile is not on this computer (made on another one, or removed here) shows a hint and grays out **Apply Flat Field**; copy its `.npz` into the `flatfield` folder to restore the correction.
 *   **Apply Flat Field**: applies the selected profile to this roll.
 *   **Check Flat Field**: shows how well the selected profile corrects its own reference. A good profile shows an even gray; a band or patch shows where it is off (full white or black is 10% or more). It turns and flips with the open frame, without fine rotation, keystone or crop. An older profile without check data shows the light it corrects instead; save it again to check it. Saving warns when the reference is clipped or does not correct itself evenly.
 
