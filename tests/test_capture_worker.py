@@ -46,6 +46,9 @@ class FailingControlCamera:
     def set_focus_magnifier_at(self, _x: int, _y: int) -> None:
         raise RuntimeError("USB disconnected")
 
+    def autofocus(self) -> bool:
+        raise RuntimeError("USB disconnected")
+
     def set_iso(self, _raw: int) -> None:
         raise RuntimeError("USB disconnected")
 
@@ -77,6 +80,38 @@ def test_camera_control_slot_failure_is_recoverable(slot, args, caplog):
     assert errors and "USB disconnected" in errors[-1]
     assert "Reconnect" in errors[-1]
     assert f"{slot} failed" in caplog.text
+
+
+def test_a_failed_autofocus_reports_the_lost_camera_with_its_session():
+    worker = CaptureWorker()
+    camera = FailingControlCamera()
+    worker._camera = camera
+    reports, errors = [], []
+    worker.autofocus_failed.connect(reports.append)
+    worker.error.connect(errors.append)
+    worker.autofocus(3)
+    assert reports == [(3, "USB disconnected", True)] and errors == []
+    assert camera.closed and worker._camera is None
+
+
+def test_autofocus_outcome_is_reported_without_touching_the_session():
+    class Camera(FailingControlCamera):
+        def __init__(self, locks: bool) -> None:
+            super().__init__()
+            self.locks = locks
+
+        def autofocus(self) -> bool:
+            return self.locks
+
+    for locks in (True, False):
+        worker = CaptureWorker()
+        camera = Camera(locks)
+        worker._camera = camera
+        results = []
+        worker.autofocus_finished.connect(results.append)
+        worker.autofocus(2)
+        assert results == [(2, locks)]
+        assert not camera.closed
 
 
 def test_normal_capture_cancel_before_promotion_preserves_retake(tmp_path, monkeypatch):

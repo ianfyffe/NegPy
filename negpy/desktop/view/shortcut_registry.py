@@ -328,6 +328,7 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "live_view_scan": ShortcutEntry("S", tr("Scan, or stop the capture"), tr("Camera Live View"), LIVE_VIEW),
     "live_view_scan_space": ShortcutEntry("Space", tr("Scan, or stop the capture (second key)"), tr("Camera Live View"), LIVE_VIEW),
     "live_view_retake": ShortcutEntry("R", tr("Retake the current frame"), tr("Camera Live View"), LIVE_VIEW),
+    "live_view_focus": ShortcutEntry("F", tr("Run the camera's autofocus once"), tr("Camera Live View"), LIVE_VIEW),
     "live_view_meter": ShortcutEntry("M", tr("Meter: set the shutter from one RAW probe"), tr("Camera Live View"), LIVE_VIEW),
     "live_view_histogram": ShortcutEntry("H", tr("Show the live histogram"), tr("Camera Live View"), LIVE_VIEW),
     "live_view_zebra": ShortcutEntry("Z", tr("Show clipping zebras"), tr("Camera Live View"), LIVE_VIEW),

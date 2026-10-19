@@ -110,7 +110,7 @@ def test_update_settings_from_ui_reads_every_widget():
 
 def test_live_view_popup_has_capture_toolbar():
     w = _sidebar()
-    for attr in ("scan_btn", "retake_btn", "status"):
+    for attr in ("scan_btn", "focus_btn", "retake_btn", "status"):
         assert hasattr(w.lv_window, attr), attr
     assert not hasattr(w.lv_window, "zoom_btn")  # digital zoom removed
     assert not hasattr(w.lv_window, "mag_btn")  # magnifier button removed (click-to-magnify)
@@ -868,6 +868,81 @@ def test_meter_is_refused_while_busy_unparseable_or_without_a_ladder(tmp_path, m
 
     assert not w.controller.start_exposure_probe.called
     assert w.lv_window.status.text() == "Meter: this body publishes no writable shutter"
+
+
+def _autofocus_sidebar(tmp_path, monkeypatch):
+    """A metering sidebar whose body reports an autofocus drive in its settings JSON."""
+    import json
+
+    w, p = _metering_sidebar(tmp_path, monkeypatch)
+    p.write_text(json.dumps({**json.loads(p.read_text()), "autofocus": {"available": True}}))
+    w._refresh_camera_settings()
+    return w
+
+
+def test_focus_drives_autofocus_once_and_reports_the_outcome(tmp_path, monkeypatch):
+    w = _autofocus_sidebar(tmp_path, monkeypatch)
+    assert w.lv_window.focus_btn.isEnabled()
+    w._on_focus()
+    session = w._lv_session
+    w.controller.autofocus.assert_called_once_with(session)
+    assert not w.lv_window.focus_btn.isEnabled()
+    assert "wait for focus" in w._missing_requirements()
+    w._on_focus()  # a second press while one is in flight is dropped
+    w.controller.autofocus.assert_called_once_with(session)
+
+    w._on_autofocus_finished((session, True))
+    assert w.lv_window.focus_btn.isEnabled()
+    assert "wait for focus" not in w._missing_requirements()
+    assert w.status_strip.message() == "Autofocus: done"
+    w._on_autofocus_finished((session, False))
+    assert w.status_strip.message().startswith("Autofocus: did not lock")
+    w._on_autofocus_failed((session, "the camera is not connected", False))
+    assert w.status_strip.message() == "Autofocus: the camera is not connected"
+    assert w.lv_btn.isChecked()
+
+
+def test_an_autofocus_report_from_a_stopped_stream_changes_nothing(tmp_path, monkeypatch):
+    w = _autofocus_sidebar(tmp_path, monkeypatch)
+    w._on_focus()
+    w.lv_btn.setChecked(False)  # live view stopped with the drive on the worker
+    w.lv_btn.blockSignals(True)
+    w.lv_btn.setChecked(True)  # and started again, so a second drive can go
+    w.lv_btn.blockSignals(False)
+    w._on_focus()
+
+    first, second = (c.args[0] for c in w.controller.autofocus.call_args_list)
+    assert first != second
+    w._on_autofocus_finished((first, True))
+    assert w._focusing and w.status_strip.message() == "Focusing…"
+    w._on_autofocus_failed((first, "late", True))  # even a lost camera from the stopped stream stops nothing
+    assert w._focusing and w.lv_btn.isChecked()
+    w._on_autofocus_finished((second, True))
+    assert not w._focusing and w.status_strip.message() == "Autofocus: done"
+
+
+def test_a_camera_lost_during_autofocus_closes_the_stream(tmp_path, monkeypatch):
+    w = _autofocus_sidebar(tmp_path, monkeypatch)
+    w._on_focus()
+    w._on_autofocus_failed((w._lv_session, "USB disconnected", True))
+    assert not w._focusing and not w.lv_btn.isChecked()
+    assert w.status_strip.message() == "Error: Autofocus: USB disconnected"
+
+
+def test_focus_and_meter_wait_for_each_other(tmp_path, monkeypatch):
+    w = _autofocus_sidebar(tmp_path, monkeypatch)
+    w._on_meter()
+    assert not w.lv_window.focus_btn.isEnabled()
+    w._on_focus()
+    assert not w.controller.autofocus.called
+    w._on_meter_failed("late")
+    w._on_focus()
+    assert not w.lv_window.meter_btn.isEnabled()
+    w.controller.start_exposure_probe.reset_mock()
+    w._on_meter()
+    assert not w.controller.start_exposure_probe.called
+    w._on_autofocus_finished((w._lv_session, True))
+    assert w.lv_window.meter_btn.isEnabled()
 
 
 def test_a_failed_probe_keeps_the_stream_and_frees_the_meter(tmp_path, monkeypatch):
@@ -1868,9 +1943,9 @@ def test_calibration_refuses_rather_than_writing_a_foreign_shutter_label(tmp_pat
     assert not w._calibrating_preset  # the run never started
 
 
-@pytest.mark.parametrize("key, signal", [("S", "scanRequested"), ("R", "retakeRequested")])
+@pytest.mark.parametrize("key, signal", [("S", "scanRequested"), ("F", "focusRequested"), ("R", "retakeRequested")])
 def test_live_view_letter_keys_win_over_main_window_shortcuts(key, signal):
-    # The main window binds S and R too, and on macOS it sees a panel's keys.
+    # The main window binds S, F and R too, and on macOS it sees a panel's keys.
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QKeySequence, QShortcut
     from PyQt6.QtTest import QTest
@@ -1883,6 +1958,7 @@ def test_live_view_letter_keys_win_over_main_window_shortcuts(key, signal):
     main_fired = []
     QShortcut(QKeySequence(key), main).activated.connect(lambda: main_fired.append(key))
     win = LiveViewWindow(main)
+    win.focus_btn.setEnabled(True)
     float_over_app(win, platform="darwin")
     fired = []
     getattr(win, signal).connect(lambda: fired.append(key))
