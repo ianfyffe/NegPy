@@ -547,33 +547,35 @@ class GphotoCamera:
         self._names[key] = None
         return None
 
-    def _set_choice(self, key: str, index: int, label: Optional[str] = None) -> None:
+    def _set_choice(self, key: str, index: int, label: Optional[str] = None) -> bool:
         """Write the choice at `index`; with `label`, only while the body still lists that label there,
-        so a panel seeded from another body's list cannot drive this one."""
+        so a panel seeded from another body's list cannot drive this one. True when the body reports
+        the value back."""
         with self._lock:
             name = self._property(key)
             if name is None:
-                return
+                return False
             camera = self._require()
             widget = camera.get_single_config(name)
             choices = _choices(self._gp, widget)
             if not 0 <= index < len(choices):
                 logger.warning("gphoto2: %s has no choice %d", name, index)
-                return
+                return False
             if label is not None and choices[index] != label:
                 logger.warning("gphoto2: %s choice %d is %r, not %r; the panel's list is stale", name, index, choices[index], label)
-                return
-            self._set_verified(name, choices[index])
+                return False
+            landed = self._set_verified(name, choices[index])
             self._publish_settings()  # the UI reads the body's state from the file, not from its own write
+            return landed
 
-    def set_iso(self, raw: int, label: Optional[str] = None) -> None:
-        self._set_choice("iso", int(raw), label)
+    def set_iso(self, raw: int, label: Optional[str] = None) -> bool:
+        return self._set_choice("iso", int(raw), label)
 
-    def set_shutter(self, raw: int, label: Optional[str] = None) -> None:
-        self._set_choice("shutter", int(raw), label)
+    def set_shutter(self, raw: int, label: Optional[str] = None) -> bool:
+        return self._set_choice("shutter", int(raw), label)
 
-    def set_aperture(self, raw: int, label: Optional[str] = None) -> None:
-        self._set_choice("aperture", int(raw), label)
+    def set_aperture(self, raw: int, label: Optional[str] = None) -> bool:
+        return self._set_choice("aperture", int(raw), label)
 
     def read_settings(self) -> dict:
         """Current value + options for each settable property, in the UI's schema.

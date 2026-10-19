@@ -236,6 +236,9 @@ class ScanlightSidebar(QWidget):
         # Preset-exposure writes still in flight on the worker. Scan stays gated until each is
         # confirmed, so a capture cannot race the body's async programming.
         self._pending_exposure_writes = 0
+        # The preset's writes in flight (setting -> label) and the ones that did not land.
+        self._preset_writes: dict[str, str] = {}
+        self._preset_write_problems: list[str] = []
 
         self.lv_window = LiveViewWindow(self, repo=self.controller.session.repo)
         self.lv_window.closed.connect(self._on_live_view_window_closed)
@@ -578,6 +581,7 @@ class ScanlightSidebar(QWidget):
         self.controller.capture_progress.connect(self._on_progress)
         self.controller.capture_countdown.connect(self._on_countdown)
         self.controller.capture_channel.connect(self._on_channel)
+        self.controller.capture_camera_setting_failed.connect(self._on_camera_setting_failed)
         self.controller.capture_camera_setting_applied.connect(self._on_camera_setting_applied)
         self.controller.capture_live_view_failed.connect(self._on_live_view_failed)
         self.controller.capture_live_view_unsupported.connect(self._on_live_view_unsupported)
@@ -1014,32 +1018,60 @@ class ScanlightSidebar(QWidget):
         scan matches the calibration and the framing brightness is deterministic: the dimmed framing
         light (see framing_levels) is sized against the preset's shutter, so a body left on some
         other speed would frame too dark or too bright. Shutter first — it dominates that brightness.
-        Labels are resolved against the live options (a no-op if the value is absent, the body lacks
-        the option, or no camera session is open to receive the write)."""
+        Labels are resolved against the live options. With a body connected that has published its
+        settings, a value it does not offer or a write it does not take goes to the status line."""
         data = self._settings_json()
+        report = self._camera_verified and bool(data)
         issued = 0
+        self._preset_writes, self._preset_write_problems = {}, []
         for key, label in (("shutter", preset.shutter_r), ("iso", preset.iso), ("aperture", preset.aperture)):
             if not label:
                 continue
             info = data.get(key)
-            if not isinstance(info, dict):
+            options = info.get("options", []) if isinstance(info, dict) else []
+            raw = next((o["raw"] for o in options if str(o.get("label", "")) == label), None)
+            if raw is None:
+                if report:
+                    self._preset_write_problems.append(
+                        tr("{setting} {value}: this body does not offer it", setting=self._setting_name(key), value=label)
+                    )
                 continue
-            for o in info.get("options", []):
-                if str(o.get("label", "")) == label:
-                    self.controller.set_camera_setting(key, int(o["raw"]), str(o.get("label", "")))
-                    issued += 1
-                    break
+            self.controller.set_camera_setting(key, int(raw), label)
+            if report:
+                self._preset_writes[key] = label
+            issued += 1
         if issued:
             self._pending_exposure_writes += issued
             self._apply_gating()  # Scan greys out until the worker confirms every write
+        elif self._preset_write_problems:
+            QTimer.singleShot(0, self._report_preset_writes)  # after the caller's own status line
+
+    @staticmethod
+    def _setting_name(key: str) -> str:
+        return {"shutter": tr("Shutter"), "iso": "ISO", "aperture": tr("Aperture")}[key]
+
+    def _report_preset_writes(self) -> None:
+        problems, self._preset_write_problems = self._preset_write_problems, []
+        if problems:
+            self._set_status(tr("Preset not fully set on the camera: {problems}", problems="; ".join(problems)), pinned=True)
 
     @pyqtSlot(str)
-    def _on_camera_setting_applied(self, _which: str) -> None:
+    def _on_camera_setting_failed(self, which: str) -> None:
+        label = self._preset_writes.get(which)
+        if label is not None:
+            self._preset_write_problems.append(
+                tr("{setting} {value}: the camera did not take it", setting=self._setting_name(which), value=label)
+            )
+
+    @pyqtSlot(str)
+    def _on_camera_setting_applied(self, which: str) -> None:
         if self._pending_exposure_writes == 0:
             return  # a stepper write from manual/white mode, not one of the gated preset writes
+        self._preset_writes.pop(which, None)
         self._pending_exposure_writes -= 1
         if self._pending_exposure_writes == 0:
             self._apply_gating()
+            self._report_preset_writes()
 
     def _available_shutters(self, info: dict | None = None, scanlight: bool = True) -> tuple[str, ...]:
         """The body's writable shutter labels (from the live-view settings JSON, or `info`, its
