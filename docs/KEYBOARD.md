@@ -173,6 +173,7 @@ Actions with no default key are not listed; every one of them can still be bound
 | `S` | Scan, or stop the capture |
 | `Space` | Scan, or stop the capture (second key) |
 | `R` | Retake the current frame |
+| `F` | Run the camera's autofocus once |
 | `M` | Meter: set the shutter from one RAW probe |
 | `H` | Show the live histogram |
 | `Z` | Show clipping zebras |
