@@ -59,7 +59,10 @@ image compares live sharpness with the best value since the view last changed. A
 changes the view, and so does the body's own magnifier: Sony's MF Assist zooms in when the
 focus ring turns, and **Focus Magnif. Time** zooms back out after 2 s or 5 s (set it to
 **No Limit** to keep the zoom). Turn the focus ring past best focus, then back until the
-meter reads **at peak**. It works on every body with live view.
+meter reads **at peak**. It works on every body with live view. With an AF lens,
+**Autofocus** runs the camera's autofocus once and reports whether it locked. It is grayed on
+a body with no autofocus drive over USB, and while a scan, a calibration or a Meter probe
+runs. Scan waits for the drive.
 
 In white-light and camera-only scanning, set ISO, shutter and aperture live from the
 toolbar. A calibrated narrowband preset hides and locks them (see **Presets**). A control the body
@@ -98,8 +101,8 @@ writes nothing.
 Under the Scanlight, Meter needs the shutter between 1/250 s and 2 s, the span Calibrate
 solves on. Camera-only
 scanning meters on the body's whole ladder and lets the probe decide the film type. Meter
-waits while a scan, a calibration or another probe runs. One reading serves a roll of
-negatives; meter each slide.
+waits while a scan, a calibration, another probe or an autofocus drive runs. One reading
+serves a roll of negatives; meter each slide.
 
 After a probe the zebras switch to the RAW: they hatch where the RAW will clip at the
 metered shutter, predicted from the linear probe (a pixel the probe clipped stays hatched
@@ -333,6 +336,12 @@ LED at a time). Its remaining color error is film-dye crosstalk, which the densi
   suffix comes from the camera, and the still goes into memory, not onto a card. Canon and
   Nikon default to the card and will not shoot without one. Reports from other brands are
   welcome.
+- **Autofocus needs libgphoto2's `autofocusdrive`.** NegPy drives autofocus through that
+  control only, one write per drive. Nikon, Canon EOS and Fujifilm expose it; Sony does not, so
+  Autofocus stays grayed on a Sony body. Tested on a Nikon D7100, with the lens and the body on AF and the
+  live-view focus mode on AF-S. Canon and Fujifilm are untested, and on Canon the drive reports
+  done when the lens starts to move. A lock that fails shows as a status, and the session stays
+  open.
 - **The focus magnifier depends on the vendor.** Sony packs the zoom ratio and the target
   point into one property, so a click magnifies *and* aims. Canon (`eoszoom`) and Nikon
   (`liveviewimagezoomratio`) split them, with an unknown coordinate space, so a click

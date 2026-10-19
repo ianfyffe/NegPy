@@ -167,6 +167,9 @@ class CaptureWorker(QObject):
     exposure_probe_finished = pyqtSignal(object)  # (session, MeterReading)
     # (session, reason, camera_lost): camera_lost when the capture failed and the session was closed
     exposure_probe_failed = pyqtSignal(object)
+    autofocus_finished = pyqtSignal(object)  # (session, locked)
+    # (session, reason, camera_lost): camera_lost when the drive failed and the session was closed
+    autofocus_failed = pyqtSignal(object)
     sensor_response_progress = pyqtSignal(float, str)
     sensor_response_measured = pyqtSignal(object)  # 3x3 array: sensor channel rows, LED columns
     sensor_response_failed = pyqtSignal(str)
@@ -660,6 +663,22 @@ class CaptureWorker(QObject):
                 self._camera.set_focus_magnifier_at(x, y)
         except Exception as exc:  # noqa: BLE001 — exceptions cannot cross a Qt slot
             self._camera_control_failed("set_focus_magnifier_pos", exc)
+
+    @pyqtSlot(int)
+    def autofocus(self, session: int) -> None:
+        """Drive the body's autofocus once and report it once, tagged with the live-view session
+        that asked. A refused lock keeps the camera; a body that stops answering closes it."""
+        if not self._holds_camera():
+            self.autofocus_failed.emit((session, tr("the camera is not connected"), False))
+            return
+        try:
+            locked = self._camera.autofocus()
+        except Exception as exc:  # noqa: BLE001 — exceptions cannot cross a Qt slot
+            logger.exception("autofocus failed")
+            self._close_camera()
+            self.autofocus_failed.emit((session, str(exc), True))
+            return
+        self.autofocus_finished.emit((session, locked))
 
     @pyqtSlot(str, int, str)
     def set_camera_setting(self, which: str, raw: int, label: str = "") -> None:

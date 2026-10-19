@@ -210,8 +210,8 @@ class ScanlightSidebar(QWidget):
         # The last probe's predicted RAW clipping, the exposure it holds for, and the preview it
         # was metered on (_current_raw_clip).
         self._raw_clip: _RawClip | None = None
-        # Counts live-view starts and stops; a probe carries the value it was asked under, so a
-        # report from a stopped stream is dropped.
+        # Counts live-view starts and stops; a probe or an autofocus drive carries the value it was
+        # asked under, so a report from a stopped stream is dropped.
         self._lv_session = 0
         self._magnifier_available = True
         self._focus_meter = FocusMeter()
@@ -220,6 +220,8 @@ class ScanlightSidebar(QWidget):
         self._focus_settle_timer.setSingleShot(True)
         self._focus_settle_timer.setInterval(_MAGNIFIER_SETTLE_MS)
         self._focus_settle_timer.timeout.connect(self._reset_focus_meter)
+        self._autofocus_available = False  # does the streaming body expose an autofocus drive? (from the settings JSON)
+        self._focusing = False  # an autofocus drive is in flight on the worker
         self._settings_loaded = False  # have the live camera-setting dropdowns been populated yet?
         self._light_has_white = True  # does the connected Scanlight have a white LED? (False = v1-v3, RGB-only)
         self._light_has_ir = False  # infrared LEDs: the Big Scanlight
@@ -549,6 +551,8 @@ class ScanlightSidebar(QWidget):
         self.controller.capture_countdown.connect(self._on_countdown)
         self.controller.capture_channel.connect(self._on_channel)
         self.controller.capture_camera_setting_applied.connect(self._on_camera_setting_applied)
+        self.controller.capture_autofocus_finished.connect(self._on_autofocus_finished)
+        self.controller.capture_autofocus_failed.connect(self._on_autofocus_failed)
         self.controller.capture_live_view_failed.connect(self._on_live_view_failed)
         self.controller.capture_live_view_unsupported.connect(self._on_live_view_unsupported)
         self.controller.capture_focus_magnifier_unavailable.connect(self._on_magnifier_unavailable)
@@ -566,6 +570,7 @@ class ScanlightSidebar(QWidget):
         # The pop-up toolbar mirrors the panel actions, so a roll scans without tab-switching.
         self.lv_window.scanRequested.connect(self._on_scan)
         self.lv_window.retakeRequested.connect(self._on_retake)
+        self.lv_window.focusRequested.connect(self._on_focus)
         self.lv_window.meterRequested.connect(self._on_meter)
         self.meter_btn.clicked.connect(self._on_meter)
         self.lv_window.channelsChanged.connect(self._on_channels_changed)
@@ -1150,6 +1155,7 @@ class ScanlightSidebar(QWidget):
                 self._suppress_camera_release = False
         if on:
             self._settings_loaded = False  # repopulate the camera-setting dropdowns
+            self._reset_autofocus()  # the settings JSON reports this body's drive
             self._update_settings_from_ui()
             self._start_live_view_worker()
             self._light_before_lv = self._light_lit
@@ -1164,6 +1170,7 @@ class ScanlightSidebar(QWidget):
             self._reset_magnifier()
             self._metering = False
             self._lv_session += 1  # a probe still in flight reports to a stopped stream: dropped
+            self._reset_autofocus()
             self.lv_window.hide()
             # Back to the state Live View found: on at the capture light, or off.
             self._push_light() if self._light_before_lv else self._on_light_off()
@@ -1259,7 +1266,7 @@ class ScanlightSidebar(QWidget):
     def _on_meter(self) -> None:
         """One RAW probe at the body's current exposure, under the light as lit. The reading
         lands in `_on_meter_finished`. Only while the stream runs."""
-        if self._scanning or self._calibrating_preset or self._metering:
+        if self._scanning or self._calibrating_preset or self._metering or self._focusing:
             return
         if not self.lv_btn.isChecked():
             # The probe shoots inside the stream: open it, and meter once the body's ladder is known.
@@ -1581,6 +1588,7 @@ class ScanlightSidebar(QWidget):
         self._lv_timer.stop()
         self._lv_target.set_loading(False)
         self._reset_magnifier()
+        self._reset_autofocus()
 
     def _reset_magnifier(self) -> None:
         """Forget the magnifier state when the stream stops (the camera resets it too)."""
@@ -1632,6 +1640,46 @@ class ScanlightSidebar(QWidget):
             self._magnifier_on = self._magnifier_seen = False
             self._set_status(tr("Full frame. Click the image to magnify."))
 
+    def _on_focus(self) -> None:
+        """Drive the camera's autofocus once. Only while the stream is running and the worker is
+        idle: a drive queued behind a triplet would refocus after the shots it was meant for."""
+        if not self.lv_btn.isChecked() or self._scanning or self._calibrating_preset or self._focusing or self._metering:
+            return
+        self._focusing = True
+        self._apply_gating()
+        self._set_status(tr("Focusing…"))
+        self.controller.autofocus(self._lv_session)
+
+    @pyqtSlot(object)
+    def _on_autofocus_finished(self, report) -> None:
+        session, locked = report
+        if session != self._lv_session:
+            return  # a stopped stream's drive: its report changes nothing
+        self._end_focusing()
+        self._set_status(
+            tr("Autofocus: done") if locked else tr("Autofocus: did not lock; set the lens to AF and the body to single-shot AF")
+        )
+
+    @pyqtSlot(object)
+    def _on_autofocus_failed(self, report) -> None:
+        session, reason, camera_lost = report
+        if session != self._lv_session:
+            return  # a stopped stream's drive: its failure stops nothing
+        self._end_focusing()
+        if camera_lost:
+            self._on_error(tr("Autofocus: {reason}", reason=reason))  # the worker closed the camera; close the stream with it
+        else:
+            self._set_status(tr("Autofocus: {reason}", reason=reason))
+
+    def _end_focusing(self) -> None:
+        self._focusing = False
+        self._apply_gating()
+
+    def _reset_autofocus(self) -> None:
+        """Forget an in-flight drive and the body's drive support when the stream starts or stops."""
+        self._autofocus_available = False
+        self._end_focusing()
+
     def _on_camera_setting(self, which: str, combo) -> None:
         raw = combo.currentData()
         if raw is not None:
@@ -1657,6 +1705,10 @@ class ScanlightSidebar(QWidget):
         magnifier = data.get("magnifier")
         if isinstance(magnifier, dict):
             self._track_magnifier(bool(magnifier.get("on")))
+        available = bool(data.get("autofocus", {}).get("available"))
+        if available != self._autofocus_available:
+            self._autofocus_available = available
+            self._apply_gating()
         steppers = {
             "iso": [self.lv_window.iso_stepper],
             "shutter": [self.lv_window.shutter_stepper],
@@ -2223,6 +2275,8 @@ class ScanlightSidebar(QWidget):
             m.append(tr("wait for the exposure to reach the camera"))
         if self._metering:
             m.append(tr("wait for the meter"))
+        if self._focusing:
+            m.append(tr("wait for focus"))
         if not self._camera_verified:
             m.append(tr("connect the camera"))
         if self._rgb_mode:
@@ -2288,10 +2342,13 @@ class ScanlightSidebar(QWidget):
         self.lv_window.channel_btns["IR"].setVisible(self._light_has_ir)
         for btn in self.lv_window.channel_btns.values():
             btn.setEnabled(not self._scanning)
-        # Meter needs the camera and an idle capture worker, not a folder or a preset. The card's
-        # button also needs the stream, which the probe shoots inside.
-        can_meter = self._camera_verified and not self._scanning and not self._calibrating_preset and not self._metering
+        # Meter and Autofocus need the camera and an idle capture worker, not a folder or a preset. The
+        # card's button also needs the stream, which the probe shoots inside.
+        can_meter = (
+            self._camera_verified and not self._scanning and not self._calibrating_preset and not self._metering and not self._focusing
+        )
         self.lv_window.meter_btn.setEnabled(can_meter)
+        self.lv_window.focus_btn.setEnabled(can_meter and self._autofocus_available)
         if hasattr(self, "meter_btn"):
             self.meter_btn.setEnabled(can_meter)
             self._ir_exposure_widget.setVisible(self._rgb_mode and self._light_has_ir)

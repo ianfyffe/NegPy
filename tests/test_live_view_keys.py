@@ -40,9 +40,10 @@ def _spy(window, *names: str) -> list[str]:
     return fired
 
 
-@pytest.mark.parametrize("focused", [None, "histogram_btn", "zebra_btn", "retake_btn", "meter_btn"])
+@pytest.mark.parametrize("focused", [None, "histogram_btn", "zebra_btn", "retake_btn", "focus_btn", "meter_btn"])
 def test_space_scans_whatever_toolbar_button_holds_the_focus(qapp, window, focused):
-    fired = _spy(window, "scan_btn", "retake_btn", "meter_btn", "histogram_btn", "zebra_btn")
+    window.focus_btn.setEnabled(True)
+    fired = _spy(window, "scan_btn", "retake_btn", "focus_btn", "meter_btn", "histogram_btn", "zebra_btn")
     if focused is not None:
         getattr(window, focused).setFocus(Qt.FocusReason.MouseFocusReason)
         qapp.processEvents()
@@ -87,3 +88,14 @@ def test_letter_keys_keep_their_own_buttons(qapp, window):
         _send(qapp, window, key)
 
     assert fired == ["histogram_btn", "retake_btn", "scan_btn"]
+
+
+def test_the_focus_key_drives_autofocus_only_while_focus_is_enabled(qapp, window):
+    fired = _spy(window, "focus_btn")
+
+    _send(qapp, window, Qt.Key.Key_F)
+    assert fired == []
+
+    window.focus_btn.setEnabled(True)
+    _send(qapp, window, Qt.Key.Key_F)
+    assert fired == ["focus_btn"]
