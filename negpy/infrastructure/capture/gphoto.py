@@ -22,7 +22,7 @@ Five behaviours of the library shape this module; each is guarded below:
 
 Vendors name the same control differently and expose different subsets of it, so every
 property is looked up rather than assumed — see `_PROPERTIES` and `_MAGNIFIERS`. Only Sony
-bodies have been tested.
+bodies have been tested, and the autofocus drive only on a Nikon D7100.
 """
 
 from __future__ import annotations
@@ -91,6 +91,9 @@ _MAGNIFIERS = (
 #: Driver entries whose magnifier stops the preview: the body answers every frame request "Device Busy"
 #: until the ratio is back at full frame. The preview loop catches an unlisted body after one stalled frame.
 _STALLING_MAGNIFIER_DRIVERS = frozenset({"Nikon DSC D3300"})
+
+#: libgphoto2's one-shot autofocus drive: one write runs the drive and returns when it ends.
+_AUTOFOCUS_DRIVE = "autofocusdrive"
 
 #: Where the camera should put the file it just took. Tethered capture wants it in memory,
 #: not on a card: Canon and Nikon default to the card and fail outright without one.
@@ -348,6 +351,7 @@ class GphotoCamera:
         self._magnifier_engaged = False
         self._magnifier_stalls = False
         self._aim_warned = False
+        self._autofocus: Optional[bool] = None  # does this body expose the drive? None until probed
         self._names: dict[str, Optional[str]] = {}  # settings key → this body's property name
         self._position = (_GRID_W // 2, _GRID_H // 2)
 
@@ -737,6 +741,40 @@ class GphotoCamera:
                 logger.info("gphoto2: %r cannot be aimed; magnifying at the body's own position", spec.ratio)
             self._write_magnifier(self._magnifier_ratios[0])
 
+    # ----- autofocus -------------------------------------------------------------
+
+    def has_autofocus(self) -> bool:
+        """Does this body expose the autofocus drive? Probed once per session, so a read that
+        fails during the probe reads as no drive until the camera reopens."""
+        with self._lock:
+            if self._autofocus is not None:
+                return self._autofocus
+            camera = self._require()
+            try:
+                camera.get_single_config(_AUTOFOCUS_DRIVE)
+                found = True
+            except self._gp.GPhoto2Error:
+                found = False
+            logger.info("gphoto2: autofocus drive %s", "found" if found else "not found")
+            self._autofocus = found
+            return found
+
+    def autofocus(self) -> bool:
+        """Drive the autofocus once. True when the drive completed, False when the body answered
+        but could not lock. Raises `GphotoError` when the body stopped answering."""
+        with self._lock:
+            camera = self._require()
+            try:
+                widget = camera.get_single_config(_AUTOFOCUS_DRIVE)
+                widget.set_value(1)
+                camera.set_single_config(_AUTOFOCUS_DRIVE, widget)
+                return True
+            except self._gp.GPhoto2Error as exc:
+                if self._camera_answers():
+                    logger.warning("gphoto2: autofocus did not lock: %s", exc)
+                    return False
+                raise GphotoError(f"the camera stopped answering: {exc}") from exc
+
     # ----- capture ---------------------------------------------------------------
 
     def _drain_events(self, budget_s: Optional[float] = None) -> None:
@@ -1020,6 +1058,7 @@ class GphotoCamera:
         with self._lock:
             try:
                 payload = self.read_settings()
+                payload["autofocus"] = {"available": self.has_autofocus()}
             except Exception as exc:  # noqa: BLE001
                 logger.warning("gphoto2 settings: %s", exc)
                 return

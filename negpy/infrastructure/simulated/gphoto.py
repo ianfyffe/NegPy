@@ -180,6 +180,7 @@ class SimGphoto:
             "f-number": _Widget("f-number", None, [], readonly=True),
             "capturetarget": _Widget("capturetarget", "card", ["card", "sdram"]),
             "focusmagnifier": _Widget("focusmagnifier", "Off,320,240", ["Off", "1", "6.9", "13.7"]),
+            "autofocusdrive": _Widget("autofocusdrive", "0", []),  # libgphoto2's one-shot drive
         }
         self.pending_raw = b""
         self.shot_events = 0

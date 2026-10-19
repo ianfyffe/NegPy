@@ -108,6 +108,7 @@ class LiveViewWindow(QDialog):
     closed = pyqtSignal()
     scanRequested = pyqtSignal()
     retakeRequested = pyqtSignal()
+    focusRequested = pyqtSignal()
     meterRequested = pyqtSignal()
     channelsChanged = pyqtSignal(str)  # the letter whose toggle moved: R, G, B or IR
     captureDelayChanged = pyqtSignal(float)  # seconds, stepped on the toolbar's delay stepper
@@ -128,6 +129,10 @@ class LiveViewWindow(QDialog):
         self.scan_btn.setIcon(qta.icon("fa5s.camera-retro", color=THEME.text_on_accent))
         self.scan_btn.setFixedHeight(SCAN_BUTTON_HEIGHT)
         self.retake_btn = labeled_action("fa5s.redo", tr("Retake"), tr("Re-capture the current frame without advancing the counter"))
+        self.focus_btn = labeled_action(
+            "fa5s.bullseye", tr("Autofocus"), tr("Run the camera's autofocus once, on a body that drives autofocus over USB")
+        )
+        self.focus_btn.setEnabled(False)
         bar.addWidget(self.scan_btn, 2)
         # The card's Capture Delay, where Scan is pressed. Mirrored both ways by the panel.
         self.delay_stepper = SettingStepper()
@@ -163,6 +168,7 @@ class LiveViewWindow(QDialog):
             self.channel_btns[letter] = btn
             channels.addWidget(btn)
         bar.addWidget(self.channel_widget)
+        bar.addWidget(self.focus_btn, 1)
         # One RAW probe sets the shutter for the light as lit.
         self.meter_btn = labeled_action(
             "fa5s.tachometer-alt",
@@ -256,6 +262,7 @@ class LiveViewWindow(QDialog):
 
         self.scan_btn.clicked.connect(lambda: self.scanRequested.emit())
         self.retake_btn.clicked.connect(lambda: self.retakeRequested.emit())
+        self.focus_btn.clicked.connect(lambda: self.focusRequested.emit())
         self.meter_btn.clicked.connect(lambda: self.meterRequested.emit())
 
         # Pin Scan as the dialog's permanent default button. Without this, Qt hands "default"
@@ -268,6 +275,7 @@ class LiveViewWindow(QDialog):
             "live_view_scan": self.scan_btn,
             "live_view_scan_space": self.scan_btn,
             "live_view_retake": self.retake_btn,
+            "live_view_focus": self.focus_btn,
             "live_view_meter": self.meter_btn,
             "live_view_histogram": self.histogram_btn,
             "live_view_zebra": self.zebra_btn,
