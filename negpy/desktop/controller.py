@@ -627,6 +627,7 @@ class AppController(QObject):
     capture_countdown = pyqtSignal(int)  # seconds left of the Capture Delay; 0 when the shot starts
     capture_channel = pyqtSignal(str)  # "R"/"G"/"B" as each triplet channel starts
     capture_camera_setting_applied = pyqtSignal(str)  # a set_camera_setting call ran to completion
+    capture_camera_setting_failed = pyqtSignal(str)  # the body did not take a set_camera_setting write
     capture_live_view_failed = pyqtSignal(str)  # preview thread died after retries; session dropped
     capture_live_view_unsupported = pyqtSignal(str)  # body advertises no preview; none was attempted
     capture_focus_magnifier_unavailable = pyqtSignal(str)  # reason
@@ -1141,6 +1142,7 @@ class AppController(QObject):
         self.capture_worker.progress.connect(self.capture_progress.emit)
         self.capture_worker.countdown.connect(self.capture_countdown.emit)
         self.capture_worker.channel.connect(self.capture_channel.emit)
+        self.capture_worker.camera_setting_failed.connect(self.capture_camera_setting_failed.emit)
         self.capture_worker.camera_setting_applied.connect(self.capture_camera_setting_applied.emit)
         self.capture_worker.live_view_failed.connect(self.capture_live_view_failed.emit)
         self.capture_worker.live_view_unsupported.connect(self.capture_live_view_unsupported.emit)

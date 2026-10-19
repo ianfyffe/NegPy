@@ -448,6 +448,28 @@ def test_a_setting_write_takes_the_session_when_live_view_has_released_it(monkey
     assert applied == ["shutter"]  # the panel's Scan gate counts this report
 
 
+def test_a_setting_write_the_body_does_not_take_is_reported_before_the_gate_releases(monkeypatch):
+    class Body:
+        def set_shutter(self, _raw, _label=None) -> bool:
+            return False
+
+        def set_iso(self, _raw, _label=None) -> bool:
+            return True
+
+        set_aperture = set_iso
+
+    worker = CaptureWorker()
+    monkeypatch.setattr(worker, "_acquire_camera", lambda: Body())
+    events: list[tuple[str, str]] = []
+    worker.camera_setting_failed.connect(lambda which: events.append(("failed", which)))
+    worker.camera_setting_applied.connect(lambda which: events.append(("applied", which)))
+
+    worker.set_camera_setting("shutter", 29, "1/20")
+    worker.set_camera_setting("iso", 2, "100")
+
+    assert events == [("failed", "shutter"), ("applied", "shutter"), ("applied", "iso")]
+
+
 def test_a_setting_write_with_no_camera_reports_and_still_releases_the_scan_gate(monkeypatch):
     worker = CaptureWorker()
     monkeypatch.setattr(worker, "_acquire_camera", lambda: (_ for _ in ()).throw(RuntimeError("unplugged")))
