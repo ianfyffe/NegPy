@@ -149,6 +149,9 @@ class CaptureWorker(QObject):
     #: One set_camera_setting call ran to completion: verified, rejected, or skipped without a
     #: session. Always fires, so the sidebar's pending-write gate on Scan cannot stick.
     camera_setting_applied = pyqtSignal(str)
+    #: A set_camera_setting write the body did not take. Fires before its camera_setting_applied;
+    #: a camera error goes to `error` instead.
+    camera_setting_failed = pyqtSignal(str)
     finished = pyqtSignal(list)  # [red_path, green_path, blue_path]
     cancelled = pyqtSignal()
     error = pyqtSignal(str)
@@ -671,11 +674,9 @@ class CaptureWorker(QObject):
             if self._claimed_elsewhere and not self._holds_camera():
                 return  # the camera dot already says another app holds it; the poll's retry clears that
             cam = self._acquire_camera()
-            {
-                "iso": cam.set_iso,
-                "shutter": cam.set_shutter,
-                "aperture": cam.set_aperture,
-            }.get(which, lambda _r, _l=None: None)(*((raw, label) if label else (raw,)))
+            setter = {"iso": cam.set_iso, "shutter": cam.set_shutter, "aperture": cam.set_aperture}.get(which)
+            if setter is not None and not setter(*((raw, label) if label else (raw,))):
+                self.camera_setting_failed.emit(which)
         except Exception as exc:  # noqa: BLE001 — exceptions cannot cross a Qt slot
             self._camera_control_failed("set_camera_setting", exc)
         finally:
