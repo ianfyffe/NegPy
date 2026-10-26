@@ -2897,3 +2897,69 @@ def test_a_scan_that_ends_dark_shows_the_light_off():
     w._on_light_set(25, 12, 11, 0)
     _finish_scan(w)
     assert not w.light_btn.isChecked()
+
+
+def _body_sidebar(tmp_path, monkeypatch):
+    """A connected body that offers ISO 100/200, 1/5 or 1/60 (as decimal labels) and f/8."""
+    import json
+
+    import negpy.desktop.view.sidebar.scanlight as sl
+
+    p = tmp_path / "settings.json"
+    p.write_text(
+        json.dumps(
+            {
+                "iso": {"cur": 2, "writable": True, "options": [{"raw": 2, "label": "100"}, {"raw": 3, "label": "200"}]},
+                "shutter": {"cur": 0, "writable": True, "options": [{"raw": 0, "label": "0.2000s"}, {"raw": 1, "label": "0.0167s"}]},
+                "aperture": {"cur": 8, "writable": True, "options": [{"raw": 8, "label": "f/8"}]},
+            }
+        )
+    )
+    monkeypatch.setattr(sl, "default_settings_path", lambda: str(p))
+    w = _sidebar()
+    w._camera_verified = True
+    return w
+
+
+def test_a_preset_reports_a_camera_setting_it_could_not_write(tmp_path, monkeypatch):
+    w = _body_sidebar(tmp_path, monkeypatch)
+    _select_stored(w, monkeypatch, replace(_rgb_preset(iso="100", aperture="f/11"), shutter_r="0.2000s"))  # no f/11
+    w._set_status("Light: R200 G100 B90")  # the light echo, while the writes are on the worker
+
+    assert w._pending_exposure_writes == 2
+    w._on_camera_setting_failed("shutter")
+    w._on_camera_setting_applied("shutter")
+    w._on_camera_setting_applied("iso")
+    assert w.lv_window.status.text() == (
+        "Preset not fully set on the camera: Aperture f/11 is not a step this body offers; Shutter 1/5: the camera did not take it"
+    )
+    w._on_light_set(200, 100, 90, 0)  # a pinned report outlasts the light echo
+    assert w.lv_window.status.text().startswith("Preset not fully set")
+
+
+def test_a_preset_with_nothing_the_body_offers_is_reported_after_the_callers_status(tmp_path, monkeypatch):
+    w = _body_sidebar(tmp_path, monkeypatch)
+    _select_stored(w, monkeypatch, replace(_rgb_preset(), shutter_r="0.0333s"))
+    w._set_status("Live view running")
+    QApplication.processEvents()
+
+    assert w._pending_exposure_writes == 0
+    assert w.lv_window.status.text() == "Preset not fully set on the camera: Shutter 1/30 is not a step this body offers"
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_a_preset_reports_nothing_without_a_connected_body_that_published_its_settings(tmp_path, monkeypatch, published):
+    import negpy.desktop.view.sidebar.scanlight as sl
+
+    w = _body_sidebar(tmp_path, monkeypatch)
+    if published:
+        w._camera_verified = False
+    else:
+        monkeypatch.setattr(sl, "default_settings_path", lambda: str(tmp_path / "absent.json"))
+    _select_stored(w, monkeypatch, replace(_rgb_preset(iso="400"), shutter_r="1/30"))
+    w._set_status("")
+    w._on_camera_setting_failed("shutter")
+    w._on_camera_setting_applied("shutter")
+    QApplication.processEvents()
+
+    assert w.lv_window.status.text() == ""

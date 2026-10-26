@@ -138,8 +138,9 @@ over-exposed, close the aperture or lower the ISO; under-exposed, open up or rai
 No preset is saved. Adjust and calibrate again in the window, which stays open.
 
 **Presets.** A selected preset shows read-only, with its RGB levels, ISO, shutter and
-aperture. The scan sets that exposure on the body before every frame. The dropdown holds your
-own presets and the built-ins you have added from **+** › **Built-in Presets**; a built-in stays
+aperture. The scan sets that exposure on the body before every frame. A value the connected
+body does not offer, or a write it does not take, shows on the status line. The dropdown holds
+your own presets and the built-ins you have added from **+** › **Built-in Presets**; a built-in stays
 in the list until the trash removes it. To build a preset by hand, press **+** beside
 PRESET and pick **Set by Hand** to unlock the sliders and the exposure steppers. Set them and **Capture
 mode** (Trichrome or Single Exposure); Scan uses them as they stand, and the save (floppy)
