@@ -90,14 +90,13 @@ class TestAppController(unittest.TestCase):
         del self.controller
         gc.collect()
 
-    def test_half_frame_profile_round_trip(self):
+    def test_half_frame_profile_without_a_roll_is_not_saved(self):
         self.controller.session.repo.get_global_setting.return_value = None
+        self.controller.state.active_roll_id = None
         self.assertIsNone(self.controller.half_frame_profile())
 
-        self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02)
-        args, _ = self.controller.session.repo.save_global_setting.call_args
-        self.assertEqual(args[0], "half_frame_profile")
-        self.assertEqual(args[1], {"crop_rect": [0.0, 0.0, 1.0, 1.0], "split_x": 0.6, "gutter_thickness": 0.02, "split_axis": "x"})
+        self.assertFalse(self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02))
+        self.controller.session.repo.save_global_setting.assert_not_called()
 
     def _bake_meters(self):
         from negpy.features.exposure.normalization import LogNegativeBounds
@@ -432,6 +431,35 @@ class TestAppController(unittest.TestCase):
         self.controller.request_render.assert_not_called()
         self.controller.set_status.assert_called_once_with("invalid edge", 3000, "warning")
 
+    def test_half_frame_profile_is_saved_per_active_roll(self):
+        from negpy.services.assets.rolls import recognize_folder
+
+        store: dict = {}
+        repo = self.controller.session.repo
+        repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+        roll_a, roll_b = recognize_folder(repo, "/scans/a"), recognize_folder(repo, "/scans/b")
+        self.controller.state.active_roll_id = roll_a
+        self.assertTrue(self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02))
+
+        self.assertNotIn("half_frame_profile", store)
+        self.assertEqual(
+            self.controller.half_frame_profile(),
+            {"crop_rect": [0.0, 0.0, 1.0, 1.0], "split_x": 0.6, "gutter_thickness": 0.02, "split_axis": "x"},
+        )
+        self.controller.state.active_roll_id = roll_b
+        self.assertIsNone(self.controller.half_frame_profile())
+
+    def test_half_frame_profile_with_a_deleted_active_roll_is_not_saved(self):
+        store: dict = {}
+        repo = self.controller.session.repo
+        repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+        self.controller.state.active_roll_id = "deleted-roll"
+
+        self.assertFalse(self.controller.save_half_frame_profile([0.0, 0.0, 1.0, 1.0], 0.6, 0.02))
+        self.assertIsNone(self.controller.half_frame_profile())
+
     def test_half_frame_override_round_trip(self):
         self.controller.session.repo.get_global_setting.return_value = None
         self.assertEqual(self.controller.half_frame_overrides(), {})
@@ -529,18 +557,34 @@ class TestAppController(unittest.TestCase):
         # The chosen scope is remembered as next time's default.
         self.assertEqual(saved["half_frame_apply_scope"], "current")
 
-    def test_open_half_frame_dialog_all_scope_saves_the_profile(self):
+    def test_open_half_frame_dialog_all_scope_saves_the_roll_profile(self):
+        from negpy.services.assets.rolls import recognize_folder
+
         self._patch_dialog(crop_rect=(0.0, 0.0, 1.0, 1.0), split_x=0.5, gutter=0.0, scope="all")
-        self.controller.session.repo.get_global_setting.return_value = None
+        store: dict = {}
+        self.controller.session.repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        self.controller.session.repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
         self.controller.session.repo.load_file_settings.return_value = None
+        self.controller.state.active_roll_id = recognize_folder(self.controller.session.repo, "/p")
+        self.controller.session.state.uploaded_files = [{"path": "/p/a.tif", "hash": "ha#1"}, {"path": "/p/b.tif", "hash": "hb#1"}]
         result = self.controller.open_half_frame_dialog("/p/a.tif", "ha")
 
         self.assertEqual(result, {"crop_rect": [0.0, 0.0, 1.0, 1.0], "split_x": 0.5, "gutter_thickness": 0.0, "split_axis": "x"})
-        saved = {c.args[0]: c.args[1] for c in self.controller.session.repo.save_global_setting.call_args_list}
-        self.assertEqual(
-            saved["half_frame_profile"],
-            {"crop_rect": [0.0, 0.0, 1.0, 1.0], "split_x": 0.5, "gutter_thickness": 0.0, "split_axis": "x"},
-        )
+        self.assertEqual(self.controller.half_frame_profile(), result)
+        self.assertNotIn("half_frame_overrides", store)
+
+    def test_open_half_frame_dialog_all_scope_without_a_roll_saves_an_override_on_each_frame(self):
+        self._patch_dialog(crop_rect=(0.0, 0.0, 1.0, 1.0), split_x=0.5, gutter=0.0, scope="all")
+        store: dict = {}
+        self.controller.session.repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        self.controller.session.repo.save_global_setting.side_effect = lambda key, value: store.__setitem__(key, value)
+        self.controller.session.repo.load_file_settings.return_value = None
+        self.controller.state.active_roll_id = None
+        self.controller.session.state.uploaded_files = [{"path": "/p/a.tif", "hash": "ha#1"}, {"path": "/p/b.tif", "hash": "hb#1"}]
+        result = self.controller.open_half_frame_dialog("/p/a.tif", "ha")
+
+        self.assertEqual(store["half_frame_overrides"], {"ha": result, "hb": result})
+        self.assertNotIn("half_frame_profile", store)
 
     def test_open_half_frame_dialog_selected_scope_saves_an_override_on_each_hash(self):
         """Each save reads the settings store before writing, so a real repo (unlike
@@ -586,7 +630,7 @@ class TestAppController(unittest.TestCase):
         self._patch_dialog(crop_rect=(0.0, 0.0, 1.0, 1.0), split_x=0.6, gutter=0.0, scope="current")
         old_profile = {"crop_rect": [0.0, 0.0, 1.0, 1.0], "split_x": 0.5, "gutter_thickness": 0.0}
         self.controller.session.repo.get_global_setting.side_effect = (
-            lambda key, default=None: old_profile if key == "half_frame_profile" else None
+            lambda key, default=None: {"ha": old_profile} if key == "half_frame_overrides" else None
         )
 
         half1 = WorkspaceConfig(retouch=RetouchConfig(manual_heal_strokes=[([[0.5, 0.5]], 10.0, 0.0, 0.0)]))
@@ -1247,7 +1291,9 @@ class TestAppController(unittest.TestCase):
         mock_load.assert_not_called()
         mock_write.assert_not_called()
 
-    def test_discovery_promotes_sidecars_before_adding_files(self):
+    def test_discovery_fills_from_sidecars_before_adding_files(self):
+        from negpy.services.assets.sidecar import SidecarPlan
+
         state = self.mock_session_manager.state
         state.uploaded_files = []
         order = []
@@ -1255,12 +1301,16 @@ class TestAppController(unittest.TestCase):
         self.mock_session_manager.asset_model = MagicMock()
         self.controller.generate_missing_thumbnails = MagicMock()
         discovered = [{"name": "a", "path": "/a.dng", "hash": "h1"}]
+        plan = SidecarPlan()
 
-        with patch("negpy.desktop.controller.promote_sidecars", side_effect=lambda *_a: order.append("promote")) as mock_promote:
-            self.controller._on_discovery_finished(discovered)
+        with (
+            patch("negpy.desktop.controller.apply_sidecar_plan", side_effect=lambda *_a: order.append("fill") or ([], [])) as mock_apply,
+            patch("negpy.desktop.controller.offers_from_plan", return_value=[]),
+        ):
+            self.controller._on_discovery_finished(discovered, plan)
 
-        mock_promote.assert_called_once_with(self.mock_session_manager.repo, discovered)
-        self.assertEqual(order[:2], ["promote", "add"])
+        mock_apply.assert_called_once_with(self.mock_session_manager.repo, plan)
+        self.assertEqual(order[:2], ["fill", "add"])
 
     def _wire_repo_store(self) -> dict:
         """Backs the mocked repo's global settings with a real dict, so a roll write
@@ -3154,6 +3204,7 @@ class TestBatchExportFiltering(unittest.TestCase):
         self.mock_session_manager.state = AppState()
         self.mock_session_manager.repo = MagicMock()
         self.mock_session_manager.repo.load_file_settings.return_value = None
+        self.mock_session_manager.repo.load_file_settings_by_path.return_value = None
         self.mock_session_manager.config_for_asset.side_effect = lambda f: self.mock_session_manager.repo.load_file_settings(f["hash"])
 
         self.mock_session_manager.state.uploaded_files = [
@@ -7343,6 +7394,7 @@ class TestLibrarySearch(unittest.TestCase):
         self.controller.session.rehome_folder_paths.assert_not_called()
 
     def test_request_rename_roll_also_renames_the_folder_when_not_active(self):
+        """Loaded frames follow the folder whichever roll is open."""
         self._dict_repo()
         from negpy.services.assets.rolls import recognize_folder, roll_for_id
 
@@ -7352,14 +7404,16 @@ class TestLibrarySearch(unittest.TestCase):
             roll_id = recognize_folder(self.controller.session.repo, old_path)
             self.controller.state.active_roll_id = None
 
-            result = self.controller.request_rename_roll(roll_id, "roll_b", True)
+            with patch.object(self.controller, "invalidate_library_walk") as invalidate:
+                result = self.controller.request_rename_roll(roll_id, "roll_b", True)
 
             self.assertTrue(result)
             new_path = os.path.join(d, "roll_b")
             self.assertTrue(os.path.isdir(new_path))
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["folder_path"], new_path)
             self.assertEqual(roll_for_id(self.controller.session.repo, roll_id)["name"], "roll_b")
-            self.controller.session.rehome_folder_paths.assert_not_called()
+            self.controller.session.rehome_folder_paths.assert_called_once_with(old_path, new_path)
+            invalidate.assert_called_once_with()
 
     def test_request_rename_roll_rehomes_the_active_rolls_paths(self):
         self._dict_repo()

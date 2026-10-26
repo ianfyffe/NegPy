@@ -80,8 +80,9 @@ run if `NEGPY_USER_DIR` is unset or points at the default directory. Keep a copy
 Two things stay outside the user directory:
 
 - `.negpy` sidecars next to the source images. The next install that opens an image
-  promotes its sidecar into its database. Sidecar export is off by default; if you turn it
-  on, test against copies.
+  promotes its sidecar into its database, or offers it when that install holds an older
+  edit. Sidecar export and Keep Current are off by default; if you turn either on, test
+  against copies.
 - Exports.
 
 #### Running without scanning hardware

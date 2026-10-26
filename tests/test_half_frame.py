@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -746,7 +747,8 @@ class TestDiptychAsset:
         ctrl.session = MagicMock()
         ctrl.session.repo.load_file_settings_many.side_effect = lambda keys: {k: v for k, v in rows.items() if k in keys}
         profile = {"crop_rect": [0.1, 0.0, 0.9, 1.0], "split_x": 0.4, "gutter_thickness": 0.05}
-        ctrl.session.repo.get_global_setting.side_effect = lambda key, default=None: list(split) if key == SPLIT_SCANS_KEY else profile
+        ctrl.session.repo.get_global_setting.side_effect = lambda key, default=None: list(split) if key == SPLIT_SCANS_KEY else default
+        ctrl.half_frame_profile = lambda: profile
         ctrl._active_diptych_memo = ("", None)
         return ctrl
 
@@ -830,7 +832,7 @@ class TestDiptychAsset:
 
     def test_task_prefers_the_files_own_override_over_the_profile(self):
         """A diptych's split geometry is whatever the two halves were actually cut
-        with -- an override, when this file has one -- not blindly the roll's shared
+        with -- an override, when this file has one -- not blindly the roll's
         profile, which may since have been set to something else."""
         from negpy.desktop.controller import AppController
 
@@ -841,9 +843,9 @@ class TestDiptychAsset:
         store = {
             SPLIT_SCANS_KEY: ["ha"],
             "half_frame_overrides": {"ha": {"crop_rect": [0.05, 0.0, 0.95, 1.0], "split_x": 0.6, "gutter_thickness": 0.03}},
-            "half_frame_profile": {"crop_rect": [0.0, 0.0, 1.0, 1.0], "split_x": 0.5, "gutter_thickness": 0.0},
         }
         ctrl.session.repo.get_global_setting.side_effect = lambda key, default=None: store.get(key, default)
+        ctrl.half_frame_profile = lambda: {"crop_rect": [0.0, 0.0, 1.0, 1.0], "split_x": 0.5, "gutter_thickness": 0.0}
         ctrl._active_diptych_memo = ("", None)
 
         info, pair = AppController._diptych_task(ctrl, {"path": "/p/a.tif", "hash": "ha", "diptych": True})
@@ -1101,3 +1103,70 @@ def test_the_sessions_half_frame_choice_is_saved_restored_and_cleared():
     session.clear_files()
     assert session.state.half_frame_loose is False
     assert store["session_half_frame"] is False
+
+
+class TestProfilePerRoll:
+    @staticmethod
+    def _controller(tmp_path):
+        from negpy.desktop.controller import AppController
+        from negpy.infrastructure.storage.repository import StorageRepository
+
+        repo = StorageRepository(str(tmp_path / "e.db"), str(tmp_path / "s.db"))
+        repo.initialize()
+        ctrl = AppController.__new__(AppController)
+        ctrl.session = SimpleNamespace(repo=repo)
+        ctrl.state = SimpleNamespace(active_roll_id=None)
+        return ctrl, repo
+
+    def test_a_profile_belongs_to_one_roll(self, tmp_path):
+        from negpy.desktop.controller import AppController
+        from negpy.services.assets.rolls import recognize_folder
+
+        ctrl, repo = self._controller(tmp_path)
+        roll_a, roll_b = recognize_folder(repo, str(tmp_path / "a")), recognize_folder(repo, str(tmp_path / "b"))
+        assert not AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.55, 0.0)
+        ctrl.state.active_roll_id = roll_a
+        assert AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.4, 0.0)
+
+        assert repo.get_global_setting("half_frame_profile") is None
+        assert AppController.half_frame_profile(ctrl)["split_x"] == 0.4
+        ctrl.state.active_roll_id = roll_b
+        assert AppController.half_frame_profile(ctrl) is None
+        ctrl.state.active_roll_id = None
+        assert AppController.half_frame_profile(ctrl) is None
+
+    def test_a_roll_profile_splits_along_its_own_axis(self, tmp_path):
+        from negpy.desktop.controller import AppController
+        from negpy.desktop.workers import render as render_mod
+        from negpy.services.assets.rolls import recognize_folder
+
+        ctrl, repo = self._controller(tmp_path)
+        roll_a, roll_b = recognize_folder(repo, str(tmp_path / "a")), recognize_folder(repo, str(tmp_path / "b"))
+        ctrl.state.active_roll_id = roll_a
+        AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.5, 0.0, "y")
+        ctrl.state.active_roll_id = roll_b
+        AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.5, 0.0, "x")
+        worker = render_mod.AssetDiscoveryWorker()
+        scan = np.zeros((40, 20, 3), np.float32)
+
+        def first_half(roll_id):
+            ctrl.state.active_roll_id = roll_id
+            assets = [{"name": "a.tif", "path": "/p/a.tif", "hash": "ha"}]
+            return worker._expand_half_frames(assets, profile=AppController.half_frame_profile(ctrl))[0]
+
+        on_a, on_b = first_half(roll_a), first_half(roll_b)
+        assert on_a["split_axis"] == "y" and slice_for_asset(scan, on_a).shape == (20, 20, 3)
+        assert on_b["split_axis"] == "x" and slice_for_asset(scan, on_b).shape == (40, 10, 3)
+
+    def test_save_as_roll_keeps_the_open_rolls_profile(self, tmp_path):
+        from negpy.desktop.controller import AppController
+        from negpy.services.assets.rolls import copy_roll_settings, create_virtual_roll, recognize_folder
+
+        ctrl, repo = self._controller(tmp_path)
+        ctrl.state.active_roll_id = recognize_folder(repo, str(tmp_path / "a"))
+        AppController.save_half_frame_profile(ctrl, [0.0, 0.0, 1.0, 1.0], 0.4, 0.0)
+        new_id = create_virtual_roll(repo, "Copy", [str(tmp_path / "a" / "1.tif")])
+        copy_roll_settings(repo, ctrl.state.active_roll_id, new_id, set())
+
+        ctrl.state.active_roll_id = new_id
+        assert AppController.half_frame_profile(ctrl)["split_x"] == 0.4

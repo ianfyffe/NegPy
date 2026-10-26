@@ -11,6 +11,7 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
+from typing import Collection
 
 from negpy.domain.models import WorkspaceConfig
 from negpy.features.geometry.models import with_auto_crop
@@ -95,33 +96,99 @@ def migrate_new_roll_field_locks(repo) -> None:
                 for roll_id in _rolls_for_row(repo, file_hash, file_path):
                     locks.extend((roll_id, rolls.unforked_hash(file_hash), card) for card in cards)
         for roll_id, file_hash, card in locks:
-            rolls.set_frame_override(repo, roll_id, file_hash, card, True)
+            rolls.set_frame_override(repo, roll_id, file_hash, card, True, stamp=False)
     except Exception:
         logger.exception("New roll-field lock migration failed; continuing without it")
     repo.save_global_setting(_DONE_FLAG, True)
 
 
-def migrate_baseline_card_split(repo) -> None:
+def _split_locks(entry: dict, old: str, new: str) -> None:
+    """A frame locked on the *old* card is also locked on the *new* one split from it."""
+    overrides = entry.get("frame_overrides", {})
+    split = {h: sorted({*cards, new}) if old in cards else cards for h, cards in overrides.items()}
+    if split != overrides:
+        entry["frame_overrides"] = split
+
+
+def _drop_locks(entry: dict, cards: Collection[str]) -> None:
+    """Unlock *cards* on every frame of the roll; a frame left with no lock is dropped."""
+    overrides = entry.get("frame_overrides", {})
+    kept = {h: [c for c in locked if c not in cards] for h, locked in overrides.items()}
+    kept = {h: locked for h, locked in kept.items() if locked}
+    if kept != overrides:
+        entry["frame_overrides"] = kept
+
+
+def _defaults_to_seed(entry: dict, fields: Collection[str]) -> None:
+    """Move the roll's defaults for *fields* into its frame seed."""
+    defaults = entry.get("defaults", {})
+    moved = {f: v for f, v in defaults.items() if f in fields}
+    if moved:
+        entry["defaults"] = {f: v for f, v in defaults.items() if f not in moved}
+        entry["frame_seed"] = {**entry.get("frame_seed", {}), **moved}
+
+
+def split_baseline_locks(entry: dict) -> None:
     """Use Luma/Color Average left the Normalization (``process``) card for their own
     ``baseline`` card. A frame locked on the old card keeps both halves of that lock, so
-    nothing it renders changes. Runs before migrate_new_roll_field_locks, whose new
-    ``process`` locks are about White/Black Point alone."""
+    nothing it renders changes."""
+    _split_locks(entry, "process", "baseline")
+
+
+def split_paper_push(entry: dict) -> None:
+    """The paper curve controls left the Tone card for their own ``paper`` card. A whole-roll
+    Tone apply recorded before the split moves its paper fields to ``paper``, so each card
+    reads Roll and resets to the roll against its own fields alone."""
+    rolls.move_section_push_fields(entry, "tone", "paper", _PAPER_FIELDS)
+
+
+def split_raw_decode_locks(entry: dict) -> None:
+    """Linear RAW left the Calibration (``sensor``) card for Raw Decode (``demosaic``). A
+    frame locked on the old card keeps both halves of that lock, so nothing it renders changes."""
+    _split_locks(entry, "sensor", "demosaic")
+
+
+def cast_removal_to_seed(entry: dict) -> None:
+    """Cast Removal is a Filtration field, not a roll card: its locks go, and the roll's value
+    moves to the frame seed that a frame with no saved edit starts from."""
+    _drop_locks(entry, ("cast_removal",))
+    _defaults_to_seed(entry, ("cast_removal_strength",))
+
+
+def crop_to_seed(entry: dict) -> None:
+    """Crop is a frame card, not two roll cards: a whole-roll Geometry apply hands its crop fields
+    to Crop, the cards' locks go, and the roll's crop values move to the frame seed."""
+    rolls.move_section_push_fields(entry, "geometry", "autocrop", ("crop_rect", "crop_from_auto", "crop_detect_key"))
+    _drop_locks(entry, ("autocrop", "auto_crop"))
+    _defaults_to_seed(entry, (*_CROP_SHAPE_FIELDS, "crop_from_auto"))
+
+
+# Card-key rewrites of one roll entry, in the order the cards changed. A roll file records how
+# many its writer knew (CARD_KEYS_VERSION), and a reader runs the rest (migrate_roll_entry).
+ENTRY_MIGRATIONS = (split_baseline_locks, split_paper_push, split_raw_decode_locks, cast_removal_to_seed, crop_to_seed)
+CARD_KEYS_VERSION = len(ENTRY_MIGRATIONS)
+
+
+def migrate_roll_entry(entry: dict, version: int) -> None:
+    for migrate in ENTRY_MIGRATIONS[max(0, version) :]:
+        migrate(entry)
+
+
+def migrate_baseline_card_split(repo) -> None:
+    """``split_baseline_locks`` over every roll. Runs before migrate_new_roll_field_locks,
+    whose new ``process`` locks are about White/Black Point alone."""
     if repo.get_global_setting(_BASELINE_SPLIT_FLAG):
         return
     try:
-        for roll_id, entry in rolls.saved_rolls(repo).items():
-            for file_hash, cards in entry.get("frame_overrides", {}).items():
-                if "process" in cards:
-                    rolls.set_frame_override(repo, roll_id, file_hash, "baseline", True)
+        rolls.rewrite_entries(repo, split_baseline_locks)
     except Exception:
         logger.exception("Roll Analysis card split migration failed; continuing without it")
     repo.save_global_setting(_BASELINE_SPLIT_FLAG, True)
 
 
 def migrate_cast_removal_to_frames(repo) -> None:
-    """Cast Removal is a Filtration field, not a roll card. A saved frame that followed its
-    roll's Cast Removal keeps that value as its own, a frame with no saved edit gets it from the
-    roll's frame seed; the roll's value and the card's locks go."""
+    """A saved frame that followed its roll's Cast Removal keeps that value as its own; then
+    ``cast_removal_to_seed`` over every roll."""
     if repo.get_global_setting(_CAST_REMOVAL_FLAG):
         return
     try:
@@ -154,41 +221,29 @@ def migrate_cast_removal_to_frames(repo) -> None:
                     conn.execute(
                         "UPDATE file_settings SET settings_json = ? WHERE file_hash = ?", (json.dumps(data, default=str), file_hash)
                     )
-        for roll_id, entry in saved.items():
-            for file_hash, cards in entry.get("frame_overrides", {}).items():
-                if "cast_removal" in cards:
-                    rolls.set_frame_override(repo, roll_id, file_hash, "cast_removal", False)
-            if roll_id in roll_values:
-                rolls.add_frame_seed(repo, roll_id, cast_removal_strength=roll_values[roll_id])
-                rolls.restore_roll_fields(repo, roll_id, {"cast_removal_strength": rolls._ABSENT})
+        rolls.rewrite_entries(repo, cast_removal_to_seed)
     except Exception:
         logger.exception("Cast Removal move to Filtration failed; continuing without it")
     repo.save_global_setting(_CAST_REMOVAL_FLAG, True)
 
 
 def migrate_linear_raw_card_split(repo) -> None:
-    """Linear RAW left the Calibration (``sensor``) card for Raw Decode (``demosaic``). A
-    frame locked on the old card keeps both halves of that lock, so nothing it renders changes."""
+    """``split_raw_decode_locks`` over every roll."""
     if repo.get_global_setting(_RAW_DECODE_SPLIT_FLAG):
         return
     try:
-        for roll_id, entry in rolls.saved_rolls(repo).items():
-            for file_hash, cards in entry.get("frame_overrides", {}).items():
-                if "sensor" in cards:
-                    rolls.set_frame_override(repo, roll_id, file_hash, "demosaic", True)
+        rolls.rewrite_entries(repo, split_raw_decode_locks)
     except Exception:
         logger.exception("Raw Decode card split migration failed; continuing without it")
     repo.save_global_setting(_RAW_DECODE_SPLIT_FLAG, True)
 
 
 def migrate_paper_card_split(repo) -> None:
-    """The paper curve controls left the Tone card for their own ``paper`` card. A
-    whole-roll Tone apply recorded before the split moves its paper fields to ``paper``, so
-    each card reads Roll and resets to the roll against its own fields alone."""
+    """``split_paper_push`` over every roll."""
     if repo.get_global_setting(_PAPER_SPLIT_FLAG):
         return
     try:
-        rolls.move_section_push_fields(repo, "tone", "paper", _PAPER_FIELDS)
+        rolls.rewrite_entries(repo, split_paper_push)
     except Exception:
         logger.exception("Paper Response card split migration failed; continuing without it")
     repo.save_global_setting(_PAPER_SPLIT_FLAG, True)
@@ -212,17 +267,16 @@ def migrate_auto_crop_roll_locks(repo) -> None:
                 for roll_id in _rolls_for_row(repo, file_hash, file_path):
                     locks.append((roll_id, rolls.unforked_hash(file_hash)))
         for roll_id, file_hash in locks:
-            rolls.set_frame_override(repo, roll_id, file_hash, "auto_crop", True)
+            rolls.set_frame_override(repo, roll_id, file_hash, "auto_crop", True, stamp=False)
     except Exception:
         logger.exception("Auto Crop roll-card lock migration failed; continuing without it")
     repo.save_global_setting(_AUTO_CROP_FLAG, True)
 
 
 def migrate_crop_to_frames(repo) -> None:
-    """Crop is a frame card, not two roll cards. A saved frame keeps the crop it resolved to
-    through its roll as its own, a frame with no saved edit gets it from the roll's frame seed;
-    the roll's crop values and the cards' locks go, and a whole-roll Geometry apply hands its crop
-    fields to Crop. Runs after migrate_auto_crop_roll_locks, so a frame saved with Auto Crop on keeps it."""
+    """A saved frame keeps the crop it resolved to through its roll as its own; then
+    ``crop_to_seed`` over every roll. Runs after migrate_auto_crop_roll_locks, so a frame saved
+    with Auto Crop on keeps it."""
     if repo.get_global_setting(_CROP_TO_FRAMES_FLAG):
         return
     try:
@@ -252,15 +306,7 @@ def migrate_crop_to_frames(repo) -> None:
                         conn.execute(
                             "UPDATE file_settings SET settings_json = ? WHERE file_hash = ?", (json.dumps(data, default=str), file_hash)
                         )
-        rolls.move_section_push_fields(repo, "geometry", "autocrop", ("crop_rect", "crop_from_auto", "crop_detect_key"))
-        for roll_id, entry in saved.items():
-            for file_hash, cards in entry.get("frame_overrides", {}).items():
-                for card in ("autocrop", "auto_crop"):
-                    if card in cards:
-                        rolls.set_frame_override(repo, roll_id, file_hash, card, False)
-            if roll_id in roll_values:
-                rolls.add_frame_seed(repo, roll_id, **roll_values[roll_id])
-                rolls.restore_roll_fields(repo, roll_id, {f: rolls._ABSENT for f in roll_values[roll_id]})
+        rolls.rewrite_entries(repo, crop_to_seed)
     except Exception:
         logger.exception("Crop move to the frames failed; continuing without it")
     repo.save_global_setting(_CROP_TO_FRAMES_FLAG, True)

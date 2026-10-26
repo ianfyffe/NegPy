@@ -45,12 +45,13 @@ from negpy.kernel.system.text import count_of
 from negpy.services.assets.composites import remember_composites
 from negpy.services.assets.triplets import remember_triplets
 from negpy.services.assets.flatfield import FlatFieldProfiles
+from negpy.services.assets.rehome import moved_config, moved_path, moved_value
 from negpy.services.assets import rolls
 from negpy.services.assets import semantic_model
 from negpy.services.assets.rolls import unforked_hash
 from negpy.services.assets.migrations.roll_fields import with_frame_seed
 from negpy.services.assets.search import facts_for, match, parse_query
-from negpy.services.assets.sidecar import load_or_promote, read_sidecar
+from negpy.services.assets.sidecar import load_or_promote
 from negpy.services.assets.thumbnails import asset_thumbnail_key
 
 
@@ -374,6 +375,9 @@ class AppState:
 
     # Bake on Export: freeze Auto Density / Auto Grade on every export, app-wide.
     bake_on_export: bool = False
+
+    # Keep Current: keep each frame's .negpy sidecar equal to its saved edit and mark, app-wide.
+    keep_sidecars_current: bool = False
 
     @property
     def local_hidden_masks(self) -> set:
@@ -1031,6 +1035,10 @@ class DesktopSessionManager(QObject):
         if saved_bake_export is not None:
             self.state.bake_on_export = bool(saved_bake_export)
 
+        saved_keep_current = self.repo.get_global_setting("keep_sidecars_current")
+        if saved_keep_current is not None:
+            self.state.keep_sidecars_current = bool(saved_keep_current)
+
         self.state.export_presets = self.repo.load_export_presets()
         self.state.config = self._empty_session_config()
 
@@ -1390,20 +1398,21 @@ class DesktopSessionManager(QObject):
             off["use_cast_average"] = False
         return replace(config, process=replace(proc, **off)) if off else config
 
-    def load_edit_from_sidecar(self, path: str) -> bool:
-        """Replace the active frame's edit with the sidecar at *path*, as an undoable
-        history step. Like a work print, its own values beat the roll's, so diverged cards
-        lock. False when the file is not a readable sidecar."""
+    def load_edit_from_sidecar(self, config: WorkspaceConfig, saved_at: Optional[float] = None) -> bool:
+        """Replace the active frame's edit with a sidecar's, as an undoable history step. Like a
+        work print, its own values beat the roll's, so diverged cards lock. *saved_at* dates the
+        saved edit by its file. False with no active frame."""
         idx = self.state.selected_file_idx
         if not 0 <= idx < len(self.state.uploaded_files):
             return False
-        saved = read_sidecar(path)
-        if saved is None:
-            return False
         asset = self.state.uploaded_files[idx]
-        config = self._apply_sticky_settings(saved, only_global=True)
+        config = self._apply_sticky_settings(config, only_global=True)
         self.update_config(resolve_asset_hdr(resolve_asset_stitch(resolve_asset_rgbscan(config, asset), asset), asset), persist=True)
         self.relock_diverged_cards()
+        if saved_at is not None and self.state.current_file_hash:
+            self.repo.save_file_settings(
+                self.state.current_file_hash, self.state.config, file_path=self.state.current_file_path or "", updated_at=saved_at
+            )
         return True
 
     def _hydrate_asset_config(self, asset: dict) -> WorkspaceConfig:
@@ -1628,7 +1637,7 @@ class DesktopSessionManager(QObject):
                 synced = replace(synced, process=replace(synced.process, **changes))
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=target_path)
-            self._lock_diverged_cards(self.state.uploaded_files[idx], synced)
+            self.lock_diverged_cards(self.state.uploaded_files[idx], synced)
             changed_hashes.append(target_hash)
             count += 1
 
@@ -1681,7 +1690,7 @@ class DesktopSessionManager(QObject):
                 synced = finish(synced)
             self.push_external_history(target_hash, target_config, synced)
             self.repo.save_file_settings(target_hash, synced, file_path=self.state.uploaded_files[idx]["path"])
-            self._lock_diverged_cards(self.state.uploaded_files[idx], synced)
+            self.lock_diverged_cards(self.state.uploaded_files[idx], synced)
             changed_hashes.append(target_hash)
             count += 1
 
@@ -1987,9 +1996,9 @@ class DesktopSessionManager(QObject):
         idx = self.state.selected_file_idx
         if not self.state.current_file_hash or not (0 <= idx < len(self.state.uploaded_files)):
             return
-        self._lock_diverged_cards(self.state.uploaded_files[idx], self.state.config)
+        self.lock_diverged_cards(self.state.uploaded_files[idx], self.state.config)
 
-    def _lock_diverged_cards(self, asset: dict, config: WorkspaceConfig) -> None:
+    def lock_diverged_cards(self, asset: dict, config: WorkspaceConfig) -> None:
         roll_id = rolls.frame_roll(self.repo, self.state.active_roll_id, asset)
         if roll_id is None:
             return
@@ -2348,8 +2357,16 @@ class DesktopSessionManager(QObject):
                     logger.error(f"Failed to add {path}: {e}")
 
         # Marks: the DB is the source of truth and toggles write through, so the unconditional
-        # overlay cannot lose one. Keyed on the base hash, not a roll-forked variant: a
-        # keep/reject is a judgement on the physical scan, shared by every roll it's in.
+        # overlay cannot lose one.
+        self._overlay_marks()
+
+        self.asset_model.refresh()
+        self.files_changed.emit()
+        self._persist_session()
+
+    def _overlay_marks(self) -> None:
+        # Keyed on the base hash, not a roll-forked variant: a keep/reject is a judgement
+        # on the physical scan, shared by every roll it's in.
         marks = self.repo.load_file_marks()
         for f in self.state.uploaded_files:
             m = marks.get(unforked_hash(f["hash"]))
@@ -2357,9 +2374,19 @@ class DesktopSessionManager(QObject):
             f["excluded"] = m == "excluded"
         self._stamp_scenes()
 
+    def refresh_marks(self) -> None:
+        """Re-read every frame's triage mark from the repository."""
+        self._overlay_marks()
         self.asset_model.refresh()
         self.files_changed.emit()
-        self._persist_session()
+
+    def reload_current_file(self) -> None:
+        """Re-hydrate the active frame from the repository; an unsaved in-memory edit is dropped."""
+        idx = self.state.selected_file_idx
+        if 0 <= idx < len(self.state.uploaded_files):
+            self._config_dirty = False
+            self._preview_history = None
+            self.select_file(idx, selection_override=list(self.state.selected_indices or [idx]))
 
     def apply_composite(self, indices: List[int], composite: dict) -> None:
         """Replace the source assets with the composite built from them (inserted at the
@@ -2499,38 +2526,31 @@ class DesktopSessionManager(QObject):
         self._persist_session()
 
     def rehome_folder_paths(self, old_prefix: str, new_prefix: str) -> None:
-        """After a folder roll's own folder is renamed on disk, repoint every loaded
-        asset (and the active file) that lived under *old_prefix* to *new_prefix* --
-        content hashes are unchanged, so edits and history still find their frame by
-        hash alone; only the session's own path bookkeeping needs to catch up.
-        """
-        old_prefix = old_prefix.rstrip("/\\")
+        """Repoint every loaded asset, the active file and the open frame's config under
+        *old_prefix* at *new_prefix*. Content hashes are unchanged, so only the session's
+        path bookkeeping follows."""
 
-        def rehome(path: str) -> str:
-            if path and (path == old_prefix or path.startswith(old_prefix + os.sep)):
-                return new_prefix + path[len(old_prefix) :]
-            return path
+        def move(path: str) -> str:
+            return moved_path(path, old_prefix, new_prefix)
 
         changed = False
         for f in self.state.uploaded_files:
-            for key in ("path", "green_path", "blue_path"):
+            for key in ("path", "green_path", "blue_path", "hdr_anchor", "stitch_paths", "hdr_paths", "stitch_triplets"):
                 if f.get(key):
-                    new_val = rehome(f[key])
+                    new_val = moved_value(f[key], move)
                     if new_val != f[key]:
                         f[key] = new_val
                         changed = True
-            for key in ("stitch_paths", "hdr_paths"):
-                if f.get(key):
-                    new_list = [rehome(p) for p in f[key]]
-                    if new_list != f[key]:
-                        f[key] = new_list
-                        changed = True
 
         if self.state.current_file_path:
-            new_current = rehome(self.state.current_file_path)
+            new_current = move(self.state.current_file_path)
             if new_current != self.state.current_file_path:
                 self.state.current_file_path = new_current
                 changed = True
+
+        config = moved_config(self.state.config, move)
+        if config != self.state.config:
+            self.state.config = config
 
         if changed:
             self.asset_model.refresh()

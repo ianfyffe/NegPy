@@ -3,7 +3,7 @@
 Each record holds the three content hashes: a file changed on disk since the grouping does not re-attach.
 """
 
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from negpy.services.assets.rolls import unforked_hash
 
@@ -50,3 +50,11 @@ def remember_triplets(repo: Any, assets: Any) -> None:
         updated[asset["path"]] = record
     if updated != store:
         repo.save_global_setting(TRIPLETS_KEY, updated)
+
+
+def rehome_paths(repo: Any, move: Callable[[str], str]) -> None:
+    """Pass every red, green and blue path of every triplet through *move*."""
+    saved = saved_triplets(repo)
+    moved = {move(red): [move(rec[0]), move(rec[1]), *rec[2:]] for red, rec in saved.items()}
+    if moved != saved:
+        repo.save_global_setting(TRIPLETS_KEY, moved)
