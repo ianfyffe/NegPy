@@ -493,6 +493,9 @@ class CompactSlider(BaseSlider):
         self._edited_dot.setVisible(abs(self.spin.value() - self._default) > 1e-6)
 
     def eventFilter(self, obj, event) -> bool:
+        # Garbage collection of a cycle empties the wrapper before Qt destroys the children, which still send Hide here.
+        if "label" not in vars(self):
+            return False
         if obj is self.label:
             et = event.type()
             if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
