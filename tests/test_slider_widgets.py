@@ -337,3 +337,13 @@ def test_a_value_column_button_leaves_the_field_the_whole_track(qapp):
     track_right = slider.x() + slider.slider.geometry().right()
     assert combo.geometry().right() == track_right
     assert track_right < button.x() and button.geometry().right() <= card.width()
+
+
+def test_a_collected_slider_ignores_the_last_events_of_its_children(qapp):
+    """An exception here aborts the app: PyQt turns it into a fatal error."""
+    slider = CompactSlider("Density", 0.0, 2.0, 1.0)
+    children = (slider.label, slider.slider, slider.spin)
+    vars(slider).clear()
+
+    for child in children:
+        assert slider.eventFilter(child, QEvent(QEvent.Type.Hide)) is False
