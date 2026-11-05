@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 from dataclasses import replace
@@ -392,3 +393,376 @@ def test_ir_method_is_dropped_on_load(caplog):
         cfg = WorkspaceConfig.from_flat_dict(flat)
     assert not hasattr(cfg.retouch, "ir_method")
     assert not [r for r in caplog.records if "Dropping" in r.getMessage()]
+
+
+# --- Format: flat config, bounds_version and the reserved sync key ---------------------
+
+
+def test_the_sync_key_collides_with_no_config_field():
+    from negpy.domain import migrations
+    from negpy.services.assets.sidecar import SYNC_KEY
+
+    config = WorkspaceConfig()
+    fields = {name for section in dataclasses.fields(config) for name in getattr(getattr(config, section.name), "__dataclass_fields__", {})}
+    assert "density" in fields
+    assert SYNC_KEY not in fields
+    assert SYNC_KEY not in WorkspaceConfig().to_dict()
+    assert SYNC_KEY not in migrations.KEY_RENAMES
+    assert SYNC_KEY not in migrations.DROPPED_KEYS
+
+
+def test_a_reader_without_sync_keeps_the_edit(tmp_path):
+    """The reading rule of a release that knows only bounds_version drops sync and keeps the edit."""
+    from negpy.services.assets.sidecar import SidecarSync
+
+    src = str(tmp_path / "IMG_001.NEF")
+    cfg = _rich_config()
+    write_sidecar(src, cfg, sync=SidecarSync(saved_at=200.0, mark="keeper", mark_at=210.0))
+    with open(sidecar_path_for(src), encoding="utf-8") as fh:
+        data = json.load(fh)
+    data.pop("bounds_version", None)
+
+    assert WorkspaceConfig.from_flat_dict(data).to_dict() == WorkspaceConfig.from_flat_dict(cfg.to_dict()).to_dict()
+
+
+def test_read_sidecar_returns_the_edit_and_read_sidecar_meta_its_sync(tmp_path):
+    from negpy.services.assets.sidecar import SidecarSync, read_sidecar, read_sidecar_meta
+
+    src = str(tmp_path / "IMG_001.NEF")
+    sync = SidecarSync(saved_at=200.0, mark="excluded", mark_at=210.0)
+    path = write_sidecar(src, _rich_config(), sync=sync)
+
+    assert read_sidecar(path).exposure.density == 0.42
+    assert read_sidecar_meta(path) == sync
+
+
+def test_a_file_without_sync_has_no_meta_and_a_mark_only_file_no_edit(tmp_path):
+    from negpy.services.assets.sidecar import SidecarSync, read_sidecar, read_sidecar_meta, write_payload
+
+    src = str(tmp_path / "IMG_001.NEF")
+    assert read_sidecar_meta(write_sidecar(src, _rich_config())) is None
+
+    path = sidecar_path_for(src)
+    write_payload(path, {"sync": {"saved_at": None, "mark": "keeper", "mark_at": 5.0}})
+    assert read_sidecar(path) is None
+    assert read_sidecar_meta(path) == SidecarSync(mark="keeper", mark_at=5.0)
+
+
+def test_promotion_dates_the_edit_by_the_file(tmp_path, repo):
+    from negpy.services.assets.sidecar import SidecarSync
+
+    dated, undated = str(tmp_path / "a.NEF"), str(tmp_path / "b.NEF")
+    write_sidecar(dated, _rich_config(), sync=SidecarSync(saved_at=200.0))
+    write_sidecar(undated, _rich_config())
+
+    load_or_promote(repo, "ha", dated)
+    load_or_promote(repo, "hb", undated)
+
+    assert repo.load_file_updated_at("ha") == 200.0
+    assert repo.load_file_updated_at("hb") == 0.0
+
+
+def test_a_sidecar_never_creates_a_folder(tmp_path):
+    assert write_sidecar(str(tmp_path / "gone" / "a.NEF"), _rich_config()) is None
+    assert not (tmp_path / "gone").exists()
+
+
+# --- Keep Current: SidecarMirror ---------------------------------------------------------
+
+
+def _source(tmp_path, name: str = "a.NEF") -> str:
+    path = tmp_path / name
+    path.write_bytes(b"raw")
+    return str(path)
+
+
+def _payload(src: str, half: int = 0) -> dict:
+    with open(sidecar_path_for(src, half), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _flush(repo, *frames) -> tuple[int, int]:
+    from negpy.services.assets.sidecar import SidecarMirror
+
+    mirror = SidecarMirror(repo)
+    for file_hash, src in frames:
+        mirror.queue(file_hash, src)
+    return mirror.flush()
+
+
+def test_the_mirror_writes_the_rows_with_their_dates(tmp_path, repo):
+    src = _source(tmp_path)
+    repo.save_file_settings("h", _rich_config(), file_path=src, updated_at=100.0)
+    repo.save_file_mark("h", "keeper", file_path=src, marked_at=110.0)
+
+    assert _flush(repo, ("h", src)) == (1, 0)
+
+    data = _payload(src)
+    assert data["sync"] == {"saved_at": 100.0, "mark": "keeper", "mark_at": 110.0}
+    assert data["bounds_version"] == BOUNDS_VERSION
+    assert data["density"] == 0.42
+
+
+def test_the_mirror_leaves_a_file_that_already_matches(tmp_path, repo):
+    src = _source(tmp_path)
+    repo.save_file_settings("h", _rich_config(), file_path=src, updated_at=100.0)
+    _flush(repo, ("h", src))
+    before = os.stat(sidecar_path_for(src)).st_mtime_ns
+
+    assert _flush(repo, ("h", src)) == (0, 0)
+    assert os.stat(sidecar_path_for(src)).st_mtime_ns == before
+
+
+def test_a_flush_never_writes_an_older_edit_over_a_newer_one_in_the_file(tmp_path, repo):
+    """PC1 saved at 200; PC2 holds the edit of 100 and then marks the frame."""
+    from negpy.services.assets.sidecar import SidecarSync
+
+    src = _source(tmp_path)
+    pc1 = replace(_rich_config(), exposure=ExposureConfig(density=0.9))
+    write_sidecar(src, pc1, sync=SidecarSync(saved_at=200.0))
+    repo.save_file_settings("h", _rich_config(), file_path=src, updated_at=100.0)
+    repo.save_file_mark("h", "keeper", file_path=src, marked_at=300.0)
+
+    _flush(repo, ("h", src))
+
+    data = _payload(src)
+    assert data["density"] == 0.9
+    assert data["sync"] == {"saved_at": 200.0, "mark": "keeper", "mark_at": 300.0}
+    assert repo.load_file_settings("h").exposure.density == 0.42
+
+
+def test_a_newer_mark_in_the_file_stays(tmp_path, repo):
+    from negpy.services.assets.sidecar import SidecarSync
+
+    src = _source(tmp_path)
+    write_sidecar(src, _rich_config(), sync=SidecarSync(saved_at=100.0, mark="excluded", mark_at=500.0))
+    repo.save_file_settings("h", replace(_rich_config(), exposure=ExposureConfig(density=0.3)), file_path=src, updated_at=400.0)
+    repo.save_file_mark("h", "keeper", file_path=src, marked_at=450.0)
+
+    _flush(repo, ("h", src))
+
+    data = _payload(src)
+    assert data["density"] == 0.3
+    assert data["sync"] == {"saved_at": 400.0, "mark": "excluded", "mark_at": 500.0}
+
+
+def test_a_mark_without_an_edit_is_written_alone(tmp_path, repo):
+    from negpy.services.assets.sidecar import read_sidecar
+
+    src = _source(tmp_path)
+    repo.save_file_mark("h", "keeper", file_path=src, marked_at=5.0)
+
+    _flush(repo, ("h", src))
+
+    assert _payload(src) == {"sync": {"saved_at": None, "mark": "keeper", "mark_at": 5.0}}
+    assert read_sidecar(sidecar_path_for(src)) is None
+
+
+def test_a_cleared_mark_with_no_file_writes_nothing(tmp_path, repo):
+    src = _source(tmp_path)
+    repo.save_file_mark("h", None, file_path=src)
+
+    assert _flush(repo, ("h", src)) == (0, 0)
+    assert not os.path.exists(sidecar_path_for(src))
+
+
+def test_a_filled_frame_does_not_rewrite_the_file_it_came_from(tmp_path, repo):
+    """A file with stale bounds fills its frame without them; the file stays as the other computer wrote it."""
+    from negpy.services.assets.sidecar import SidecarSync
+
+    src = _source(tmp_path)
+    path = write_sidecar(src, _measured(), sync=SidecarSync(saved_at=100.0))
+    _unstamp(path)
+    load_or_promote(repo, "h", src)
+    before = _payload(src)
+
+    assert _flush(repo, ("h", src)) == (0, 0)
+    assert _payload(src) == before
+
+
+def test_the_mirror_names_a_half_by_its_hash_and_skips_forks_and_composites(tmp_path, repo):
+    src = _source(tmp_path)
+    for file_hash in ("h#2", "h#roll:r1", "s#stitch"):
+        repo.save_file_settings(file_hash, _rich_config(), file_path=src)
+
+    _flush(repo, ("h#2", src), ("h#roll:r1", src), ("s#stitch", src))
+
+    assert os.path.exists(sidecar_path_for(src, 2))
+    assert not os.path.exists(sidecar_path_for(src))
+
+
+def test_the_mirror_skips_a_source_that_is_gone(tmp_path, repo):
+    src = str(tmp_path / "a.NEF")
+    repo.save_file_settings("h", _rich_config(), file_path=src)
+
+    assert _flush(repo, ("h", src)) == (0, 0)
+    assert not os.path.exists(sidecar_path_for(src))
+
+
+def test_the_mirror_finds_the_path_of_a_save_that_gave_none(tmp_path, repo):
+    src = _source(tmp_path)
+    repo.save_file_settings("h", _rich_config(), file_path=src)
+
+    _flush(repo, ("h", ""))
+
+    assert os.path.exists(sidecar_path_for(src))
+
+
+def test_the_mirror_gives_up_on_a_folder_that_refuses_a_write(tmp_path, repo, monkeypatch):
+    from negpy.services.assets import sidecar
+    from negpy.services.assets.sidecar import SidecarMirror
+
+    a, b = _source(tmp_path, "a.NEF"), _source(tmp_path, "b.NEF")
+    for file_hash, src in (("ha", a), ("hb", b)):
+        repo.save_file_settings(file_hash, _rich_config(), file_path=src)
+    calls = []
+
+    def refuse(path, payload):
+        calls.append(path)
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(sidecar, "write_payload", refuse)
+    mirror = SidecarMirror(repo)
+    mirror.queue("ha", a)
+    mirror.queue("hb", b)
+
+    assert mirror.flush() == (0, 1)
+    assert len(calls) == 1
+
+
+def test_each_saved_edit_and_mark_reaches_the_write_observer(repo):
+    seen = []
+    repo.add_write_observer(lambda file_hash, file_path: seen.append((file_hash, file_path)))
+
+    repo.save_file_settings("h", _rich_config(), file_path="/r/a.NEF")
+    repo.save_file_mark("h", "keeper", file_path="/r/a.NEF")
+
+    assert seen == [("h", "/r/a.NEF"), ("h", "/r/a.NEF")]
+
+
+# --- Discovery: fill, merge and offer ----------------------------------------------------
+
+
+def _frame(src: str, file_hash: str = "h", **extra) -> dict:
+    return {"name": os.path.basename(src), "path": src, "hash": file_hash, **extra}
+
+
+def _dated(src: str, cfg: WorkspaceConfig, saved_at=None, mark=None, mark_at=None, half: int = 0) -> str:
+    from negpy.services.assets.sidecar import SidecarSync
+
+    return write_sidecar(src, cfg, half=half, sync=SidecarSync(saved_at, mark, mark_at))
+
+
+def test_a_frame_with_no_edit_here_fills_from_its_file(tmp_path, repo):
+    from negpy.services.assets.sidecar import apply_sidecar_plan, plan_frame_sidecars
+
+    src = _source(tmp_path)
+    _dated(src, _rich_config(), saved_at=200.0)
+
+    plan = plan_frame_sidecars(repo, [_frame(src)])
+
+    assert repo.load_file_updated_at("h") is None
+    assert apply_sidecar_plan(repo, plan) == (["h"], [])
+    assert repo.load_file_settings("h").exposure.density == 0.42
+    assert repo.load_file_updated_at("h") == 200.0
+
+
+def test_a_fill_yields_to_an_edit_found_by_path_or_saved_since_the_plan(tmp_path, repo):
+    from negpy.services.assets.sidecar import apply_sidecar_plan, plan_frame_sidecars
+
+    a, b = _source(tmp_path, "a.NEF"), _source(tmp_path, "b.NEF")
+    for src in (a, b):
+        _dated(src, _rich_config(), saved_at=200.0)
+    plan = plan_frame_sidecars(repo, [_frame(a, "ha"), _frame(b, "hb")])
+    repo.save_file_settings("old", replace(_rich_config(), exposure=ExposureConfig(density=0.1)), file_path=a)
+    repo.save_file_settings("hb", replace(_rich_config(), exposure=ExposureConfig(density=0.2)), file_path=b)
+
+    assert apply_sidecar_plan(repo, plan) == ([], [])
+    assert repo.load_file_settings("ha").exposure.density == 0.1
+    assert repo.load_file_settings("hb").exposure.density == 0.2
+
+
+def test_an_edit_is_offered_only_when_saved_later_and_different(tmp_path, repo):
+    from negpy.services.assets.sidecar import offers_from_plan, plan_frame_sidecars
+
+    newer, same, older = (_source(tmp_path, n) for n in ("a.NEF", "b.NEF", "c.NEF"))
+    theirs = replace(_rich_config(), exposure=ExposureConfig(density=0.9))
+    for src, file_hash, cfg, saved_at in ((newer, "ha", theirs, 300.0), (same, "hb", _rich_config(), 300.0), (older, "hc", theirs, 50.0)):
+        _dated(src, cfg, saved_at=saved_at)
+        repo.save_file_settings(file_hash, _rich_config(), file_path=src, updated_at=100.0)
+
+    plan = plan_frame_sidecars(repo, [_frame(newer, "ha"), _frame(same, "hb"), _frame(older, "hc")])
+    offers = offers_from_plan(repo, plan)
+
+    assert [(o.key, o.saved_at, o.config.exposure.density) for o in offers] == [("ha", 300.0, 0.9)]
+    assert offers[0].label == "a.NEF"
+
+
+def test_keep_mine_stops_asking_until_the_file_is_saved_again(tmp_path, repo):
+    from negpy.services.assets.sidecar import decline_sidecar_offers, offers_from_plan, plan_frame_sidecars
+
+    src = _source(tmp_path)
+    repo.save_file_settings("h", _rich_config(), file_path=src, updated_at=100.0)
+    _dated(src, replace(_rich_config(), exposure=ExposureConfig(density=0.9)), saved_at=300.0)
+    decline_sidecar_offers(repo, offers_from_plan(repo, plan_frame_sidecars(repo, [_frame(src)])))
+
+    assert offers_from_plan(repo, plan_frame_sidecars(repo, [_frame(src)])) == []
+
+    _dated(src, replace(_rich_config(), exposure=ExposureConfig(density=0.8)), saved_at=400.0)
+    assert [o.saved_at for o in offers_from_plan(repo, plan_frame_sidecars(repo, [_frame(src)]))] == [400.0]
+
+
+def test_a_newer_mark_of_another_value_merges_without_asking(tmp_path, repo):
+    from negpy.services.assets.sidecar import apply_sidecar_plan, plan_frame_sidecars
+
+    newer, older, same, cleared = (_source(tmp_path, n) for n in ("a.NEF", "b.NEF", "c.NEF", "d.NEF"))
+    repo.save_file_mark("ha", "keeper", file_path=newer, marked_at=100.0)
+    repo.save_file_mark("hb", "keeper", file_path=older, marked_at=100.0)
+    repo.save_file_mark("hc", "keeper", file_path=same, marked_at=100.0)
+    repo.save_file_mark("hd", "keeper", file_path=cleared, marked_at=100.0)
+    _dated(newer, _rich_config(), mark="excluded", mark_at=200.0)
+    _dated(older, _rich_config(), mark="excluded", mark_at=50.0)
+    _dated(same, _rich_config(), mark="keeper", mark_at=200.0)
+    _dated(cleared, _rich_config(), mark=None, mark_at=200.0)
+    frames = [_frame(newer, "ha"), _frame(older, "hb"), _frame(same, "hc"), _frame(cleared, "hd")]
+    for file_hash in ("ha", "hb", "hc", "hd"):
+        repo.save_file_settings(file_hash, _rich_config())
+
+    assert apply_sidecar_plan(repo, plan_frame_sidecars(repo, frames)) == ([], ["ha", "hd"])
+    assert repo.load_file_marks() == {"ha": "excluded", "hb": "keeper", "hc": "keeper"}
+    assert repo.load_mark_record("ha") == ("excluded", 200.0)
+
+
+def test_a_fork_takes_only_the_mark_and_a_composite_nothing(tmp_path, repo):
+    from negpy.services.assets.sidecar import apply_sidecar_plan, plan_frame_sidecars
+
+    src = _source(tmp_path)
+    _dated(src, _rich_config(), saved_at=200.0, mark="keeper", mark_at=200.0)
+    frames = [_frame(src, "h#roll:r1"), _frame(src, "s#stitch", stitch_paths=[src])]
+
+    plan = plan_frame_sidecars(repo, frames)
+
+    assert (plan.fill, plan.offer) == ([], [])
+    assert apply_sidecar_plan(repo, plan) == ([], ["h"])
+    assert repo.load_file_settings("h") is None
+
+
+def test_a_plan_drops_the_edits_of_assets_it_is_told_to(tmp_path, repo):
+    from negpy.services.assets.sidecar import plan_frame_sidecars
+
+    src = _source(tmp_path)
+    _dated(src, _rich_config(), saved_at=200.0, mark="keeper", mark_at=200.0)
+    plan = plan_frame_sidecars(repo, [_frame(src)]).without_edits_for(lambda asset: False)
+
+    assert (plan.fill, plan.offer, len(plan.merge)) == ([], [], 1)
+
+
+def test_a_half_frame_reads_its_own_sidecar(tmp_path, repo):
+    from negpy.services.assets.sidecar import apply_sidecar_plan, plan_frame_sidecars
+
+    src = _source(tmp_path)
+    _dated(src, _rich_config(), saved_at=200.0, half=2)
+
+    plan = plan_frame_sidecars(repo, [_frame(src, "h#1", half=1), _frame(src, "h#2", half=2)])
+
+    assert apply_sidecar_plan(repo, plan) == (["h#2"], [])

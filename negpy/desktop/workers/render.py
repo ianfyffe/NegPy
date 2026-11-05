@@ -297,6 +297,8 @@ class AssetDiscoveryTask:
     restore_stitches: dict | None = None  # {primary_path: {paths, transforms, canvas, sizes, hash}} (session restore).
     restore_hdr: dict | None = None  # {reference_path: {paths, ratios, align, hash}} (session restore).
     half_frame_profile: dict | None = None  # {crop_rect, split_x, gutter_thickness, split_axis} override
+    # Without a roll, {request path key: profile} for a path whose own roll has one; it wins over half_frame_profile.
+    half_frame_profiles: dict | None = None
     half_frame_overrides: dict | None = None  # {base_hash: {crop_rect, split_x, gutter_thickness, split_axis}} per-file overrides
     skip_paths: frozenset = frozenset()  # Files a folder walk leaves out, normcased: those removed from the roll.
 
@@ -834,14 +836,19 @@ def _without_parts(assets: list, parts: set) -> list:
 
 class AssetDiscoveryWorker(QObject):
     """
-    Background worker for file system crawling and hashing.
+    Background worker for file system crawling and hashing. With a repository, it also reads the
+    found frames' sidecars against it; the repository keeps one connection per thread, so reads are safe here.
     """
 
     progress = pyqtSignal(int, int, str)
-    finished = pyqtSignal(list)
+    finished = pyqtSignal(list, object)  # assets, SidecarPlan or None
     error = pyqtSignal(str)
     rgb_grouped = pyqtSignal(dict)  # RGB-scan grouping outcome; the controller decides how loudly to say it
     splits_detected = pyqtSignal(dict)  # {path: (split, thickness, crop_rect|None, axis)}, for AutoDetectAllSplitsTask
+
+    def __init__(self, repo=None) -> None:
+        super().__init__()
+        self._repo = repo
 
     def _map_files(
         self,
@@ -900,8 +907,11 @@ class AssetDiscoveryWorker(QObject):
 
         discovered_paths = []
         split_paths = set()
+        split_profiles: dict = {}
         for path in task.paths:
-            split = task.half_frame or os.path.normcase(os.path.normpath(path)) in task.half_frame_paths
+            key = os.path.normcase(os.path.normpath(path))
+            split = task.half_frame or key in task.half_frame_paths
+            own_profile = (task.half_frame_profiles or {}).get(key) if split else None
             try:
                 if os.path.isdir(path):
                     for f in os.listdir(path):
@@ -915,11 +925,15 @@ class AssetDiscoveryWorker(QObject):
                             discovered_paths.append(found)
                             if split:
                                 split_paths.add(found)
+                            if own_profile:
+                                split_profiles[found] = own_profile
                 else:
                     if not is_hidden_path(path) and path.lower().endswith(task.supported_extensions):
                         discovered_paths.append(path)
                         if split:
                             split_paths.add(path)
+                        if own_profile:
+                            split_profiles[path] = own_profile
             except Exception as e:
                 logger.error(f"Discovery error for {path}: {e}")
         # Half-frame re-discovery passes both halves' identical paths, so hash once.
@@ -959,21 +973,36 @@ class AssetDiscoveryWorker(QObject):
         if split_paths and valid_assets:
             to_split = [a for a in valid_assets if a["path"] in split_paths]
             halves: dict = {}
-            for half in self._expand_half_frames(to_split, profile=task.half_frame_profile, overrides=task.half_frame_overrides):
+            for half in self._expand_half_frames(
+                to_split, profile=task.half_frame_profile, overrides=task.half_frame_overrides, profiles=split_profiles
+            ):
                 halves.setdefault(half["path"], []).append(half)
             valid_assets = [h for a in valid_assets for h in (halves.get(a["path"]) or [a] if a["path"] in split_paths else [a])]
 
-        self.finished.emit(valid_assets)
+        self.finished.emit(valid_assets, self._plan_sidecars(valid_assets))
+
+    def _plan_sidecars(self, assets: list):
+        if self._repo is None:
+            return None
+        from negpy.services.assets.sidecar import plan_frame_sidecars
+
+        try:
+            return plan_frame_sidecars(self._repo, assets)
+        except Exception:
+            logger.exception("Sidecar scan failed")
+            return None
 
     def _expand_half_frames(
         self,
         assets: list,
         profile: dict | None = None,
         overrides: dict | None = None,
+        profiles: dict | None = None,
     ) -> list:
         """Two half-frame assets per file, sharing the path; composites stay whole.
 
-        The split comes from ``overrides[base_hash]``, else the roll's ``profile``, else auto-detection.
+        The split comes from ``overrides[base_hash]``, else the file's own roll's ``profiles[path]``,
+        else the roll's ``profile``, else auto-detection.
         """
         import os
 
@@ -990,13 +1019,16 @@ class AssetDiscoveryWorker(QObject):
             return not is_composite(a)
 
         overrides = overrides or {}
-        auto_split = profile is None
-        if auto_split:
-            paths = [a["path"] for a in assets if _splittable(a) and base_hash(a["hash"]) not in overrides]
-            detected = self._map_files(paths, detect_split_axis_for_file, lambda p: f"Split {os.path.basename(p)}", _DECODE_WORKERS)
-            splits = dict(zip(paths, detected))
-        else:
-            splits = {}
+        profiles = profiles or {}
+
+        def _profile(a: dict) -> dict | None:
+            return profiles.get(a["path"], profile)
+
+        paths = [a["path"] for a in assets if _splittable(a) and base_hash(a["hash"]) not in overrides and _profile(a) is None]
+        detected = (
+            self._map_files(paths, detect_split_axis_for_file, lambda p: f"Split {os.path.basename(p)}", _DECODE_WORKERS) if paths else []
+        )
+        splits = dict(zip(paths, detected))
 
         out = []
         for a in assets:
@@ -1004,16 +1036,17 @@ class AssetDiscoveryWorker(QObject):
                 out.append(a)
                 continue
             override = overrides.get(base_hash(a["hash"]))
+            own = _profile(a)
             if override is not None:
                 split_x = float(override.get("split_x") or 0.5)
                 split_axis = str(override.get("split_axis") or "x")
-            elif auto_split:
+            elif own is None:
                 # (0.5, "x") is the detector's "nothing found" value; with no profile there is nothing better.
                 found = splits.get(a["path"])
                 split_x, split_axis = (float(found[0]), str(found[1])) if found is not None else (0.5, "x")
             else:
-                split_x = float(profile.get("split_x") or 0.5)
-                split_axis = str(profile.get("split_axis") or "x")
+                split_x = float(own.get("split_x") or 0.5)
+                split_axis = str(own.get("split_axis") or "x")
             legacy = a.get("legacy_hash")
             for half in (1, 2):
                 entry = {
@@ -1025,7 +1058,7 @@ class AssetDiscoveryWorker(QObject):
                     "split_x": split_x,
                     "split_axis": split_axis,
                 }
-                source = override if override is not None else profile
+                source = override if override is not None else own
                 if source is not None:
                     cr = saved_crop_rect(source.get("crop_rect"))
                     if cr is not None:
