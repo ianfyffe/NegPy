@@ -784,6 +784,7 @@ Scans with a camera on a copy stand, connected over USB in **PC Remote** mode (m
 
 *   **Camera** / **Light**: the connection status. The light turns amber when it runs warm. On Linux, the Scanlight needs your user in the `dialout` group.
 *   **Live View**: a live picture from the camera. Click to place the focus magnifier, and focus until the **Focus meter** reads **at peak**. Set ISO, shutter and aperture here or on the camera. When it closes, the Scanlight goes back to how it was before.
+*   **Autofocus**: runs the camera's autofocus once, if the camera can focus over USB.
 *   **Histogram** and **Zebras**: the frame's histogram, and stripes on parts that are about to clip, in the clipping colors that Color vision sets.
 *   **Meter**: sets the shutter so the brightest part that must not clip (a negative's clear film, a slide's highlights) lands just under clipping. Meter before the first scan. Without a calibrated preset, a scan uses the exposure set on the camera, and NegPy asks before it scans unmetered.
 *   **Scan** shoots the next frame and imports it; **Retake** (the redo arrow) shoots the last frame again. When a scan clips, the status line tells you how much of the picture clipped. In the Live View window, `Space` or `S` scans and `R` retakes. With a Scanlight, **R**, **G**, **B** and **IR** pick which exposures Retake repeats.

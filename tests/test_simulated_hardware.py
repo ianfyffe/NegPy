@@ -45,6 +45,11 @@ def test_camera_opens_with_settings_and_no_aperture(camera):
     assert "aperture" not in settings
 
 
+def test_camera_runs_its_autofocus_drive(camera):
+    assert camera.has_autofocus()
+    assert camera.autofocus() is True
+
+
 def test_camera_streams_a_jpeg_preview(camera):
     camera.start()
     deadline = time.monotonic() + 5
