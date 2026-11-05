@@ -481,13 +481,21 @@ def test_set_iso_writes_the_chosen_label(cam, fake):
 
 
 def test_set_choice_refuses_an_index_whose_label_moved(cam, fake):
-    cam.set_iso(1, "200")  # the body lists "100" at index 1: the panel's list is from another body
+    assert cam.set_iso(1, "200") is False  # the body lists "100" at index 1: the panel's list is from another body
     assert ("iso", "200") not in _settings_writes(fake) and _settings_writes(fake) == []
 
 
 def test_set_choice_ignores_an_out_of_range_index(cam, fake):
-    cam.set_iso(99)
+    assert cam.set_iso(99) is False
     assert _settings_writes(fake) == []
+
+
+def test_set_choice_reports_whether_the_value_landed(cam, fake, monkeypatch):
+    assert cam.set_iso(2) is True
+    fake._settle_writes = False
+    clock = iter((0.0, 4.0))
+    monkeypatch.setattr("negpy.infrastructure.capture.gphoto.time.monotonic", lambda: next(clock))
+    assert cam.set_iso(1) is False
 
 
 def test_a_write_that_never_settles_is_reported_not_raised(fake, caplog):
