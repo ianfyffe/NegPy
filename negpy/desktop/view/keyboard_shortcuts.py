@@ -688,6 +688,7 @@ class ShortcutManager:
             "index_library": lambda: self.window.right_panel.library_tree.index_action.trigger(),
             "metadata_infer_gear": lambda: right.metadata_sidebar.gear_infer_btn.click(),
             "toggle_gear_catalog": lambda: right.gear_panel.items.show_catalog_btn.click(),
+            "toggle_keep_current": lambda: right.export_sidebar.keep_current_btn.click(),
             "toggle_semantic_search": lambda: self.window.file_browser.semantic_action.trigger(),
             "toggle_positive_source": lambda: controls.process_sidebar.positive_source_btn.click(),
             "toggle_slide_bw": lambda: controls.process_sidebar.slide_bw_btn.click(),
