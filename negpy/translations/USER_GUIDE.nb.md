@@ -580,13 +580,14 @@ NegPy holder macOS og Windows våkne mens den skanner. På Linux slår du av aut
 *   **Mål bilde…** (Coolscan): måler eksponeringen på ett bilde og bruker den for hver senere skanning, så alle bildene i en rull samsvarer. **Lås opp** avslutter det. Mål på nytt for hver rull.
 *   **Forhåndsskann…** (Plustek): en rask forhåndsvisning av hele området. Dra en beskjæring, så leser neste skanning bare det området.
 
-<!-- panel:scan_camera src:0145e5d1 -->
+<!-- panel:scan_camera src:1009c80a -->
 ### Kamera
 
 Skanner med et kamera på et reprostativ, koblet til med USB i **PC Remote**-modus (macOS og Linux; det krever `python-gphoto2`). Med en NegPy **Scanlight** styrer NegPy også lyset. CAMERA_SCANNING.md forklarer oppsettet.
 
 *   **Kamera** / **Lys**: tilkoblingsstatusen. Lyset blir gult når det går varmt. På Linux krever Scanlight at brukeren din er i gruppen `dialout`.
 *   **Direktevisning**: et levende bilde fra kameraet. Klikk for å plassere fokusluppen, og fokuser til **Fokusmåler** viser **på topp**. Angi ISO, lukkertid og blender her eller på kameraet. Når den lukkes, går Scanlight tilbake til slik den var før.
+*   **Autofokus**: kjører kameraets autofokus én gang, hvis kameraet kan fokusere over USB.
 *   **Histogram** og **Sebraer**: histogrammet for bildet, og striper på deler som er i ferd med å klippes, i klippefargene som Fargesyn angir.
 *   **Måler**: angir lukkertiden slik at den lyseste delen som ikke må klippes (den klare filmen i et negativ, høylysene i et dias), havner like under klipping. Mål før første skanning. Uten en kalibrert forhåndsinnstilling bruker en skanning eksponeringen som er angitt på kameraet, og NegPy spør før den skanner uten lysmåling.
 *   **Skann** tar neste bilde og importerer det; **Ta på nytt** (gjør om-pilen) tar det siste bildet igjen. Når en skanning klipper, forteller statuslinjen hvor mye av bildet som ble klippet. I vinduet Direktevisning skanner `Space` eller `S`, og `R` tar på nytt. Med en Scanlight velger **R**, **G**, **B** og **IR** hvilke eksponeringer Ta på nytt gjentar.
